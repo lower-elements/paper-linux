@@ -1,0 +1,44 @@
+From 5a3ad0c34d63814604421770bb838920e40242b0 Mon Sep 17 00:00:00 2001
+From: Codex Assistant <codex@example.com>
+Date: Thu, 3 Dec 2025 21:12:00 +0000
+Subject: [PATCH] linux-headers: avoid getline symbol clash in unifdef
+
+Linux 2.6.26 carries an old copy of unifdef that declares a static
+getline() helper.  Modern glibc also declares getline(), so host builds
+fail while compiling the helper scripts needed for headers_install.
+Rename the helper to get_line() so we do not collide with libc.
+
+---
+ scripts/unifdef.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/scripts/unifdef.c b/scripts/unifdef.c
+--- a/scripts/unifdef.c
++++ b/scripts/unifdef.c
+@@ -206,7 +206,7 @@
+ static void             error(const char *);
+ static int              findsym(const char *);
+ static void             flushline(bool);
+-static Linetype         getline(void);
++static Linetype         get_line(void);
+ static Linetype         ifeval(const char **);
+ static void             ignoreoff(void);
+ static void             ignoreon(void);
+@@ -512,7 +512,7 @@
+ 
+ 	for (;;) {
+ 		linenum++;
+-		lineval = getline();
++		lineval = get_line();
+ 		trans_table[ifstate[depth]][lineval]();
+ 		debug("process %s -> %s depth %d",
+ 		    linetype_name[lineval],
+@@ -526,7 +526,7 @@
+  * help from skipcomment().
+  */
+ static Linetype
+-getline(void)
++get_line(void)
+ {
+ 	const char *cp;
+ 	int cursym;
