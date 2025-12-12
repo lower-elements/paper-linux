@@ -1,0 +1,57 @@
+From e96f4d48f4a58cf7a9c6c5e89c2 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.com>
+Date: Thu, 12 Dec 2024 00:10:00 +0000
+Subject: [PATCH] uapi: linux/types: hide legacy typedefs from userland
+
+BusyBox trips over the old 2.6.26 headers because they typedef lots of
+POSIX types (uid_t, time_t, etc.) that musl also defines. Modern kernel
+headers only expose those aliases to the kernel build. Mirror that
+behaviour so userland only sees the pure uapi definitions while the
+Amazon kernel ABI stays untouched.
+---
+ include/linux/types.h | 13 ++++---------
+ 1 file changed, 4 insertions(+), 9 deletions(-)
+
+--- a/include/linux/types.h
++++ b/include/linux/types.h
+@@ -15,6 +15,8 @@
+ 
+ typedef __u32 __kernel_dev_t;
+ 
++#ifdef __KERNEL__
++
+ typedef __kernel_fd_set		fd_set;
+ typedef __kernel_dev_t		dev_t;
+ typedef __kernel_ino_t		ino_t;
+@@ -29,7 +31,6 @@
+ typedef __kernel_clockid_t	clockid_t;
+ typedef __kernel_mqd_t		mqd_t;
+ 
+-#ifdef __KERNEL__
+ typedef _Bool			bool;
+ 
+ typedef __kernel_uid32_t	uid_t;
+@@ -45,14 +46,6 @@
+ typedef __kernel_old_gid_t	old_gid_t;
+ #endif /* CONFIG_UID16 */
+ 
+-/* libc5 includes this file to define uid_t, thus uid_t can never change
+- * when it is included by non-kernel code
+- */
+-#else
+-typedef __kernel_uid_t		uid_t;
+-typedef __kernel_gid_t		gid_t;
+-#endif /* __KERNEL__ */
+-
+ #if defined(__GNUC__)
+ typedef __kernel_loff_t		loff_t;
+ #endif
+@@ -159,6 +152,8 @@
+ #define pgoff_t unsigned long
+ #endif
+ 
++#endif /* __KERNEL__ */
++
+ #endif /* __KERNEL_STRICT_NAMES */
+ 
+ /*
