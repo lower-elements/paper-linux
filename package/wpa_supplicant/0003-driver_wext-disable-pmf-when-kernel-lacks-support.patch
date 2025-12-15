@@ -1,0 +1,58 @@
+From 1fb1a0cf8e98c1349721a6c64e88e8ae4f8f8274 Mon Sep 17 00:00:00 2001
+From: Codex Agent <codex@example.com>
+Date: Thu, 12 Dec 2024 00:00:00 +0000
+Subject: [PATCH] driver_wext: disable PMF when kernel lacks support
+
+Linux 2.6.26 predates the Wireless Extensions additions for 802.11w.
+Its `wireless.h` does not define the IW_ENCODE_ALG_AES_CMAC or
+IW_AUTH_MFP symbols, so modern wpa_supplicant fails to build when the
+WEXT backend references them.
+
+Guard those code paths so wpa_supplicant detects that the headers do
+not expose PMF controls: skip programming BIP keys and force
+`wpa_driver_wext_associate()` to silently disable management frame
+protection if the kernel lacks the IW_AUTH_MFP constants. This keeps
+WPA/WPA2 working while reflecting that the kernel cannot support 802.11w.
+
+Signed-off-by: Codex Agent <codex@example.com>
+---
+ src/drivers/driver_wext.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+--- a/src/drivers/driver_wext.c	2025-12-15 20:04:57.582993598 +0000
++++ b/src/drivers/driver_wext.c	2025-12-15 20:04:57.600024378 +0000
+@@ -1774,9 +1774,11 @@
+ 		case WPA_ALG_CCMP:
+ 			ext->alg = IW_ENCODE_ALG_CCMP;
+ 			break;
++#ifdef IW_ENCODE_ALG_AES_CMAC
+ 		case WPA_ALG_BIP_CMAC_128:
+ 			ext->alg = IW_ENCODE_ALG_AES_CMAC;
+ 			break;
++#endif
+ 		default:
+ 			wpa_printf(MSG_DEBUG, "%s: Unknown algorithm %d",
+ 				   __FUNCTION__, alg);
+@@ -2197,6 +2199,7 @@
+ 					   IW_AUTH_RX_UNENCRYPTED_EAPOL,
+ 					   allow_unencrypted_eapol) < 0)
+ 		ret = -1;
++#ifdef IW_AUTH_MFP
+ 	switch (params->mgmt_frame_protection) {
+ 	case NO_MGMT_FRAME_PROTECTION:
+ 		value = IW_AUTH_MFP_DISABLED;
+@@ -2210,6 +2213,12 @@
+ 	};
+ 	if (wpa_driver_wext_set_auth_param(drv, IW_AUTH_MFP, value) < 0)
+ 		ret = -1;
++#else
++	if (params->mgmt_frame_protection != NO_MGMT_FRAME_PROTECTION)
++		wpa_printf(MSG_INFO,
++			   "WEXT: kernel lacks IW_AUTH_MFP support; forcing "
++			   "management frame protection off");
++#endif
+ 	if (params->freq.freq &&
+ 	    wpa_driver_wext_set_freq(drv, params->freq.freq) < 0)
+ 		ret = -1;
+-- 
+2.43.0
