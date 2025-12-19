@@ -18,7 +18,6 @@ ESPEAK_NG_CONF_ENV = \
 	KRAMDOWN=no
 ESPEAK_NG_CONF_OPTS = \
 	--enable-rpath=no \
-	--with-sonic=no \
 	--with-mbrola=no \
 	--with-speechplayer=no
 ifeq ($(BR2_PACKAGE_PCAUDIOLIB),y)
@@ -26,6 +25,13 @@ ESPEAK_NG_DEPENDENCIES += pcaudiolib
 ESPEAK_NG_CONF_OPTS += --with-pcaudiolib=yes
 else
 ESPEAK_NG_CONF_OPTS += --with-pcaudiolib=no
+endif
+
+ifeq ($(BR2_PACKAGE_LIBSONIC),y)
+ESPEAK_NG_DEPENDENCIES += libsonic
+ESPEAK_NG_CONF_OPTS += --with-sonic=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-sonic=no
 endif
 ESPEAK_NG_MAKE_OPTS = \
 	ESPEAK_NG_DATA_COMPILER="$(HOST_DIR)/bin/espeak-ng" \

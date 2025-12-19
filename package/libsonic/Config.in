@@ -1,0 +1,6 @@
+config BR2_PACKAGE_LIBSONIC
+	bool "libsonic"
+	help
+	  Simple C library for speeding up or slowing down speech.
+
+	  https://github.com/espeak-ng/sonic

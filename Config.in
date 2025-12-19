@@ -1,2 +1,3 @@
 source "$BR2_EXTERNAL_paper_linux_PATH/package/espeak-ng/Config.in"
 source "$BR2_EXTERNAL_paper_linux_PATH/package/pcaudiolib/Config.in"
+source "$BR2_EXTERNAL_paper_linux_PATH/package/libsonic/Config.in"
