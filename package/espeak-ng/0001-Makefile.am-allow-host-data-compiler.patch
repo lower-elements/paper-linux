@@ -1,0 +1,69 @@
+From 4f56f72c040b5f1c8a5c3a7bb2c7df2c20f4d0d3 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Thu, 19 Dec 2024 19:40:00 +0000
+Subject: [PATCH] Makefile.am: allow overriding the data compiler
+
+When cross-compiling, the build runs espeak-ng to compile the phoneme
+and dictionary data. Provide variables so Buildroot can point those
+steps at a host-built espeak-ng and its runtime library path.
+---
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -8,6 +8,9 @@
+ DATADIR=$(PREFIX)/share/espeak-ng-data
+ VIMDIR=$(PREFIX)/share/vim
+ 
++ESPEAK_NG_DATA_COMPILER ?= $(abs_top_builddir)/src/espeak-ng
++ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH ?= $(abs_top_builddir)/src
++
+ pkgconfigdir = $(libdir)/pkgconfig
+ pkgconfig_DATA = espeak-ng.pc
+ 
+@@ -396,8 +399,12 @@
+ phsource/phonemes.stamp: \
+ 	$(PHSOURCE) \
+ 	src/espeak-ng
+-	ESPEAK_DATA_PATH=$(CURDIR) src/espeak-ng --compile-intonations && \
+-		ESPEAK_DATA_PATH=$(CURDIR) src/espeak-ng --compile-phonemes && \
++	ESPEAK_DATA_PATH=$(CURDIR) \
++		LD_LIBRARY_PATH=$(ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH):${LD_LIBRARY_PATH} \
++		$(ESPEAK_NG_DATA_COMPILER) --compile-intonations && \
++		ESPEAK_DATA_PATH=$(CURDIR) \
++		LD_LIBRARY_PATH=$(ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH):${LD_LIBRARY_PATH} \
++		$(ESPEAK_NG_DATA_COMPILER) --compile-phonemes && \
+ 		touch $@
+ 
+ ##### android targets:
+@@ -440,7 +447,9 @@
+ espeak-ng-data/%_dict: src/espeak-ng phsource/phonemes.stamp
+ 	@echo "  DICT      $@"
+ 	rm -f $@
+-	cd dictsource && ESPEAK_DATA_PATH=$(CURDIR) ../src/espeak-ng --compile="$(*F)"
++	cd dictsource && ESPEAK_DATA_PATH=$(CURDIR) \
++		LD_LIBRARY_PATH=$(ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH):${LD_LIBRARY_PATH} \
++		$(ESPEAK_NG_DATA_COMPILER) --compile="$(*F)"
+ 
+ dictionaries: \
+ 	espeak-ng-data/af_dict \
+@@ -957,7 +966,9 @@
+ endif
+ 	@echo "  DICT      $@"
+ 	rm -f $@
+-	cd dictsource && ESPEAK_DATA_PATH=$(CURDIR) LD_LIBRARY_PATH=../src:${LD_LIBRARY_PATH} ../src/espeak-ng --compile=yue && cd ..
++	cd dictsource && ESPEAK_DATA_PATH=$(CURDIR) \
++		LD_LIBRARY_PATH=$(ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH):${LD_LIBRARY_PATH} \
++		$(ESPEAK_NG_DATA_COMPILER) --compile=yue && cd ..
+ 
+ dictsource/yue_emoji:
+ 	@echo "  EMOJI     $@"
+@@ -979,7 +990,9 @@
+ 
+ espeak-ng-data/mbrola_ph/%_phtrans: phsource/mbrola/% src/espeak-ng
+ 	mkdir -p espeak-ng-data/mbrola_ph
+-	ESPEAK_DATA_PATH=$(CURDIR) src/espeak-ng --compile-mbrola=phsource/mbrola/$*
++	ESPEAK_DATA_PATH=$(CURDIR) \
++		LD_LIBRARY_PATH=$(ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH):${LD_LIBRARY_PATH} \
++		$(ESPEAK_NG_DATA_COMPILER) --compile-mbrola=phsource/mbrola/$*
+ 
+ EXTRA_DIST += $(PHSOURCE_MBROLA)
+ 

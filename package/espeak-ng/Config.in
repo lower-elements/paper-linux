@@ -1,0 +1,6 @@
+config BR2_PACKAGE_ESPEAK_NG
+	bool "espeak-ng"
+	help
+	  eSpeak NG text-to-speech engine.
+
+	  https://github.com/espeak-ng/espeak-ng

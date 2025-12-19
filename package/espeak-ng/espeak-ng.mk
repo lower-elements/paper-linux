@@ -1,0 +1,48 @@
+ESPEAK_NG_VERSION = 1.52.0
+ESPEAK_NG_SOURCE = $(ESPEAK_NG_VERSION).tar.gz
+ESPEAK_NG_SITE = https://github.com/espeak-ng/espeak-ng/archive/refs/tags
+ESPEAK_NG_LICENSE = GPL-3.0+, Apache-2.0, BSD-2-Clause, Unicode-DFS-2016
+ESPEAK_NG_LICENSE_FILES = COPYING COPYING.APACHE COPYING.BSD2 COPYING.UCD
+ESPEAK_NG_AUTORECONF = YES
+ESPEAK_NG_AUTORECONF_ENV = \
+	AUTOMAKE="$(HOST_DIR)/bin/automake --foreign"
+define ESPEAK_NG_TOUCH_AUTOMAKE_FILES
+	touch $(@D)/AUTHORS $(@D)/NEWS
+endef
+ESPEAK_NG_POST_EXTRACT_HOOKS += ESPEAK_NG_TOUCH_AUTOMAKE_FILES
+
+ESPEAK_NG_DEPENDENCIES = host-espeak-ng
+ESPEAK_NG_MAKE = $(MAKE1)
+ESPEAK_NG_CONF_ENV = \
+	RONN=no \
+	KRAMDOWN=no
+ESPEAK_NG_CONF_OPTS = \
+	--enable-rpath=no \
+	--with-pcaudiolib=no \
+	--with-sonic=no \
+	--with-mbrola=no \
+	--with-speechplayer=no
+ESPEAK_NG_MAKE_OPTS = \
+	ESPEAK_NG_DATA_COMPILER="$(HOST_DIR)/bin/espeak-ng" \
+	ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH="$(HOST_DIR)/lib" \
+	src_speak_ng_LDFLAGS="-lm"
+
+HOST_ESPEAK_NG_AUTORECONF = YES
+HOST_ESPEAK_NG_AUTORECONF_ENV = \
+	AUTOMAKE="$(HOST_DIR)/bin/automake --foreign"
+HOST_ESPEAK_NG_POST_EXTRACT_HOOKS += ESPEAK_NG_TOUCH_AUTOMAKE_FILES
+HOST_ESPEAK_NG_MAKE = $(MAKE1)
+HOST_ESPEAK_NG_CONF_ENV = \
+	RONN=no \
+	KRAMDOWN=no
+HOST_ESPEAK_NG_CONF_OPTS = \
+	--enable-rpath=no \
+	--with-pcaudiolib=no \
+	--with-sonic=no \
+	--with-mbrola=no \
+	--with-speechplayer=no
+HOST_ESPEAK_NG_MAKE_OPTS = \
+	src_speak_ng_LDFLAGS="-lm"
+
+$(eval $(autotools-package))
+$(eval $(host-autotools-package))
