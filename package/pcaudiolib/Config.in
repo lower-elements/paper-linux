@@ -1,0 +1,7 @@
+config BR2_PACKAGE_PCAUDIOLIB
+	bool "pcaudiolib"
+	depends on BR2_PACKAGE_ALSA_LIB
+	help
+	  Portable C audio library.
+
+	  https://github.com/espeak-ng/pcaudiolib
