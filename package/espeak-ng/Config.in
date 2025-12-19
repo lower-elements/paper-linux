@@ -4,3 +4,13 @@ config BR2_PACKAGE_ESPEAK_NG
 	  eSpeak NG text-to-speech engine.
 
 	  https://github.com/espeak-ng/espeak-ng
+
+if BR2_PACKAGE_ESPEAK_NG
+
+config BR2_PACKAGE_ESPEAK_NG_SPEECH_PLAYER
+	bool "speech-player"
+	default y
+	help
+	  Enable the speechPlayer Klatt implementation.
+
+endif
