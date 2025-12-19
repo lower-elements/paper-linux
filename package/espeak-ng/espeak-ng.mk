@@ -17,8 +17,7 @@ ESPEAK_NG_CONF_ENV = \
 	RONN=no \
 	KRAMDOWN=no
 ESPEAK_NG_CONF_OPTS = \
-	--enable-rpath=no \
-	--with-mbrola=no
+	--enable-rpath=no
 ifeq ($(BR2_PACKAGE_PCAUDIOLIB),y)
 ESPEAK_NG_DEPENDENCIES += pcaudiolib
 ESPEAK_NG_CONF_OPTS += --with-pcaudiolib=yes
@@ -38,10 +37,47 @@ ESPEAK_NG_CONF_OPTS += --with-speechplayer=yes
 else
 ESPEAK_NG_CONF_OPTS += --with-speechplayer=no
 endif
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_KLATT),y)
+ESPEAK_NG_CONF_OPTS += --with-klatt=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-klatt=no
+endif
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_ASYNC),y)
+ESPEAK_NG_CONF_OPTS += --with-async=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-async=no
+endif
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_EXTDICT_RU),y)
+ESPEAK_NG_CONF_OPTS += --with-extdict-ru=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-extdict-ru=no
+endif
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_EXTDICT_CMN),y)
+ESPEAK_NG_CONF_OPTS += --with-extdict-cmn=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-extdict-cmn=no
+endif
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_EXTDICT_YUE),y)
+ESPEAK_NG_CONF_OPTS += --with-extdict-yue=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-extdict-yue=no
+endif
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_MBROLA),y)
+ESPEAK_NG_CONF_OPTS += --with-mbrola=yes
+else
+ESPEAK_NG_CONF_OPTS += --with-mbrola=no
+endif
 ESPEAK_NG_MAKE_OPTS = \
 	ESPEAK_NG_DATA_COMPILER="$(HOST_DIR)/bin/espeak-ng" \
 	ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH="$(HOST_DIR)/lib" \
 	src_speak_ng_LDFLAGS="-lm"
+ESPEAK_NG_INSTALL_TARGET_OPTS = $(ESPEAK_NG_MAKE_OPTS)
 
 HOST_ESPEAK_NG_AUTORECONF = YES
 HOST_ESPEAK_NG_AUTORECONF_ENV = \
@@ -55,10 +91,15 @@ HOST_ESPEAK_NG_CONF_OPTS = \
 	--enable-rpath=no \
 	--with-pcaudiolib=no \
 	--with-sonic=no \
-	--with-mbrola=no \
 	--with-speechplayer=no
 HOST_ESPEAK_NG_MAKE_OPTS = \
 	src_speak_ng_LDFLAGS="-lm"
+
+ifeq ($(BR2_PACKAGE_ESPEAK_NG_MBROLA),y)
+HOST_ESPEAK_NG_CONF_OPTS += --with-mbrola=yes
+else
+HOST_ESPEAK_NG_CONF_OPTS += --with-mbrola=no
+endif
 
 $(eval $(autotools-package))
 $(eval $(host-autotools-package))

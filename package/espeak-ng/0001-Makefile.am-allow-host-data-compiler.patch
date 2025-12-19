@@ -14,7 +14,7 @@ steps at a host-built espeak-ng and its runtime library path.
  VIMDIR=$(PREFIX)/share/vim
  
 +ESPEAK_NG_DATA_COMPILER ?= $(abs_top_builddir)/src/espeak-ng
-+ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH ?= $(abs_top_builddir)/src
++ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH ?= $(abs_top_builddir)/src/.libs
 +
  pkgconfigdir = $(libdir)/pkgconfig
  pkgconfig_DATA = espeak-ng.pc
@@ -58,7 +58,8 @@ steps at a host-built espeak-ng and its runtime library path.
  	@echo "  EMOJI     $@"
 @@ -979,7 +990,9 @@
  
- espeak-ng-data/mbrola_ph/%_phtrans: phsource/mbrola/% src/espeak-ng
+-espeak-ng-data/mbrola_ph/%_phtrans: phsource/mbrola/% src/espeak-ng
++espeak-ng-data/mbrola_ph/%_phtrans: phsource/mbrola/% $(ESPEAK_NG_DATA_COMPILER)
  	mkdir -p espeak-ng-data/mbrola_ph
 -	ESPEAK_DATA_PATH=$(CURDIR) src/espeak-ng --compile-mbrola=phsource/mbrola/$*
 +	ESPEAK_DATA_PATH=$(CURDIR) \

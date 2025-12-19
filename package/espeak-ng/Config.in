@@ -13,4 +13,40 @@ config BR2_PACKAGE_ESPEAK_NG_SPEECH_PLAYER
 	help
 	  Enable the speechPlayer Klatt implementation.
 
+config BR2_PACKAGE_ESPEAK_NG_KLATT
+	bool "klatt"
+	default y
+	help
+	  Enable the Klatt formant synthesizer.
+
+config BR2_PACKAGE_ESPEAK_NG_ASYNC
+	bool "async"
+	default y
+	help
+	  Enable asynchronous synthesis.
+
+config BR2_PACKAGE_ESPEAK_NG_EXTDICT_RU
+	bool "extdict-ru"
+	default y
+	help
+	  Enable the Russian extended dictionary.
+
+config BR2_PACKAGE_ESPEAK_NG_EXTDICT_CMN
+	bool "extdict-cmn"
+	default y
+	help
+	  Enable the Mandarin extended dictionary.
+
+config BR2_PACKAGE_ESPEAK_NG_EXTDICT_YUE
+	bool "extdict-yue"
+	default y
+	help
+	  Enable the Cantonese extended dictionary.
+
+config BR2_PACKAGE_ESPEAK_NG_MBROLA
+	bool "mbrola"
+	default n
+	help
+	  Enable the MBROLA speech synthesizer.
+
 endif
