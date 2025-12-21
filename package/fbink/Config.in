@@ -4,3 +4,45 @@ config BR2_PACKAGE_FBINK
 	  FrameBuffer eInker library and CLI for e-ink devices.
 
 	  https://github.com/NiLuJe/FBInk
+
+if BR2_PACKAGE_FBINK
+
+choice
+	prompt "FBInk platform"
+	default BR2_PACKAGE_FBINK_PLATFORM_LINUX
+	help
+	  Select the device family FBInk should target.
+
+config BR2_PACKAGE_FBINK_PLATFORM_KINDLE
+	bool "Kindle"
+	help
+	  Amazon Kindle e-ink devices.
+
+config BR2_PACKAGE_FBINK_PLATFORM_KOBO
+	bool "Kobo"
+	help
+	  Rakuten Kobo e-ink devices.
+
+config BR2_PACKAGE_FBINK_PLATFORM_CERVANTES
+	bool "Cervantes"
+	help
+	  BQ Cervantes e-ink devices.
+
+config BR2_PACKAGE_FBINK_PLATFORM_REMARKABLE
+	bool "reMarkable"
+	help
+	  reMarkable e-ink tablets.
+
+config BR2_PACKAGE_FBINK_PLATFORM_POCKETBOOK
+	bool "PocketBook"
+	help
+	  PocketBook e-ink devices.
+
+config BR2_PACKAGE_FBINK_PLATFORM_LINUX
+	bool "Linux (generic)"
+	help
+	  Generic Linux framebuffer devices.
+
+endchoice
+
+endif
