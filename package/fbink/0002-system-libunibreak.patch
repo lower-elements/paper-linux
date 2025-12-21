@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 21 Dec 2025 12:25:00 -0700
+Subject: [PATCH] Allow using system libunibreak via pkg-config
+
+Add a SYSTEM_UNIBREAK option that pulls CFLAGS/LIBS via pkg-config and
+avoids building the bundled libunibreak sources. Also add a
+SYSTEM_LIBUNIBREAK define to switch include paths in fbink_internal.h.
+
+--- a/Makefile
++++ b/Makefile
+@@ -31,6 +31,7 @@
+ 	AR?=gcc-ar
+ 	RANLIB?=gcc-ranlib
+ endif
++PKG_CONFIG?=pkg-config
+ 
+ DEBUG_CFLAGS:=-Og -fno-omit-frame-pointer -pipe -g
+ # Fallback CFLAGS, we honor the env first and foremost!
+@@ -347,7 +348,14 @@
+ endif
+ 
+ # Pick up our vendored build of libunibreak, if requested
+-ifdef UNIBREAK
++ifdef SYSTEM_UNIBREAK
++	EXTRA_CPPFLAGS+=-DSYSTEM_LIBUNIBREAK
++	SYSTEM_UNIBREAK_CFLAGS:=$(shell $(PKG_CONFIG) --cflags libunibreak 2>/dev/null)
++	SYSTEM_UNIBREAK_LIBS:=$(shell $(PKG_CONFIG) --libs libunibreak 2>/dev/null)
++	EXTRA_CPPFLAGS+=$(SYSTEM_UNIBREAK_CFLAGS)
++	LIBS+=$(SYSTEM_UNIBREAK_LIBS)
++	SHARED_LIBS+=$(SYSTEM_UNIBREAK_LIBS)
++else ifdef UNIBREAK
+ 	EXTRA_LDFLAGS+=-Llibunibreak-staged/src/.libs
+ 	LIBS+=-l:libunibreak.a
+ 	SHARED_LIBS+=-l:libunibreak.a
+@@ -402,6 +410,9 @@
+ LIB_SRCS:=fbink.c cutef8/utf8.c cutef8/dfa.c
+ # Jump through a few hoops to set a few libunibreak-specific CFLAGS to silence some warnings...
+ LIB_UB_SRCS:=libunibreak/src/linebreak.c libunibreak/src/linebreakdata.c libunibreak/src/unibreakdef.c libunibreak/src/linebreakdef.c
++ifdef SYSTEM_UNIBREAK
++	LIB_UB_SRCS:=
++endif
+ LIB_QT_SRCS:=qimagescale/qimagescale.c
+ # We don't need any of that in MINIMAL builds
+ ifdef MINIMAL
+--- a/fbink_internal.h
++++ b/fbink_internal.h
+@@ -188,8 +188,12 @@
+ // We're going to need a few more things for OpenType support...
+ #ifdef FBINK_WITH_OPENTYPE
+ // We need libunibreak for word breaking
++#ifdef SYSTEM_LIBUNIBREAK
++#	include <linebreak.h>
++#else
+ #	include "libunibreak/src/linebreak.h"
+ #endif
++#endif
+ 
+ // NOTE: We always neeed one of those, because we rely on mxcfb_rect in a number of places
+ #if defined(FBINK_FOR_KINDLE)

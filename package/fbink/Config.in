@@ -45,4 +45,42 @@ config BR2_PACKAGE_FBINK_PLATFORM_LINUX
 
 endchoice
 
+config BR2_PACKAGE_FBINK_DRAW
+	bool "draw support"
+	default n
+	help
+	  Enable drawing primitives.
+
+config BR2_PACKAGE_FBINK_FONTS
+	bool "extra bitmap fonts"
+	default n
+	select BR2_PACKAGE_FBINK_DRAW
+	help
+	  Bundle the extra fixed-cell bitmap fonts.
+
+config BR2_PACKAGE_FBINK_IMAGE
+	bool "image support"
+	default n
+	select BR2_PACKAGE_STB
+	select BR2_PACKAGE_FBINK_DRAW
+	help
+	  Enable image rendering support.
+	  Requires stb.
+
+config BR2_PACKAGE_FBINK_OPENTYPE
+	bool "OpenType/TrueType support"
+	default n
+	select BR2_PACKAGE_STB
+	select BR2_PACKAGE_LIBUNIBREAK
+	select BR2_PACKAGE_FBINK_DRAW
+	help
+	  Enable OpenType/TrueType font rendering.
+	  Requires stb and libunibreak.
+
+config BR2_PACKAGE_FBINK_INPUT
+	bool "input support"
+	default n
+	help
+	  Enable input utilities and input scan support.
+
 endif
