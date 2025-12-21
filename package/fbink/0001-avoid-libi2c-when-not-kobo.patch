@@ -1,0 +1,36 @@
+From fa74831b9076805271cdedc0ee12137aa548e524 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 21 Dec 2025 11:45:00 -0700
+Subject: [PATCH] Makefile: skip libi2c build unless KOBO
+
+FBInk only uses libi2c for Kobo accelerometer handling, but the upstream
+Makefile forces a libi2c build for all targets. That pulls in i2c-tools
+as an unnecessary sub-build on non-Kobo platforms (including Kindle).
+
+Gate the libi2c prerequisite on KOBO so other platforms build without it.
+
+--- a/Makefile
++++ b/Makefile
+@@ -563,15 +563,20 @@
+ 
+ # Make absolutely sure we create our output directories first, even with unfortunate // timings!
+ # c.f., https://www.gnu.org/software/make/manual/html_node/Prerequisite-Types.html#Prerequisite-Types
+-$(SHAREDLIB_OBJS): libi2c.built | outdir
++$(SHAREDLIB_OBJS): | outdir
+ $(UB_SHAREDLIB_OBJS): | outdir
+ $(QT_SHAREDLIB_OBJS): | outdir
+-$(STATICLIB_OBJS): libi2c.built | outdir
++$(STATICLIB_OBJS): | outdir
+ $(UB_STATICLIB_OBJS): | outdir
+ $(QT_STATICLIB_OBJS): | outdir
+ $(CMD_OBJS): | outdir
+ $(BTN_OBJS): | outdir
+ 
++ifdef KOBO
++$(SHAREDLIB_OBJS): libi2c.built
++$(STATICLIB_OBJS): libi2c.built
++endif
++
+ all: static
+ 
+ ifdef UNIBREAK
