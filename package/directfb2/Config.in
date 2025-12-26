@@ -1,0 +1,5 @@
+config BR2_PACKAGE_DIRECTFB2
+	bool "directfb2"
+	depends on BR2_TOOLCHAIN_HAS_THREADS
+	help
+	  DirectFB2 graphics and windowing library.
