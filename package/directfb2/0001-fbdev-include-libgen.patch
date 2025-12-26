@@ -1,0 +1,16 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Fri, 26 Dec 2025 00:00:00 +0000
+Subject: [PATCH] fbdev: include libgen for basename
+
+---
+--- a/systems/fbdev/fbdev_system.c
++++ b/systems/fbdev/fbdev_system.c
+@@ -19,6 +19,7 @@
+ #define _GNU_SOURCE /* To get basename() declaration. */
+ 
+ #include <core/core.h>
++#include <libgen.h>
+ #include <core/core_system.h>
+ #include <core/layers.h>
+ #include <core/screens.h>

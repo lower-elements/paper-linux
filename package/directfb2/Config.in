@@ -3,3 +3,13 @@ config BR2_PACKAGE_DIRECTFB2
 	depends on BR2_TOOLCHAIN_HAS_THREADS
 	help
 	  DirectFB2 graphics and windowing library.
+
+if BR2_PACKAGE_DIRECTFB2
+
+config BR2_PACKAGE_DIRECTFB2_FBDEV
+	bool "fbdev backend"
+	default n
+	help
+	  Enable the Linux FBDev system module.
+
+endif

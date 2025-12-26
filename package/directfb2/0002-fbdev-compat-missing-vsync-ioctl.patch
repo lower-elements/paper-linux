@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Fri, 26 Dec 2025 00:00:00 +0000
+Subject: [PATCH] fbdev: guard FBIO_WAITFORVSYNC
+
+Older kernels may not define FBIO_WAITFORVSYNC. Disable vsync waiting
+in that case and warn at compile time.
+---
+--- a/systems/fbdev/fbdev_screen.c
++++ b/systems/fbdev/fbdev_screen.c
+@@ -21,6 +21,10 @@
+ 
+ #include "fbdev_mode.h"
+ 
++#ifndef FBIO_WAITFORVSYNC
++#pragma message("FBDev: FBIO_WAITFORVSYNC not defined; vsync wait disabled for older kernels.")
++#endif
++
+ D_DEBUG_DOMAIN( FBDev_Screen, "FBDev/Screen", "FBDev Screen" );
+ 
+ /**********************************************************************************************************************/
+@@ -122,7 +126,6 @@
+                 void       *driver_data,
+                 void       *screen_data )
+ {
+-     static unsigned int  zero  = 0;
+      FBDevData           *fbdev = driver_data;
+      FBDevDataShared     *shared;
+ 
+@@ -136,8 +139,11 @@
+      if (shared->pollvsync_none)
+           return DFB_OK;
+ 
++#ifdef FBIO_WAITFORVSYNC
++     static unsigned int  zero  = 0;
+      if (fbdev_ioctl( fbdev, FBIO_WAITFORVSYNC, &zero, sizeof(zero) ))
+           waitretrace();
++#endif
+ 
+      return DFB_OK;
+ }
+--- a/systems/fbdev/fbdev_system.c
++++ b/systems/fbdev/fbdev_system.c
+@@ -201,8 +201,13 @@
+ 
+      shared = fbdev->shared;
+ 
++#ifdef FBIO_WAITFORVSYNC
+      if (request == FBIOPAN_DISPLAY || request == FBIO_WAITFORVSYNC || request == FBIOBLANK)
+           return ioctl( fbdev->fd, request, arg );
++#else
++     if (request == FBIOPAN_DISPLAY || request == FBIOBLANK)
++          return ioctl( fbdev->fd, request, arg );
++#endif
+ 
+      if (dfb_core_is_master( fbdev->core )) {
+           fbdev_ioctl_call_handler( 1, request, arg, fbdev, 0, &erno );
