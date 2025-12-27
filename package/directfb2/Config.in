@@ -18,4 +18,12 @@ config BR2_PACKAGE_DIRECTFB2_LINUXINPUT
 	help
 	  Enable the linux_input input driver (evdev).
 
+config BR2_PACKAGE_DIRECTFB2_TEXT
+	bool "text"
+	default n
+	depends on BR2_PACKAGE_FREETYPE
+	depends on BR2_PACKAGE_HARFBUZZ
+	help
+	  Enable DirectFB2 text output support.
+
 endif

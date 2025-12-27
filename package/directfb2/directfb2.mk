@@ -12,6 +12,10 @@ DIRECTFB2_LICENSE_FILES = COPYING
 DIRECTFB2_INSTALL_STAGING = YES
 DIRECTFB2_DEPENDENCIES = host-python3
 
+ifeq ($(BR2_PACKAGE_DIRECTFB2_TEXT),y)
+DIRECTFB2_DEPENDENCIES += freetype harfbuzz
+endif
+
 DIRECTFB2_CONF_OPTS = \
 	-Dconstructors=true \
 	-Dos=linux \
@@ -26,7 +30,7 @@ DIRECTFB2_CONF_OPTS = \
 	-Dpiped-stream=false \
 	-Dsentinels=false \
 	-Dsmooth-scaling=false \
-	-Dtext=false \
+	-Dtext=$(if $(BR2_PACKAGE_DIRECTFB2_TEXT),true,false) \
 	-Dtrace=false \
 	-Dmmx=false \
 	-Dneon=false \
