@@ -6,17 +6,25 @@ config BR2_PACKAGE_DIRECTFB2
 
 if BR2_PACKAGE_DIRECTFB2
 
+menu "System modules"
+
 config BR2_PACKAGE_DIRECTFB2_FBDEV
 	bool "fbdev backend"
 	default n
 	help
 	  Enable the Linux FBDev system module.
 
+endmenu
+
+menu "Input modules"
+
 config BR2_PACKAGE_DIRECTFB2_LINUXINPUT
 	bool "linux_input input driver"
 	default n
 	help
 	  Enable the linux_input input driver (evdev).
+
+endmenu
 
 config BR2_PACKAGE_DIRECTFB2_TEXT
 	bool "text"
