@@ -12,4 +12,10 @@ config BR2_PACKAGE_DIRECTFB2_FBDEV
 	help
 	  Enable the Linux FBDev system module.
 
+config BR2_PACKAGE_DIRECTFB2_LINUXINPUT
+	bool "linux_input input driver"
+	default n
+	help
+	  Enable the linux_input input driver (evdev).
+
 endif
