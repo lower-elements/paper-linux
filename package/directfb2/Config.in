@@ -34,4 +34,10 @@ config BR2_PACKAGE_DIRECTFB2_TEXT
 	help
 	  Enable DirectFB2 text output support.
 
+config BR2_PACKAGE_DIRECTFB2_MULTI
+	bool "Multi application support"
+	default n
+	help
+	  Enable multi application support.
+
 endif

@@ -1,0 +1,42 @@
+From 2e2799a3e0b6b2d7a6b3e6b0b6b3e6b0b6b3e6b0 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sat, 27 Dec 2025 00:45:00 +0000
+Subject: [PATCH] fusion: include socket headers for multi build
+
+musl does not pull in socket types/macros from other headers the way glibc
+often does, so multi builds need explicit socket includes.
+
+---
+--- a/lib/fusion/fusion.c
++++ b/lib/fusion/fusion.c
+@@ -24,6 +24,8 @@
+ #include <direct/filesystem.h>
+ #include <direct/map.h>
+ #include <direct/system.h>
++#include <sys/socket.h>
++#include <sys/un.h>
+ #if D_DEBUG_ENABLED
+ #include <direct/trace.h>
+ #endif
+--- a/lib/fusion/call.c
++++ b/lib/fusion/call.c
+@@ -24,6 +24,8 @@
+ 
+ #include <direct/memcpy.h>
+ #include <fusion/conf.h>
++#include <sys/socket.h>
++#include <sys/un.h>
+ 
+ #if FUSION_BUILD_KERNEL
+ #include <direct/mem.h>
+--- a/lib/fusion/reactor.c
++++ b/lib/fusion/reactor.c
+@@ -19,6 +19,8 @@
+ #include <direct/mem.h>
+ #include <fusion/fusion_internal.h>
+ #include <fusion/reactor.h>
++#include <sys/socket.h>
++#include <sys/un.h>
+ 
+ #if FUSION_BUILD_MULTI
+ 
