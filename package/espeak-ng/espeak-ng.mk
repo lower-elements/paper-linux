@@ -3,103 +3,66 @@ ESPEAK_NG_SOURCE = $(ESPEAK_NG_VERSION).tar.gz
 ESPEAK_NG_SITE = https://github.com/espeak-ng/espeak-ng/archive/refs/tags
 ESPEAK_NG_LICENSE = GPL-3.0+, Apache-2.0, BSD-2-Clause, Unicode-DFS-2016
 ESPEAK_NG_LICENSE_FILES = COPYING COPYING.APACHE COPYING.BSD2 COPYING.UCD
-ESPEAK_NG_AUTORECONF = YES
-ESPEAK_NG_AUTORECONF_ENV = \
-	AUTOMAKE="$(HOST_DIR)/bin/automake --foreign"
-define ESPEAK_NG_TOUCH_AUTOMAKE_FILES
-	touch $(@D)/AUTHORS $(@D)/NEWS
-endef
-ESPEAK_NG_POST_EXTRACT_HOOKS += ESPEAK_NG_TOUCH_AUTOMAKE_FILES
 
 ESPEAK_NG_DEPENDENCIES = host-espeak-ng
-ESPEAK_NG_MAKE = $(MAKE1)
-ESPEAK_NG_CONF_ENV = \
-	RONN=no \
-	KRAMDOWN=no
 ESPEAK_NG_CONF_OPTS = \
-	--enable-rpath=no
+	-DBUILD_SHARED_LIBS=ON \
+	-DESPEAK_COMPAT=ON \
+	-DESPEAK_NG_DATA_COMPILER="$(HOST_DIR)/bin/espeak-ng" \
+	-DESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH="$(HOST_DIR)/lib" \
+	-DESPEAK_USE_BUNDLED_SONIC=OFF
+
 ifeq ($(BR2_PACKAGE_PCAUDIOLIB),y)
 ESPEAK_NG_DEPENDENCIES += pcaudiolib
-ESPEAK_NG_CONF_OPTS += --with-pcaudiolib=yes
+ESPEAK_NG_CONF_OPTS += -DUSE_LIBPCAUDIO=ON
 else
-ESPEAK_NG_CONF_OPTS += --with-pcaudiolib=no
+ESPEAK_NG_CONF_OPTS += -DUSE_LIBPCAUDIO=OFF
 endif
 
 ifeq ($(BR2_PACKAGE_LIBSONIC),y)
 ESPEAK_NG_DEPENDENCIES += libsonic
-ESPEAK_NG_CONF_OPTS += --with-sonic=yes
+ESPEAK_NG_CONF_OPTS += -DUSE_LIBSONIC=ON
 else
-ESPEAK_NG_CONF_OPTS += --with-sonic=no
+ESPEAK_NG_CONF_OPTS += -DUSE_LIBSONIC=OFF
 endif
 
 ifeq ($(BR2_PACKAGE_ESPEAK_NG_SPEECH_PLAYER),y)
-ESPEAK_NG_CONF_OPTS += --with-speechplayer=yes
+ESPEAK_NG_CONF_OPTS += -DUSE_SPEECHPLAYER=ON
 else
-ESPEAK_NG_CONF_OPTS += --with-speechplayer=no
+ESPEAK_NG_CONF_OPTS += -DUSE_SPEECHPLAYER=OFF
 endif
 
 ifeq ($(BR2_PACKAGE_ESPEAK_NG_KLATT),y)
-ESPEAK_NG_CONF_OPTS += --with-klatt=yes
+ESPEAK_NG_CONF_OPTS += -DUSE_KLATT=ON
 else
-ESPEAK_NG_CONF_OPTS += --with-klatt=no
+ESPEAK_NG_CONF_OPTS += -DUSE_KLATT=OFF
 endif
 
 ifeq ($(BR2_PACKAGE_ESPEAK_NG_ASYNC),y)
-ESPEAK_NG_CONF_OPTS += --with-async=yes
+ESPEAK_NG_CONF_OPTS += -DUSE_ASYNC=ON
 else
-ESPEAK_NG_CONF_OPTS += --with-async=no
-endif
-
-ifeq ($(BR2_PACKAGE_ESPEAK_NG_EXTDICT_RU),y)
-ESPEAK_NG_CONF_OPTS += --with-extdict-ru=yes
-else
-ESPEAK_NG_CONF_OPTS += --with-extdict-ru=no
-endif
-
-ifeq ($(BR2_PACKAGE_ESPEAK_NG_EXTDICT_CMN),y)
-ESPEAK_NG_CONF_OPTS += --with-extdict-cmn=yes
-else
-ESPEAK_NG_CONF_OPTS += --with-extdict-cmn=no
-endif
-
-ifeq ($(BR2_PACKAGE_ESPEAK_NG_EXTDICT_YUE),y)
-ESPEAK_NG_CONF_OPTS += --with-extdict-yue=yes
-else
-ESPEAK_NG_CONF_OPTS += --with-extdict-yue=no
+ESPEAK_NG_CONF_OPTS += -DUSE_ASYNC=OFF
 endif
 
 ifeq ($(BR2_PACKAGE_ESPEAK_NG_MBROLA),y)
-ESPEAK_NG_CONF_OPTS += --with-mbrola=yes
+ESPEAK_NG_CONF_OPTS += -DUSE_MBROLA=ON
 else
-ESPEAK_NG_CONF_OPTS += --with-mbrola=no
+ESPEAK_NG_CONF_OPTS += -DUSE_MBROLA=OFF
 endif
-ESPEAK_NG_MAKE_OPTS = \
-	ESPEAK_NG_DATA_COMPILER="$(HOST_DIR)/bin/espeak-ng" \
-	ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH="$(HOST_DIR)/lib" \
-	src_speak_ng_LDFLAGS="-lm"
-ESPEAK_NG_INSTALL_TARGET_OPTS = $(ESPEAK_NG_MAKE_OPTS)
 
-HOST_ESPEAK_NG_AUTORECONF = YES
-HOST_ESPEAK_NG_AUTORECONF_ENV = \
-	AUTOMAKE="$(HOST_DIR)/bin/automake --foreign"
-HOST_ESPEAK_NG_POST_EXTRACT_HOOKS += ESPEAK_NG_TOUCH_AUTOMAKE_FILES
-HOST_ESPEAK_NG_MAKE = $(MAKE1)
-HOST_ESPEAK_NG_CONF_ENV = \
-	RONN=no \
-	KRAMDOWN=no
 HOST_ESPEAK_NG_CONF_OPTS = \
-	--enable-rpath=no \
-	--with-pcaudiolib=no \
-	--with-sonic=no \
-	--with-speechplayer=no
-HOST_ESPEAK_NG_MAKE_OPTS = \
-	src_speak_ng_LDFLAGS="-lm"
+	-DBUILD_SHARED_LIBS=ON \
+	-DESPEAK_COMPAT=OFF \
+	-DESPEAK_USE_BUNDLED_SONIC=OFF \
+	-DUSE_LIBPCAUDIO=OFF \
+	-DUSE_LIBSONIC=OFF \
+	-DUSE_SPEECHPLAYER=OFF
 
 ifeq ($(BR2_PACKAGE_ESPEAK_NG_MBROLA),y)
-HOST_ESPEAK_NG_CONF_OPTS += --with-mbrola=yes
+HOST_ESPEAK_NG_CONF_OPTS += -DUSE_MBROLA=ON
 else
-HOST_ESPEAK_NG_CONF_OPTS += --with-mbrola=no
+HOST_ESPEAK_NG_CONF_OPTS += -DUSE_MBROLA=OFF
 endif
 
-$(eval $(autotools-package))
-$(eval $(host-autotools-package))
+$(eval $(cmake-package))
+$(eval $(host-cmake-package))

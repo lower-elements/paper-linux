@@ -1,0 +1,124 @@
+From 2b9a0c2b8b7f9c2f62d3a55b1a9d9b1c67b1a0f4 Mon Sep 17 00:00:00 2001
+From: Paper Linux <dev@paper-linux>
+Date: Sat, 31 Jan 2026 21:25:00 -0500
+Subject: [PATCH] cmake: allow external data compiler and disable bundled sonic
+
+This adds two CMake knobs to make espeak-ng work reliably in Buildroot:
+1) ESPEAK_NG_DATA_COMPILER/ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH let
+   data generation run a host espeak-ng binary during cross builds.
+2) ESPEAK_USE_BUNDLED_SONIC gates the FetchContent download so builds
+   can stay offline and use the system libsonic when enabled.
+
+--- a/cmake/data.cmake
++++ b/cmake/data.cmake
+@@ -54,6 +54,11 @@
+ set(PHONEME_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/phsource)
+ set(DICT_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dictsource)
+ 
++set(ESPEAK_NG_DATA_COMPILER "" CACHE FILEPATH
++  "Path to host espeak-ng binary used to compile data files")
++set(ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH "" CACHE STRING
++  "LD_LIBRARY_PATH for ESPEAK_NG_DATA_COMPILER")
++
+ file(MAKE_DIRECTORY "${DATA_DIST_DIR}")
+ file(MAKE_DIRECTORY "${DICT_TMP_DIR}")
+ file(COPY "${DATA_SRC_DIR}/lang" DESTINATION "${DATA_DIST_DIR}")
+@@ -61,7 +66,16 @@
+ file(COPY "${PHONEME_SRC_DIR}" DESTINATION "${DATA_DIST_ROOT}")
+ 
+ set(ESPEAK_RUN_ENV ${CMAKE_COMMAND} -E env "ESPEAK_DATA_PATH=${DATA_DIST_ROOT}")
+-set(ESPEAK_RUN_CMD ${ESPEAK_RUN_ENV} $ENV{VALGRIND} "$<TARGET_FILE:espeak-ng-bin>")
++if (ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH)
++  list(APPEND ESPEAK_RUN_ENV "LD_LIBRARY_PATH=${ESPEAK_NG_DATA_COMPILER_LD_LIBRARY_PATH}")
++endif()
++if (ESPEAK_NG_DATA_COMPILER)
++  set(ESPEAK_RUN_CMD ${ESPEAK_RUN_ENV} $ENV{VALGRIND} "${ESPEAK_NG_DATA_COMPILER}")
++  set(ESPEAK_RUN_DEP "${ESPEAK_NG_DATA_COMPILER}")
++else()
++  set(ESPEAK_RUN_CMD ${ESPEAK_RUN_ENV} $ENV{VALGRIND} "$<TARGET_FILE:espeak-ng-bin>")
++  set(ESPEAK_RUN_DEP "$<TARGET_FILE:espeak-ng-bin>")
++endif()
+ 
+ add_custom_command(
+   OUTPUT "${DATA_DIST_DIR}/intonations"
+@@ -69,7 +83,7 @@
+   WORKING_DIRECTORY "${PHONEME_SRC_DIR}"
+   COMMENT "Compile intonations"
+   DEPENDS
+-    "$<TARGET_FILE:espeak-ng-bin>"
++    "${ESPEAK_RUN_DEP}"
+     "${PHONEME_SRC_DIR}/intonation"
+ )
+ 
+@@ -100,7 +114,7 @@
+   COMMENT "Compile phonemes"
+   DEPENDS
+     "${DATA_DIST_DIR}/intonations"
+-    "$<TARGET_FILE:espeak-ng-bin>"
++    "${ESPEAK_RUN_DEP}"
+     ${_phon_deps}
+ )
+ 
+@@ -136,7 +150,7 @@
+     COMMAND ${ESPEAK_RUN_CMD} --compile=${_dict_name}
+     WORKING_DIRECTORY "${DICT_TMP_DIR}"
+     DEPENDS
+-      "$<TARGET_FILE:espeak-ng-bin>"
++      "${ESPEAK_RUN_DEP}"
+       "${DATA_DIST_DIR}/phondata"
+       "${DATA_DIST_DIR}/intonations"
+       ${_dict_deps}
+@@ -153,7 +167,7 @@
+     add_custom_command(
+       OUTPUT "${_mbl_out}"
+       COMMAND ${ESPEAK_RUN_CMD} --compile-mbrola="${_mbl_src}"
+-      DEPENDS "$<TARGET_FILE:espeak-ng-bin>" "${_mbl_src}"
++      DEPENDS "${ESPEAK_RUN_DEP}" "${_mbl_src}"
+     )
+   endforeach(_mbl)
+ endif()
+
+--- a/cmake/deps.cmake
++++ b/cmake/deps.cmake
+@@ -4,6 +4,8 @@
+ find_path(PCAUDIO_INC "pcaudiolib/audio.h")
+ find_library(PTHREAD_LIB pthread)
+ find_program(MBROLA_BIN mbrola)
++option(ESPEAK_USE_BUNDLED_SONIC "Fetch bundled sonic if system lib not found"
++  ON)
+ 
+ include(FetchContent)
+ 
+@@ -16,17 +18,21 @@
+ if (SONIC_LIB AND SONIC_INC)
+   set(HAVE_LIBSONIC ON)
+ else()
+-  FetchContent_Declare(sonic-git
+-    GIT_REPOSITORY https://github.com/waywardgeek/sonic.git
+-    GIT_TAG fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104
+-  )
+-  FetchContent_MakeAvailable(sonic-git)
+-  FetchContent_GetProperties(sonic-git)
+-  add_library(sonic OBJECT ${sonic-git_SOURCE_DIR}/sonic.c)
+-  target_include_directories(sonic PUBLIC ${sonic-git_SOURCE_DIR})
+-  set(HAVE_LIBSONIC ON)
+-  set(SONIC_LIB sonic)
+-  set(SONIC_INC ${sonic-git_SOURCE_DIR})
++  if (ESPEAK_USE_BUNDLED_SONIC)
++    FetchContent_Declare(sonic-git
++      GIT_REPOSITORY https://github.com/waywardgeek/sonic.git
++      GIT_TAG fbf75c3d6d846bad3bb3d456cbc5d07d9fd8c104
++    )
++    FetchContent_MakeAvailable(sonic-git)
++    FetchContent_GetProperties(sonic-git)
++    add_library(sonic OBJECT ${sonic-git_SOURCE_DIR}/sonic.c)
++    target_include_directories(sonic PUBLIC ${sonic-git_SOURCE_DIR})
++    set(HAVE_LIBSONIC ON)
++    set(SONIC_LIB sonic)
++    set(SONIC_INC ${sonic-git_SOURCE_DIR})
++  else()
++    set(HAVE_LIBSONIC OFF)
++  endif()
+ endif()
+ if (PCAUDIO_LIB AND PCAUDIO_INC)
+   set(HAVE_LIBPCAUDIO ON)
