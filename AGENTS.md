@@ -2,6 +2,8 @@
 
 - Goal: integrated Linux PDA OS for e-ink readers; current dev targets Kindle 3-class hardware (ARM11 ~532 MHz, 256 MB RAM, no GPU) but keep designs hardware-agnostic for future devices.
 - Build: buildroot-based, repo is a buildroot external tree, buildroot subdirectory is a git submodule; make changes (config files, new buildroot packages, patches) to the external tree (repo root), not the buildroot checkout.
+- Patch files: when creating `.patch` files, edit a copy directly and generate the patch via `diff -u`; always add an email-style header to `.patch` files.
+- Commits: use descriptive Conventional Commit-style messages; use `git commit -m` multiple times (first for the subject, then a description of what the commit does and why it was needed when relevant).
 - Resource policy: musl, busybox, shared libs, dropbear, CLI/TUI-first; avoid heavy daemons and GUIs.
 - Kernel constraint: must ride vendor kernels (e.g., Kindle 3 ships 2.6.26 RT). Expect old syscalls/APIs only; available: epoll/inotify, threads, some namespaces, early cgroupsv1, netlink. Do not attempt new-driver work; keep syscall ABI intact when patching headers.
 - Current state: custom chroot with modern musl, busybox, wpa_supplicant, OpenSSL, curl, etc.; some patches applied. Aim to grow into full flashable OS (kernel + bootloader + userland).
