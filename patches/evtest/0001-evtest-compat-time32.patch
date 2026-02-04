@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Paper Linux <paper@localhost>
+Date: Wed, 4 Feb 2026 19:55:00 +0000
+Subject: [PATCH] evtest: accept time32 input_event from old kernels
+
+Old 2.6.x kernels on 32-bit return 16-byte input_event records.
+Allow evtest to parse both time64 and time32 records.
+
+---
+--- a/evtest.c
++++ b/evtest.c
+@@ -63,6 +63,19 @@
+ #define input_event_usec time.tv_usec
+ #endif
+ 
++/*
++ * Old kernels (e.g. 2.6.x) on 32-bit archs return time32 input_event
++ * structures (16 bytes). Newer userspace headers may expose time64
++ * (24 bytes). Accept both sizes and translate if needed.
++ */
++struct input_event_compat {
++	int32_t tv_sec;
++	int32_t tv_usec;
++	uint16_t type;
++	uint16_t code;
++	int32_t value;
++};
++
+ #define BITS_PER_LONG (sizeof(long) * 8)
+ #define NBITS(x) ((((x)-1)/BITS_PER_LONG)+1)
+ #define NBYTES(x) (NBITS(x) * sizeof(long))
+@@ -1219,7 +1232,7 @@
+  */
+ static int print_events(int fd)
+ {
+-	struct input_event ev[64];
++	unsigned char buf[sizeof(struct input_event) * 64];
+ 	int i, rd;
+ 	fd_set rdfs;
+ 
+@@ -1230,38 +1243,69 @@
+ 		select(fd + 1, &rdfs, NULL, NULL, NULL);
+ 		if (stop)
+ 			break;
+-		rd = read(fd, ev, sizeof(ev));
++		rd = read(fd, buf, sizeof(buf));
+ 
+-		if (rd < (int) sizeof(struct input_event)) {
+-			printf("expected %d bytes, got %d\n", (int) sizeof(struct input_event), rd);
++		if (rd < 0) {
+ 			perror("\nevtest: error reading");
+ 			return 1;
+ 		}
+ 
+-		for (i = 0; i < rd / sizeof(struct input_event); i++) {
+-			unsigned int type, code;
+-
+-			type = ev[i].type;
+-			code = ev[i].code;
+-
+-			printf("Event: time %ld.%06ld, ", ev[i].input_event_sec, ev[i].input_event_usec);
+-
+-			if (type == EV_SYN) {
+-				if (code == SYN_MT_REPORT)
+-					printf("++++++++++++++ %s ++++++++++++\n", codename(type, code));
+-				else if (code == SYN_DROPPED)
+-					printf(">>>>>>>>>>>>>> %s <<<<<<<<<<<<\n", codename(type, code));
+-				else
+-					printf("-------------- %s ------------\n", codename(type, code));
+-			} else {
+-				printf("type %d (%s), code %d (%s), ",
+-					type, typename(type),
+-					code, codename(type, code));
+-				if (type == EV_MSC && (code == MSC_RAW || code == MSC_SCAN))
+-					printf("value %02x\n", ev[i].value);
+-				else
+-					printf("value %d\n", ev[i].value);
++		if (rd % (int)sizeof(struct input_event) == 0) {
++			int count = rd / (int)sizeof(struct input_event);
++			struct input_event *ev = (struct input_event *)buf;
++			for (i = 0; i < count; i++) {
++				unsigned int type = ev[i].type;
++				unsigned int code = ev[i].code;
++
++				printf("Event: time %ld.%06ld, ",
++				       ev[i].input_event_sec, ev[i].input_event_usec);
++				if (type == EV_SYN) {
++					if (code == SYN_MT_REPORT)
++						printf("++++++++++++++ %s ++++++++++++\n", codename(type, code));
++					else if (code == SYN_DROPPED)
++						printf(">>>>>>>>>>>>>> %s <<<<<<<<<<<<\n", codename(type, code));
++					else
++						printf("-------------- %s ------------\n", codename(type, code));
++				} else {
++					printf("type %d (%s), code %d (%s), ",
++						type, typename(type),
++						code, codename(type, code));
++					if (type == EV_MSC && (code == MSC_RAW || code == MSC_SCAN))
++						printf("value %02x\n", ev[i].value);
++					else
++						printf("value %d\n", ev[i].value);
++				}
++			}
++		} else if (rd % (int)sizeof(struct input_event_compat) == 0) {
++			int count = rd / (int)sizeof(struct input_event_compat);
++			struct input_event_compat *evc = (struct input_event_compat *)buf;
++			for (i = 0; i < count; i++) {
++				unsigned int type = evc[i].type;
++				unsigned int code = evc[i].code;
++
++				printf("Event: time %ld.%06ld, ",
++				       (long)evc[i].tv_sec, (long)evc[i].tv_usec);
++				if (type == EV_SYN) {
++					if (code == SYN_MT_REPORT)
++						printf("++++++++++++++ %s ++++++++++++\n", codename(type, code));
++					else if (code == SYN_DROPPED)
++						printf(">>>>>>>>>>>>>> %s <<<<<<<<<<<<\n", codename(type, code));
++					else
++						printf("-------------- %s ------------\n", codename(type, code));
++				} else {
++					printf("type %d (%s), code %d (%s), ",
++						type, typename(type),
++						code, codename(type, code));
++					if (type == EV_MSC && (code == MSC_RAW || code == MSC_SCAN))
++						printf("value %02x\n", evc[i].value);
++					else
++						printf("value %d\n", evc[i].value);
++				}
+ 			}
++		} else {
++			printf("unexpected event size: got %d bytes\n", rd);
++			perror("\nevtest: error reading");
++			return 1;
+ 		}
+ 
+ 	}
