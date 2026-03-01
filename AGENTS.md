@@ -2,6 +2,8 @@
 
 - Goal: integrated Linux PDA OS for e-ink readers; current dev targets Kindle 3-class hardware (ARM11 ~532 MHz, 256 MB RAM, no GPU) but keep designs hardware-agnostic for future devices.
 - Build: buildroot-based, repo is a buildroot external tree, buildroot subdirectory is a git submodule; make changes (config files, new buildroot packages, patches) to the external tree (repo root), not the buildroot checkout.
+- Buildroot config workflow: when changing an existing output tree config, use `buildroot/utils/config --file output/<board>/.config ...` instead of editing `.config` by hand, then refresh it via the generated output-tree Makefile.
+- Buildroot build workflow: run Buildroot targets through the generated Makefile in `output/<board>/` (for example `make -C output/kindle_k3w`, `make -C output/kindle_k3w olddefconfig`, `make -C output/kindle_k3w <pkg>`, `make -C output/kindle_k3w <pkg>-rebuild`); do not invoke `make -C buildroot ...` directly for normal board builds because the output-tree Makefile already carries the correct `O=` and `BR2_EXTERNAL=` wiring.
 - Patch files: when creating `.patch` files, edit a copy directly and generate the patch via `diff -u`; always add an email-style header to `.patch` files.
 - Commits: use descriptive Conventional Commit-style messages; use `git commit -m` multiple times (first for the subject, then a description of what the commit does and why it was needed when relevant).
 - Resource policy: musl, busybox, shared libs, dropbear, CLI/TUI-first; avoid heavy daemons and GUIs.
