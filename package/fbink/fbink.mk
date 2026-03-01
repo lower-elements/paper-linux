@@ -1,4 +1,5 @@
 FBINK_VERSION = v1.25.0
+FBINK_PKGCONFIG_VERSION = $(patsubst v%,%,$(FBINK_VERSION))
 FBINK_SOURCE = $(FBINK_VERSION).tar.gz
 FBINK_SITE = https://github.com/NiLuJe/FBInk/archive/refs/tags
 FBINK_LICENSE = GPL-3.0-or-later
@@ -75,6 +76,10 @@ define FBINK_INSTALL_STAGING_CMDS
 	$(INSTALL) -D -m 644 $(@D)/fbink.h $(STAGING_DIR)/usr/include/fbink/fbink.h
 	mkdir -p $(STAGING_DIR)/usr/lib
 	cp -a $(@D)/Release/libfbink.so* $(STAGING_DIR)/usr/lib/
+	$(INSTALL) -D -m 644 $(FBINK_PKGDIR)/fbink.pc.in \
+		$(STAGING_DIR)/usr/lib/pkgconfig/fbink.pc
+	$(SED) 's,@VERSION@,$(FBINK_PKGCONFIG_VERSION),g' \
+		$(STAGING_DIR)/usr/lib/pkgconfig/fbink.pc
 endef
 
 define FBINK_INSTALL_TARGET_CMDS
