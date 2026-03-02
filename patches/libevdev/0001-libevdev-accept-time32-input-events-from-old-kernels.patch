@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Paper Linux <paper@localhost>
+Date: Mon, 2 Mar 2026 18:42:00 +0000
+Subject: [PATCH] libevdev: accept time32 input events from old kernels
+
+Old 2.6.x kernels on 32-bit archs still emit 16-byte input_event
+records. Detect that record size on the first read and translate those
+events into the native userspace struct input_event layout.
+
+Modern kernels keep using the existing fast path because the first read
+still returns a native-sized struct input_event.
+
+---
+--- a/libevdev/libevdev-int.h
++++ b/libevdev/libevdev-int.h
+@@ -38,6 +38,12 @@
+ 	SYNC_IN_PROGRESS,
+ };
+ 
++enum EventReadType {
++	EVENT_READ_UNKNOWN,
++	EVENT_READ_NATIVE,
++	EVENT_READ_COMPAT_TIME32,
++};
++
+ /**
+  * Internal only: log data used to send messages to the respective log
+  * handler. We re-use the same struct for a global and inside
+@@ -81,6 +87,7 @@
+ 	int rep_values[REP_CNT];
+ 
+ 	enum SyncState sync_state;
++	enum EventReadType event_read_type;
+ 	enum libevdev_grab_mode grabbed;
+ 
+ 	struct input_event *queue;
+--- a/libevdev/libevdev.c
++++ b/libevdev/libevdev.c
+@@ -38,6 +38,14 @@
+ 			  stopped + started in that slot */
+ };
+ 
++struct input_event_compat {
++	int32_t tv_sec;
++	int32_t tv_usec;
++	uint16_t type;
++	uint16_t code;
++	int32_t value;
++};
++
+ struct slot_change_state {
+ 	enum touch_state state;
+ 	unsigned long axes[NLONGS(ABS_CNT)]; /* bitmask for updated axes */
+@@ -211,6 +219,7 @@
+ 	dev->current_slot = -1;
+ 	dev->grabbed = LIBEVDEV_UNGRAB;
+ 	dev->sync_state = SYNC_NONE;
++	dev->event_read_type = EVENT_READ_UNKNOWN;
+ 	dev->log.priority = pri;
+ 	dev->log.device_handler = handler;
+ 	libevdev_enable_event_type(dev, EV_SYN);
+@@ -854,6 +863,55 @@
+ }
+ 
+ static int
++queue_push_compat_events(struct libevdev *dev,
++			 const struct input_event_compat *events,
++			 size_t count)
++{
++	struct input_event *next;
++	size_t i;
++
++	next = queue_next_element(dev);
++	for (i = 0; i < count; i++) {
++		next[i].input_event_sec = events[i].tv_sec;
++		next[i].input_event_usec = events[i].tv_usec;
++		next[i].type = events[i].type;
++		next[i].code = events[i].code;
++		next[i].value = events[i].value;
++	}
++
++	queue_set_num_elements(dev, queue_num_elements(dev) + count);
++	return 0;
++}
++
++static int
++probe_event_read_type(struct libevdev *dev)
++{
++	unsigned char buf[sizeof(struct input_event)];
++	struct input_event *next;
++	int len;
++
++	next = queue_next_element(dev);
++	len = read(dev->fd, buf, sizeof(buf));
++	if (len < 0)
++		return -errno;
++
++	if (len == (int)sizeof(struct input_event)) {
++		memcpy(next, buf, sizeof(struct input_event));
++		queue_set_num_elements(dev, queue_num_elements(dev) + 1);
++		dev->event_read_type = EVENT_READ_NATIVE;
++		return 0;
++	}
++
++	if (len == (int)sizeof(struct input_event_compat)) {
++		dev->event_read_type = EVENT_READ_COMPAT_TIME32;
++		return queue_push_compat_events(dev,
++						(const struct input_event_compat *)buf,
++						1);
++	}
++	return len == 0 ? 0 : -EINVAL;
++}
++
++static int
+ read_more_events(struct libevdev *dev)
+ {
+ 	int free_elem;
+@@ -864,17 +922,36 @@
+ 	if (free_elem <= 0)
+ 		return 0;
+ 
+-	next = queue_next_element(dev);
+-	len = read(dev->fd, next, free_elem * sizeof(struct input_event));
+-	if (len < 0)
+-		return -errno;
++	if (dev->event_read_type == EVENT_READ_UNKNOWN)
++		return probe_event_read_type(dev);
+ 
+-	if (len > 0 && len % sizeof(struct input_event) != 0)
+-		return -EINVAL;
++	next = queue_next_element(dev);
++	if (dev->event_read_type == EVENT_READ_NATIVE) {
++		len = read(dev->fd, next, free_elem * sizeof(struct input_event));
++		if (len < 0)
++			return -errno;
++
++		if (len > 0 && len % sizeof(struct input_event) != 0)
++			return -EINVAL;
++
++		if (len > 0) {
++			int nev = len/sizeof(struct input_event);
++			queue_set_num_elements(dev, queue_num_elements(dev) + nev);
++		}
++	} else {
++		struct input_event_compat compat[MAXEVENTS];
++		int max_events = min(free_elem, MAXEVENTS);
+ 
+-	if (len > 0) {
+-		int nev = len/sizeof(struct input_event);
+-		queue_set_num_elements(dev, queue_num_elements(dev) + nev);
++		len = read(dev->fd, compat, max_events * sizeof(*compat));
++		if (len < 0)
++			return -errno;
++
++		if (len > 0 && len % sizeof(*compat) != 0)
++			return -EINVAL;
++
++		if (len > 0)
++			return queue_push_compat_events(dev, compat,
++							len / sizeof(*compat));
+ 	}
+ 
+ 	return 0;
