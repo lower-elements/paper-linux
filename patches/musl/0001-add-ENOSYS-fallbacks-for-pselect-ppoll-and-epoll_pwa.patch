@@ -1,0 +1,187 @@
+From 2f96247a7e9d7abf4ec1f03e3e39095f52e6490f Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.com>
+Date: Tue, 3 Mar 2026 00:00:00 +0000
+Subject: [PATCH] add ENOSYS fallbacks for pselect, ppoll, and epoll_pwait
+
+Some older ARM vendor kernels reserve syscall numbers for pselect6,
+ppoll, and epoll_pwait but leave them wired to sys_ni_syscall. Modern
+musl then reaches those syscall slots and gets ENOSYS even though plain
+select, poll, and epoll_wait are available.
+
+Add a conservative compatibility path that only triggers on ENOSYS:
+
+- pselect falls back to select
+- ppoll falls back to poll
+- epoll_pwait falls back to epoll_wait
+
+When a temporary signal mask is supplied, emulate the kernel's mask swap
+as closely as possible in userspace with pthread_sigmask around the wait.
+This is not fully atomic like the real syscalls, but it matches the
+traditional libc fallback strategy and remains benign on kernels that
+implement the real interfaces.
+---
+ src/linux/epoll.c    | 33 +++++++++++++++++++++++++++++++++
+ src/select/pselect.c | 37 +++++++++++++++++++++++++++++++++++--
+ src/select/ppoll.c   | 40 ++++++++++++++++++++++++++++++++++++++--
+ 3 files changed, 107 insertions(+), 3 deletions(-)
+
+--- a/src/linux/epoll.c
++++ b/src/linux/epoll.c
+@@ -1,4 +1,5 @@
+ #include <sys/epoll.h>
++#include <pthread.h>
+ #include <signal.h>
+ #include <errno.h>
+ #include "syscall.h"
+@@ -23,12 +24,32 @@ int epoll_ctl(int fd, int op, int fd2, struct epoll_event *ev)
+ 	return syscall(SYS_epoll_ctl, fd, op, fd2, ev);
+ }
+ 
++static int epoll_pwait_fallback(int fd, struct epoll_event *ev, int cnt, int to, const sigset_t *sigs)
++{
++	sigset_t old;
++	int masked = 0;
++	int r;
++
++	if (sigs) {
++		if (pthread_sigmask(SIG_SETMASK, sigs, &old))
++			return -1;
++		masked = 1;
++	}
++
++	r = epoll_wait(fd, ev, cnt, to);
++
++	if (masked) pthread_sigmask(SIG_SETMASK, &old, 0);
++	return r;
++}
++
+ int epoll_pwait(int fd, struct epoll_event *ev, int cnt, int to, const sigset_t *sigs)
+ {
+ 	int r = __syscall_cp(SYS_epoll_pwait, fd, ev, cnt, to, sigs, _NSIG/8);
+ #ifdef SYS_epoll_wait
+ 	if (r==-ENOSYS && !sigs) r = __syscall_cp(SYS_epoll_wait, fd, ev, cnt, to);
+ #endif
++	if (r == -ENOSYS)
++		return epoll_pwait_fallback(fd, ev, cnt, to, sigs);
+ 	return __syscall_ret(r);
+ }
+ 
+--- a/src/select/pselect.c
++++ b/src/select/pselect.c
+@@ -1,9 +1,41 @@
+ #include <sys/select.h>
++#include <pthread.h>
+ #include <signal.h>
+ #include <stdint.h>
+ #include <errno.h>
+ #include "syscall.h"
+ 
++static int pselect_fallback(int n, fd_set *restrict rfds, fd_set *restrict wfds,
++	fd_set *restrict efds, const struct timespec *restrict ts,
++	const sigset_t *restrict mask)
++{
++	struct timeval tv, *tvp = 0;
++	sigset_t old;
++	int masked = 0;
++	int r;
++
++	if (ts) {
++		if (ts->tv_sec < 0 || ts->tv_nsec < 0 || ts->tv_nsec > 999999999L) {
++			errno = EINVAL;
++			return -1;
++		}
++		tv.tv_sec = ts->tv_sec;
++		tv.tv_usec = ts->tv_nsec / 1000;
++		tvp = &tv;
++	}
++
++	if (mask) {
++		if (pthread_sigmask(SIG_SETMASK, mask, &old))
++			return -1;
++		masked = 1;
++	}
++
++	r = select(n, rfds, wfds, efds, tvp);
++
++	if (masked) pthread_sigmask(SIG_SETMASK, &old, 0);
++	return r;
++}
++
+ #define IS32BIT(x) !((x)+0x80000000ULL>>32)
+ #define CLAMP(x) (int)(IS32BIT(x) ? (x) : 0x7fffffffU+((0ULL+(x))>>63))
+ 
+@@ -20,7 +52,12 @@ int pselect(int n, fd_set *restrict rfds, fd_set *restrict wfds, fd_set *restri
+ 	if (SYS_pselect6 == SYS_pselect6_time64 || r!=-ENOSYS)
+ 		return __syscall_ret(r);
+ 	s = CLAMP(s);
++	if (SYS_pselect6 == SYS_pselect6_time64)
++		return pselect_fallback(n, rfds, wfds, efds, ts, mask);
+ #endif
+-	return syscall_cp(SYS_pselect6, n, rfds, wfds, efds,
++	r = __syscall_cp(SYS_pselect6, n, rfds, wfds, efds,
+ 		ts ? ((long[]){s, ns}) : 0, data);
++	if (r == -ENOSYS)
++		return pselect_fallback(n, rfds, wfds, efds, ts, mask);
++	return __syscall_ret(r);
+ }
+--- a/src/select/ppoll.c
++++ b/src/select/ppoll.c
+@@ -1,9 +1,42 @@
+ #define _BSD_SOURCE
+ #include <poll.h>
++#include <pthread.h>
+ #include <signal.h>
+ #include <errno.h>
++#include <limits.h>
+ #include "syscall.h"
+ 
++static int ppoll_fallback(struct pollfd *fds, nfds_t n, const struct timespec *to,
++	const sigset_t *mask)
++{
++	sigset_t old;
++	int masked = 0;
++	int timeout = -1;
++	int r;
++
++	if (to) {
++		if (to->tv_sec < 0 || to->tv_nsec < 0 || to->tv_nsec > 999999999L) {
++			errno = EINVAL;
++			return -1;
++		}
++		if (to->tv_sec > INT_MAX/1000)
++			timeout = INT_MAX;
++		else
++			timeout = to->tv_sec * 1000 + to->tv_nsec / 1000000;
++	}
++
++	if (mask) {
++		if (pthread_sigmask(SIG_SETMASK, mask, &old))
++			return -1;
++		masked = 1;
++	}
++
++	r = poll(fds, n, timeout);
++
++	if (masked) pthread_sigmask(SIG_SETMASK, &old, 0);
++	return r;
++}
++
+ #define IS32BIT(x) !((x)+0x80000000ULL>>32)
+ #define CLAMP(x) (int)(IS32BIT(x) ? (x) : 0x7fffffffU+((0ULL+(x))>>63))
+ 
+@@ -20,7 +53,12 @@ int ppoll(struct pollfd *fds, nfds_t n, const struct timespec *to, const sigset
+ 	if (SYS_ppoll == SYS_ppoll_time64 || r != -ENOSYS)
+ 		return __syscall_ret(r);
+ 	s = CLAMP(s);
++	if (SYS_ppoll == SYS_ppoll_time64)
++		return ppoll_fallback(fds, n, to, mask);
+ #endif
+-	return syscall_cp(SYS_ppoll, fds, n,
++	r = __syscall_cp(SYS_ppoll, fds, n,
+ 		to ? ((long[]){s, ns}) : 0, mask, _NSIG/8);
++	if (r == -ENOSYS)
++		return ppoll_fallback(fds, n, to, mask);
++	return __syscall_ret(r);
+ }
+-- 
+2.49.0
