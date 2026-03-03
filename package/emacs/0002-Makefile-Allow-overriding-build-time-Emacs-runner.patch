@@ -1,0 +1,38 @@
+From 95e9f3c05a49be3fcc27931cd74d40cffb713c22 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 2 Mar 2026 23:30:00 +0000
+Subject: [PATCH] Makefile: allow overriding the build-time Emacs runner
+
+Let downstream cross-builds provide a native Emacs binary for the
+top-level recursive Lisp build steps. This keeps the install-time
+binary naming untouched while avoiding attempts to execute the
+target Emacs on the build host.
+---
+ Makefile.in | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff -u a/Makefile.in b/Makefile.in
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -334,6 +334,7 @@
+ EMACS_NAME = `echo emacs | sed '$(TRANSFORM)'`
+ EMACS = ${EMACS_NAME}${EXEEXT}
+ EMACSFULL = `echo emacs-${version} | sed '$(TRANSFORM)'`${EXEEXT}
++BUILD_EMACS = ../src/emacs${EXEEXT}
+ EMACS_PDMP = `./src/emacs${EXEEXT} --fingerprint`.pdmp
+ 
+ # Subdirectories to make recursively.
+@@ -533,8 +534,10 @@
+ lisp: src
+ 
+ # These targets should be "${SUBDIR} without 'src'".
+-lib lib-src lisp nt: Makefile
++lib lib-src nt: Makefile
+ 	$(MAKE) -C $@ all
++lisp: Makefile
++	$(MAKE) -C $@ all EMACS="$(BUILD_EMACS)"
+ 
+ java: lisp info
+ 	$(MAKE) -C $@ all
+-- 
+2.48.1

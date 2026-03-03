@@ -1,0 +1,48 @@
+config BR2_PACKAGE_EMACS
+	bool "emacs"
+	depends on BR2_USE_MMU
+	depends on BR2_USE_WCHAR
+	select BR2_PACKAGE_NCURSES
+	select BR2_PACKAGE_NCURSES_WCHAR
+	help
+	  GNU Emacs text editor (terminal-only build).
+
+	  This package is configured for a small TUI-only install with
+	  optional feature toggles for extra runtime capabilities.
+
+	  https://www.gnu.org/software/emacs/
+
+if BR2_PACKAGE_EMACS
+
+config BR2_PACKAGE_EMACS_ZLIB
+	bool "zlib support"
+	default n
+	select BR2_PACKAGE_ZLIB
+	help
+	  Enable compressed file support.
+
+config BR2_PACKAGE_EMACS_GNUTLS
+	bool "GnuTLS support"
+	default n
+	select BR2_PACKAGE_GNUTLS
+	help
+	  Enable TLS support for HTTPS and package downloads.
+
+config BR2_PACKAGE_EMACS_XML2
+	bool "libxml2 support"
+	default n
+	select BR2_PACKAGE_LIBXML2
+	help
+	  Enable XML parsing support via libxml2.
+
+config BR2_PACKAGE_EMACS_SQLITE3
+	bool "sqlite3 support"
+	default n
+	select BR2_PACKAGE_SQLITE
+	help
+	  Enable sqlite3-backed features.
+
+endif
+
+comment "emacs needs a toolchain with MMU and wchar"
+	depends on !BR2_USE_MMU || !BR2_USE_WCHAR

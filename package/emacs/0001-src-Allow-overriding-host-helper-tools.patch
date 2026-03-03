@@ -1,0 +1,69 @@
+From 0f58a4e31f6fca42511827891f4ce71961d0fb9d Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Mon, 2 Mar 2026 21:18:00 +0000
+Subject: [PATCH] src: allow overriding host build helper tools
+
+Let downstream cross-builds supply native build helpers from outside
+the target build tree. This covers `make-docfile`,
+`make-fingerprint`, and the bootstrap Emacs path used by
+recursive build steps.
+---
+ src/Makefile.in | 16 +++++++++-------
+ 1 file changed, 9 insertions(+), 7 deletions(-)
+
+diff -u a/src/Makefile.in b/src/Makefile.in
+--- a/src/Makefile.in
++++ b/src/Makefile.in
+@@ -69,6 +69,8 @@
+ lib = ../lib
+ hostlib = $(top_builddir)/lib
+ libsrc = ../lib-src
++MAKE_DOCFILE = $(libsrc)/make-docfile$(EXEEXT)
++MAKE_FINGERPRINT = $(libsrc)/make-fingerprint$(EXEEXT)
+ etc = ../etc
+ oldXMenudir = ../oldXMenu
+ lwlibdir = ../lwlib
+@@ -617,7 +619,7 @@
+ ifneq ($(XCONFIGURE),android)
+ $(lispsource)/international/charprop.el: \
+   FORCE | bootstrap-emacs$(EXEEXT) $(bootstrap_pdmp)
+-	$(MAKE) -C ../admin/unidata all EMACS="../$(bootstrap_exe)"
++	$(MAKE) -C ../admin/unidata all EMACS="$(bootstrap_exe)"
+ endif
+ 
+ ## We require charprop.el to exist before ucs-normalize.el is
+@@ -692,10 +694,10 @@
+ ## for the first time, this prevents any variation between configurations
+ ## in the contents of the DOC file.
+ ##
+-$(etc)/DOC: $(libsrc)/make-docfile$(EXEEXT) $(doc_obj)
++$(etc)/DOC: $(MAKE_DOCFILE) $(doc_obj)
+ 	$(AM_V_GEN)$(MKDIR_P) $(etc)
+ 	$(AM_V_at)rm -f $(etc)/DOC
+-	$(AM_V_at)$(libsrc)/make-docfile -d $(srcdir) \
++	$(AM_V_at)$(MAKE_DOCFILE) -d $(srcdir) \
+ 	  $(SOME_MACHINE_OBJECTS) $(doc_obj) > $(etc)/DOC
+ 
+ $(libsrc)/make-docfile$(EXEEXT) $(libsrc)/make-fingerprint$(EXEEXT): \
+@@ -711,8 +713,8 @@
+ 
+ GLOBAL_SOURCES = $(base_obj:.o=.c) $(NS_OBJC_OBJ:.o=.m)
+ 
+-gl-stamp: $(libsrc)/make-docfile$(EXEEXT) $(GLOBAL_SOURCES)
+-	$(AM_V_GLOBALS)$(libsrc)/make-docfile -d $(srcdir) -g $(doc_obj) > globals.tmp
++gl-stamp: $(MAKE_DOCFILE) $(GLOBAL_SOURCES)
++	$(AM_V_GLOBALS)$(MAKE_DOCFILE) -d $(srcdir) -g $(doc_obj) > globals.tmp
+ 	$(AM_V_at)$(top_srcdir)/build-aux/move-if-change globals.tmp globals.h
+ 	$(AM_V_at)echo timestamp > $@
+ 
+@@ -726,7 +728,7 @@
+ 	$(MAKE) -C $(dir $@) all
+ 
+ ifeq ($(HAVE_PDUMPER),yes)
+-MAKE_PDUMPER_FINGERPRINT = $(libsrc)/make-fingerprint$(EXEEXT)
++MAKE_PDUMPER_FINGERPRINT = $(MAKE_FINGERPRINT)
+ else
+ MAKE_PDUMPER_FINGERPRINT =
+ endif
+-- 
+2.48.1
