@@ -1,0 +1,66 @@
+From 9c227012183902693230b66172692b131877f10e Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 9 Aug 2026 00:00:00 +0100
+Subject: [PATCH] emulate eventfd2 descriptor flags on old kernels
+
+Linux 2.6.22 provides the original eventfd syscall, but the eventfd2
+syscall needed for descriptor flags was only added in Linux 2.6.27.
+Musl currently falls back to eventfd only when no flags were requested,
+so programs requesting EFD_CLOEXEC or EFD_NONBLOCK fail with ENOSYS on
+older vendor kernels.
+
+When eventfd2 returns ENOSYS, create the eventfd with the legacy syscall
+and apply the representable descriptor flags with fcntl. Restrict the
+fallback to EFD_CLOEXEC and EFD_NONBLOCK: EFD_SEMAPHORE changes eventfd
+read semantics and cannot be emulated this way. Close the descriptor if
+applying either flag fails.
+
+As with the existing pipe2 fallback, setting the flags separately is not
+atomic with descriptor creation. The compatibility path only runs when
+eventfd2 is unavailable; kernels implementing eventfd2 retain its atomic
+behavior.
+---
+ src/linux/eventfd.c | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+--- a/src/linux/eventfd.c
++++ b/src/linux/eventfd.c
+@@ -3,11 +3,35 @@
+ #include <errno.h>
+ #include "syscall.h"
+ 
++#ifdef SYS_eventfd
++static int eventfd_fallback(unsigned int count, int flags)
++{
++	int fd = __syscall(SYS_eventfd, count);
++	int r;
++
++	if (fd < 0) return fd;
++	if (flags & EFD_CLOEXEC) {
++		r = __syscall(SYS_fcntl, fd, F_SETFD, FD_CLOEXEC);
++		if (r < 0) goto fail;
++	}
++	if (flags & EFD_NONBLOCK) {
++		r = __syscall(SYS_fcntl, fd, F_SETFL, O_NONBLOCK);
++		if (r < 0) goto fail;
++	}
++	return fd;
++
++fail:
++	__syscall(SYS_close, fd);
++	return r;
++}
++#endif
++
+ int eventfd(unsigned int count, int flags)
+ {
+ 	int r = __syscall(SYS_eventfd2, count, flags);
+ #ifdef SYS_eventfd
+-	if (r==-ENOSYS && !flags) r = __syscall(SYS_eventfd, count);
++	if (r == -ENOSYS && !(flags & ~(EFD_CLOEXEC|EFD_NONBLOCK)))
++		r = eventfd_fallback(count, flags);
+ #endif
+ 	return __syscall_ret(r);
+ }
+-- 
+2.50.1
