@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 9 Aug 2026 17:20:23 +0100
+Subject: [PATCH] kindle: use extended Kindle 3 refresh modes
+
+The legacy einkfb backend ignores requested waveform modes and selects
+only partial or full updates. On Kindle 3, map DU to the controller's
+fast black-and-white update and flashing GC16 to its slow high-fidelity
+update.
+
+Amazon's einkfb shim promotes full-width fast and slow area updates to
+full-screen updates while its framework is running. Cache the framework
+state during initialization and retain the existing partial/full modes
+in that case. Treat read failures as framework-active for safety.
+
+Limit both the probe and the extended modes to Kindle 3 device IDs so
+other FBInk targets, including other legacy Kindles, remain unchanged.
+
+--- a/fbink.c
++++ b/fbink.c
+@@ -1736,16 +1736,59 @@
+ 
+ // Handle the various eInk update API quirks for the full range of HW we support...
+ #	if defined(FBINK_FOR_KINDLE)
++static bool kindleK3FrameworkRunning = true;
++
++static bool
++    is_kindle_k3(void)
++{
++	return deviceQuirks.deviceId == 0x06u || deviceQuirks.deviceId == 0x08u || deviceQuirks.deviceId == 0x0Au;
++}
++
++static __attribute__((cold)) void
++    detect_kindle_k3_framework(void)
++{
++	if (!is_kindle_k3()) {
++		return;
++	}
++
++	FILE* fp = fopen("/proc/bd/framework_running", "r" STDIO_CLOEXEC);
++	if (!fp) {
++		PFWARN("Cannot read Amazon framework state; using safe legacy refresh modes: %m");
++		return;
++	}
++
++	char state[8];
++	if (fread(state, sizeof(*state), sizeof(state), fp) < sizeof(state) || ferror(fp) != 0) {
++		WARN("Cannot read Amazon framework state; using safe legacy refresh modes");
++	} else {
++		kindleK3FrameworkRunning = memcmp(state, "00000000", sizeof(state)) != 0;
++	}
++	fclose(fp);
++
++	ELOG("Amazon framework is %s; K3 extended refresh modes %s",
++	     kindleK3FrameworkRunning ? "running" : "stopped",
++	     kindleK3FrameworkRunning ? "disabled" : "enabled");
++}
++
+ // Legacy Kindle devices ([K2<->K4])
+ static int
+-    refresh_legacy(int fbfd, const struct mxcfb_rect region, bool is_flashing)
++    refresh_legacy(int fbfd, const struct mxcfb_rect region, const FBInkConfig* fbink_cfg)
+ {
++	fx_type update_fx = fbink_cfg->is_flashing ? fx_update_full : fx_update_partial;
++	if (is_kindle_k3()) {
++		if (fbink_cfg->wfm_mode == WFM_DU) {
++			update_fx = kindleK3FrameworkRunning ? fx_update_partial : fx_update_fast;
++		} else if (fbink_cfg->is_flashing && fbink_cfg->wfm_mode == WFM_GC16) {
++			update_fx = kindleK3FrameworkRunning ? fx_update_full : fx_update_slow;
++		}
++	}
++
+ 	struct update_area_t area = {
+ 		.x1       = (int) region.left,
+ 		.y1       = (int) region.top,
+ 		.x2       = (int) (region.left + region.width),
+ 		.y2       = (int) (region.top + region.height),
+-		.which_fx = is_flashing ? fx_update_full : fx_update_partial,
++		.which_fx = update_fx,
+ 		.buffer   = NULL,
+ 	};
+ 	LOG("Area is: x1: %d, y1: %d, x2: %d, y2: %d with fx: %d", area.x1, area.y1, area.x2, area.y2, area.which_fx);
+@@ -3180,7 +3223,7 @@
+ 
+ #	ifdef FBINK_FOR_KINDLE
+ 	if (deviceQuirks.isKindleLegacy) {
+-		return refresh_legacy(fbfd, region, fbink_cfg->is_flashing);
++		return refresh_legacy(fbfd, region, fbink_cfg);
+ 	}
+ #	endif
+ 	// NOTE: While the fixed-cell codepath, when rendering in B&W, would be the perfect candidate for using A2 waveform mode,
+@@ -3975,6 +4018,7 @@
+ 		// Identify the device's specific model...
+ 		identify_device();
+ #	if defined(FBINK_FOR_KINDLE)
++		detect_kindle_k3_framework();
+ 		if (deviceQuirks.isKindleLegacy) {
+ 			ELOG("Enabled Legacy einkfb Kindle quirks");
+ 		} else if (deviceQuirks.isKindlePearlScreen) {
+--- a/fbink_internal.h
++++ b/fbink_internal.h
+@@ -699,7 +699,7 @@
+ #ifndef FBINK_FOR_LINUX
+ static __attribute__((cold)) long int jiffies_to_ms(long int);
+ #	if defined(FBINK_FOR_KINDLE)
+-static int refresh_legacy(int, const struct mxcfb_rect, bool);
++static int refresh_legacy(int, const struct mxcfb_rect, const FBInkConfig*);
+ static int wait_for_submission_kindle(int, uint32_t);
+ static int refresh_kindle(int, const struct mxcfb_rect, const FBInkConfig*);
+ static int wait_for_complete_kindle_pearl(int, uint32_t);
