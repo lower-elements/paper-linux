@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Paper Linux contributors <paper-linux@localhost>
+Date: Tue, 12 Aug 2026 00:00:00 +0100
+Subject: [PATCH] mdev: restore device scan for pre-2.6.27 kernels
+
+BusyBox commit 20a3262cd756 (mdev: create devices from /sys/dev)
+removed the /sys/class and legacy /sys/block coldplug scan.  Linux
+2.6.26 and older do not provide /sys/dev, so mdev -s creates no device
+nodes on vendor kernels of that age.
+
+BusyBox's published advice for these kernels is to revert that commit.
+Retain the current /sys/dev scan on newer kernels and restore the same
+legacy scan as a runtime fallback when /sys/dev is absent.  This keeps
+the intervening mdev fixes while following the upstream compatibility
+recommendation.
+
+Upstream advice:
+https://busybox.net/oldnews.html#2017-03-31-10:42
+
+Signed-off-by: Paper Linux contributors <paper-linux@localhost>
+---
+ util-linux/mdev.c | 27 ++++++++++++++++++++++-----
+ 1 file changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/util-linux/mdev.c b/util-linux/mdev.c
+--- a/util-linux/mdev.c
++++ b/util-linux/mdev.c
+@@ -1143,10 +1143,25 @@ static void initial_scan(char *temp)
+ 
+ 	putenv((char*)"ACTION=add");
+ 
+-	/* Create all devices from /sys/dev hierarchy */
+-	recursive_action("/sys/dev",
+-			 ACTION_RECURSE | ACTION_FOLLOWLINKS,
+-			 fileAction, dirAction, temp);
++	if (access("/sys/dev", F_OK) == 0) {
++		/* Linux 2.6.27 and newer provide a complete major:minor index. */
++		recursive_action("/sys/dev",
++				 ACTION_RECURSE | ACTION_FOLLOWLINKS,
++				 fileAction, dirAction, temp);
++	} else {
++		/* Linux 2.6.26 and older have no /sys/dev hierarchy.  Restore
++		 * the scan used before BusyBox commit 20a3262: class devices,
++		 * plus the legacy block hierarchy when class/block is absent.
++		 */
++		if (access("/sys/class/block", F_OK) != 0) {
++			recursive_action("/sys/block",
++					 ACTION_RECURSE | ACTION_FOLLOWLINKS | ACTION_QUIET,
++					 fileAction, dirAction, temp);
++		}
++		recursive_action("/sys/class",
++				 ACTION_RECURSE | ACTION_FOLLOWLINKS,
++				 fileAction, dirAction, temp);
++	}
+ }
+ 
+ #if ENABLE_FEATURE_MDEV_DAEMON
+-- 
+2.51.0
