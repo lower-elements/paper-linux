@@ -1,0 +1,10 @@
+config BR2_PACKAGE_ATHEROS_AR6K_TOOLS
+	bool "atheros-ar6k-tools"
+	help
+	  Atheros AR6000-series vendor utilities for bootstrapping and
+	  controlling AR6K Wi-Fi devices. This installs bmiloader, eeprom,
+	  wmiconfig, and recEvent from the GPLv2 Atheros AR6K SDK.
+
+	  Firmware and board calibration data are not included.
+
+	  https://chromium.googlesource.com/chromiumos/third_party/atheros/

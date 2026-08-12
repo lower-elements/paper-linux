@@ -1,0 +1,36 @@
+From 09873962f07db26ca30cb44f1f60b4f60778f134 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Wed, 12 Aug 2026 00:00:00 +0100
+Subject: [PATCH] bmiloader: flush LZ stream before freeing buffer
+
+The compressed-write completion command reuses both buffer and
+ifr.ifr_data after buffer has been freed. Move the free until after that
+command. This preserves the vendor protocol sequence while avoiding a
+use-after-free that is diagnosed by modern compilers.
+
+---
+ tools/bmiloader/bmiloader.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/bmiloader/bmiloader.c b/tools/bmiloader/bmiloader.c
+index 5b8a72a..9ab2ccb 100644
+--- a/tools/bmiloader/bmiloader.c
++++ b/tools/bmiloader/bmiloader.c
+@@ -504,7 +504,6 @@ main (int argc, char **argv)
+             }
+         }
+ 
+-        free(buffer);
+         if (fd > 0)
+         {
+             close(fd);
+@@ -522,6 +521,7 @@ main (int argc, char **argv)
+                 }
+             }
+         }
++        free(buffer);
+ 
+         break;
+ 
+-- 
+2.50.1

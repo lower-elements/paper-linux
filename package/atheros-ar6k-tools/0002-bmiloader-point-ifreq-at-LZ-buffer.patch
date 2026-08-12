@@ -1,0 +1,33 @@
+From 62233752d4180c4826c2a4a018c3a5bc65b18cc4 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Wed, 12 Aug 2026 00:00:00 +0100
+Subject: [PATCH] bmiloader: point ifreq at compressed transfer buffer
+
+The target-info query leaves ifr_data pointing at its small, freed
+response buffer. Before starting an LZ transfer, bmiloader allocates a
+larger buffer but fails to update ifr_data until the first LZ_DATA
+command. As a result, LZ_STREAM_START reads stale target-info data as
+its extended ioctl command when the allocator does not reuse the same
+address.
+
+Set ifr_data as soon as the compressed transfer buffer is prepared.
+
+---
+ tools/bmiloader/bmiloader.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tools/bmiloader/bmiloader.c b/tools/bmiloader/bmiloader.c
+index 9ab2ccb..77e845d 100644
+--- a/tools/bmiloader/bmiloader.c
++++ b/tools/bmiloader/bmiloader.c
+@@ -425,6 +425,7 @@ main (int argc, char **argv)
+                 /* Initiate compressed stream */
+                 ((int *)buffer)[0] = AR6000_XIOCTL_BMI_LZ_STREAM_START;
+                 ((int *)buffer)[1] = address;
++                ifr.ifr_data = buffer;
+                 if (ioctl(s, AR6000_IOCTL_EXTENDED, &ifr) < 0)
+                 {
+                     err(1, ifr.ifr_name);
+-- 
+2.50.1
+

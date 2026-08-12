@@ -1,0 +1,9 @@
+# Locally calculated from the immutable ChromiumOS Gitiles archive.
+sha256  21891880e9b89f52723ab051b1ef83a9758d31577f7db6f9525a836b363559a9  host.tar.gz
+sha256  1be4c6f6e664cfc0fab5967c536a42f2cf342746518377ec0f363279c18ef2b0  include.tar.gz
+
+# License notices embedded in the vendor source files.
+sha256  2a53769c18c2a755a3fdf1b81dd277666e1ed5dd12975ef6dc81399a2952a0d4  tools/bmiloader/Makefile
+sha256  893b00b86d0930f28cb2314b77f3a568dfbf1aaf68a88f50aa68e7beb5ac09c3  tools/eeprom/Makefile
+sha256  27fd15abdb41ff15bb4d0825173eea6db6bec0d939279252168f361f5b2e889d  tools/wmiconfig/Makefile
+sha256  81c59bbec6565f2b62ef00c5e5b2bf381d5b58e2541629d6fb91687fe7a8e854  tools/recEvent/Makefile
