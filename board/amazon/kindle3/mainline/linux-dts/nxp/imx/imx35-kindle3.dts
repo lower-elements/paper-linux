@@ -11,6 +11,7 @@
 #include "imx35.dtsi"
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	model = "Amazon Kindle 3";
@@ -137,6 +138,22 @@
 		>;
 	};
 
+	pinctrl_pmic: pmicgrp {
+		fsl,pins = <
+			MX35_PAD_ATA_IORDY__GPIO2_12		0x0
+		>;
+	};
+
+	pinctrl_spi1: spi1grp {
+		fsl,pins = <
+			MX35_PAD_CSPI1_MOSI__CSPI1_MOSI	0x21c0
+			MX35_PAD_CSPI1_MISO__CSPI1_MISO	0x21c0
+			MX35_PAD_CSPI1_SCLK__CSPI1_SCLK	0x21c0
+			MX35_PAD_CSPI1_SS0__GPIO1_18		0x21e0
+			MX35_PAD_CSPI1_SPI_RDY__CSPI1_RDY	0x21e0
+		>;
+	};
+
 	pinctrl_esdhc1: esdhc1grp {
 		fsl,pins = <
 			MX35_PAD_SD1_CMD__ESDHC1_CMD		0x80000000
@@ -222,6 +239,26 @@
 		MATRIX_KEY(7, 7, KEY_RIGHTMETA)
 	>;
 	status = "okay";
+};
+
+&spi1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_spi1>;
+	cs-gpios = <&gpio1 18 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+
+	pmic: pmic@0 {
+		compatible = "fsl,mc13892";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_pmic>;
+		reg = <0>;
+		spi-max-frequency = <4000000>;
+		spi-cs-high;
+		interrupt-parent = <&gpio2>;
+		interrupts = <12 IRQ_TYPE_LEVEL_HIGH>;
+		fsl,mc13xxx-uses-adc;
+		fsl,mc13xxx-uses-rtc;
+	};
 };
 
 &uart1 {

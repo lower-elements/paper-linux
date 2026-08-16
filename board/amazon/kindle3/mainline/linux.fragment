@@ -11,3 +11,15 @@ CONFIG_BLK_DEV_INITRD=y
 # Bring up an ACM gadget without depending on modules or userspace configfs.
 CONFIG_USB_G_SERIAL=y
 CONFIG_U_SERIAL_CONSOLE=y
+
+# The Kindle 3 MC13892 PMIC is attached to the first i.MX CSPI controller.
+CONFIG_SPI=y
+CONFIG_SPI_IMX=y
+CONFIG_MFD_MC13XXX=y
+CONFIG_MFD_MC13XXX_SPI=y
+CONFIG_SENSORS_MC13783_ADC=y
+CONFIG_RTC_DRV_MC13XXX=y
+
+# Do not let the regulator driver touch undocumented rails until their
+# consumers and safe constraints have been established.
+# CONFIG_REGULATOR_MC13892 is not set
