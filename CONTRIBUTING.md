@@ -1,16 +1,16 @@
 # Contributing to Paper Linux
 
-Thanks for helping turn old e‑ink readers into pocketable Linux PDAs. This guide collects the nuts-and-bolts details contributors tend to need. We build on vendor kernels, not mainline: our first target device—the Kindle 3—ships a 2.6.26 RT kernel, and future devices will bring their own (often equally old) kernels. Assume you’ll be working with aging vendor kernels and keep changes compatible with what each device ships.
+Thanks for helping turn old e‑ink readers into pocketable Linux PDAs. This guide collects the nuts-and-bolts details contributors tend to need. Paper Linux supports both upstream kernels and old vendor kernels where hardware still requires them. Keep compatibility work scoped to the configuration and patch layer that needs it rather than imposing one kernel's constraints on every target.
 
 ## How to contribute
 
-Start with `README.md` and `ROADMAP.md` to get the big picture. If you’re unsure where to jump in, open an issue or discussion and we’ll point you at something useful. We favor upstream-first fixes, small composable changes, and minimal forks—only fork when the hardware forces us. Whatever you touch should stay compatible with the vendor kernel in use (usually old), so avoid newer kernel APIs unless guarded. Real hardware testing matters—share what you tried, what worked, and what broke. Prefer lightweight tooling—BusyBox for core utilities, musl for libc, shared libs where possible.
+Start with `README.md` to get the big picture. If you’re unsure where to jump in, open an issue or discussion and we’ll point you at something useful. We favor upstream-first fixes, small composable changes, and minimal forks—only fork when the hardware forces us. Code used by a vendor-kernel target must respect that kernel's APIs, while mainline-only code need not carry those restrictions. Real hardware testing matters—share what you tried, what worked, and what broke. Prefer lightweight tooling—BusyBox for core utilities, musl for libc, shared libs where possible.
 
 ## Technical details
 
-Our baseline hardware looks like early-2010s e‑ink readers: an ARM11 around 532 MHz, roughly 256 MB of RAM, no GPU, and slow flash. The kernel comes from each device vendor and is usually old; for the first device that’s a 2.6.26 RT build from the Lab126 tree. We patch headers sparingly to keep the syscall ABI intact and avoid replacing kernels for now.
+Our baseline hardware looks like early-2010s e‑ink readers: an ARM11 around 532 MHz, roughly 256 MB of RAM, no GPU, and slow flash. The established Kindle 3 chroot target uses the 2.6.26 RT Lab126 kernel, while a separate target is reserved for mainline enablement. The old-kernel target patches headers sparingly and keeps the syscall ABI intact.
 
-Builds are driven by the Buildroot external tree in this repo. The toolchain is musl-based with C and C++ and prefers shared libraries. BusyBox supplies init/mdev and most core utilities; device nodes are currently static and `/usr` is merged. Networking leans on the legacy WEXT path in wpa_supplicant with `nl80211` disabled to match the old kernel API. Power and resource posture is strict: minimize redraws, keep radios off by default, and pause or evict background work when resources are tight. Today everything runs as a chroot/alt-root alongside the vendor bootloader and kernel; turning this into a flashable image remains on the roadmap.
+Builds are driven by the Buildroot external tree in this repo. Toolchains are musl-based and prefer shared libraries. BusyBox supplies init/mdev and most core utilities. The vendor configuration uses static device nodes and legacy WEXT networking to match its old kernel; mainline configurations can use modern kernel facilities without inheriting those choices. Power and resource posture is strict: minimize redraws, keep radios off by default, and pause or evict background work when resources are tight. The usable system today is a chroot/alt-root alongside the vendor bootloader and kernel, while the mainline configuration is an enablement scaffold.
 
 ## Repository layout
 
@@ -18,10 +18,13 @@ Paper Linux is organized as a Buildroot external tree. That means upstream Build
 
 Key paths to know:
 - `Makefile` — wrapper that drives Buildroot with `BR2_EXTERNAL` pointing here; outputs are under `output/`.
-- `configs/kindle_k3w_defconfig` — reference defconfig for the current hardware baseline.
-- `configs/busybox.config` — BusyBox feature set tuned for small/slow systems.
-- `package/linux-headers/` — header patches that let modern userland build against old vendor kernel headers without breaking ABI (e.g., 2.6.26 on the first device).
-- `package/wpa_supplicant/` — minimal patching for old WEXT-only Wi‑Fi stacks.
+- `configs/kindle3_vendor_2_6_26_defconfig` — established Kindle 3 vendor-kernel userspace.
+- `configs/kindle3_mainline_defconfig` — minimal mainline-development userspace scaffold.
+- `board/paper/common/busybox.config` — BusyBox feature set shared by targets.
+- `patches/common/` — patches selected by every target.
+- `patches/compat/linux-2.6.26/` — old-kernel userspace compatibility patches.
+- `board/amazon/kindle3/` — common, vendor-kernel, and mainline board variants.
+- `package/` — Paper Linux package definitions and their intrinsic patches.
 - `dl/` — download cache (created after the first build).
 - `buildroot/` — Buildroot sources (kept in-tree for reproducibility).
 - `output/` — per-defconfig build output (created after building).
@@ -29,9 +32,12 @@ Key paths to know:
 ## Getting set up
 1) Install standard Buildroot prerequisites for your host distro.  
 2) Fetch submodules: `git submodule update --init --recursive`  
-3) Use the reference config: `make kindle_k3w_defconfig`  
+3) Select a configuration, for example: `make kindle3_vendor_2_6_26_defconfig`
 4) Build: `make`  
-Artifacts land under `output/kindle_k3w/`; downloads cache in `dl/`.
+Artifacts land under the matching `output/<configuration>/` directory; downloads cache in `dl/`.
+
+Every defconfig lists its patch layers explicitly in `BR2_GLOBAL_PATCH_DIR`.
+See `patches/README.md` before adding or moving a patch.
 
 ## Contribution workflow
 - Open a small PR when possible; keep patches focused.

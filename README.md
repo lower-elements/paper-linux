@@ -8,11 +8,11 @@ Paper Linux aims to feel like a purpose-built, ready-to-use OS for e‑ink handh
 
 We want the out‑of‑box experience to feel complete: power on, land in a friendly home, drop into a shell, and start doing things that make sense on a slow, long‑lived, keyboarded device. Read and annotate docs, keep notes, sync a Git repo, run SSH sessions, tail logs, or monitor servers from your pocket. Think about a quiet train ride where an e‑ink status pane shows htop ticking along while newsboat pulls fresh feeds; flip to nnn to reshuffle files, open neovim or micro for a quick edit before a meeting, or jump into a lean Emacs that feels like a personal notebook. All of it runs on paper, in your pocket, and sips battery instead of drinking it.
 
-To make that possible, Paper Linux will ship as a single integrated image: vendor kernel underneath, a lightweight userland on top, and a curated set of tools that behave well on slow CPUs and limited RAM. Everything is tuned for E‑ink first—layouts that tolerate slow refresh, redraws kept to a minimum, radios dark until explicitly asked for, and a system that prefers to nap rather than spin.
+To make that possible, Paper Linux will ship as a single integrated image: a lightweight kernel and userland with a curated set of tools that behave well on slow CPUs and limited RAM. Vendor kernels remain supported where hardware requires them, while mainline kernels are preferred where practical. Everything is tuned for E‑ink first—layouts that tolerate slow refresh, redraws kept to a minimum, radios dark until explicitly asked for, and a system that prefers to nap rather than spin.
 
 ## Current status
 
-Near term, the focus is a dependable chroot-style environment that you can drop onto a device and immediately use: modern userland, BusyBox for the core pieces, and a small set of useful applications chosen for low resource use. You can build that root filesystem today with the Buildroot external tree in this repo and run it alongside the vendor kernel and bootloader. Longer term, the same work will roll into a full OS image that can be flashed onto supported devices.
+The established Kindle 3 target builds a dependable chroot-style environment that runs alongside the vendor kernel and bootloader. A separate mainline target provides a minimal userspace/initramfs scaffold for upstream-kernel development; it does not yet build a bootable Kindle kernel. Longer term, the same work will become a complete RAM-bootable and eventually installable OS image.
 
 ## Build instructions
 
@@ -20,17 +20,21 @@ Install the usual Buildroot prerequisites for your host distro (compiler toolcha
 
     git submodule update --init --recursive
 
-Select the reference config for the current hardware:
+Select the established vendor-kernel configuration:
 
-    make kindle_k3w_defconfig
+    make kindle3_vendor_2_6_26_defconfig
+
+Alternatively, select the minimal mainline-development scaffold:
+
+    make kindle3_mainline_defconfig
 
 Build everything with:
 
     make
 
-Artifacts end up under `output/kindle_k3w/` (rootfs tarball, toolchain, host tools) and sources are cached in `dl/`.
+Artifacts end up under the corresponding directory in `output/`, such as `output/kindle3_vendor_2_6_26/` or `output/kindle3_mainline/`. Sources are cached in `dl/`.
 
-### Using the rootfs today
+### Using the vendor rootfs today
 
 Copy the generated rootfs to your device (you can use USB networking, SD, internal flash, or whatever you have) and chroot into it from the stock system. Wi‑Fi and SSH are already included; the default root password is `paper`, so change it as soon as you boot.
 
