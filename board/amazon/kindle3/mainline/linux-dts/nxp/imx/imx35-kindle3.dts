@@ -258,6 +258,18 @@
 		interrupts = <12 IRQ_TYPE_LEVEL_HIGH>;
 		fsl,mc13xxx-uses-adc;
 		fsl,mc13xxx-uses-rtc;
+
+		buttons {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			onkey@0 {
+				reg = <0>;
+				debounce-delay-ms = <150>;
+				active-low;
+				linux,code = <KEY_POWER>;
+			};
+		};
 	};
 };
 
