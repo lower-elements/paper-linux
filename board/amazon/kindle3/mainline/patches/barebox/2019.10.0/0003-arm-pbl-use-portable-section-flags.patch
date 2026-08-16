@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 16 Aug 2026 15:40:00 +0100
+Subject: [PATCH] ARM: PBL: use portable section flags for XZ payload
+
+Current ARM binutils reject the historical #alloc spelling because the hash
+character is parsed as the start of a comment. Use the quoted ELF section
+flags spelling used by current Barebox. This does not change the resulting
+allocatable piggydata section.
+
+Upstream: Not applicable (the legacy single-PBL sources were removed)
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ arch/arm/pbl/piggy.xzkern.S | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/arch/arm/pbl/piggy.xzkern.S
++++ b/arch/arm/pbl/piggy.xzkern.S
+@@ -1,4 +1,4 @@
+-	.section .piggydata,#alloc
++	.section .piggydata,"a"
+ 	.globl	input_data
+ input_data:
+ 	.incbin	"arch/arm/pbl/piggy.xzkern"
+-- 
+2.51.0

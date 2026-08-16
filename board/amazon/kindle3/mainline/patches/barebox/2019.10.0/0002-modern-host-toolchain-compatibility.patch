@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 16 Aug 2026 15:30:00 +0100
+Subject: [PATCH] build: retain GNU89 and fix DTC with modern host compilers
+
+Barebox 2019.10 predates GCC changing its default C dialect to GNU C23.
+Select the GNU89 dialect that this release previously received implicitly, so
+the kernel-style bool and false definitions remain valid with GCC 15.
+
+Also backport upstream commit 1f69e9477758 ("dtc: remove redundant YYLOC
+global declaration") to avoid a duplicate yylloc definition with modern
+GCC and binutils.
+
+Upstream: https://github.com/barebox/barebox/commit/1f69e9477758309cde0a2791a0a4743c32478d6f
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ Makefile                | 5 +++--
+ scripts/dtc/dtc-lexer.l | 1 -
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+--- a/Makefile
++++ b/Makefile
+@@ -183,7 +183,7 @@
+ 
+ HOSTCC       = gcc
+ HOSTCXX      = g++
+-HOSTCFLAGS   = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer $(HOST_LFS_CFLAGS)
++HOSTCFLAGS   = -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 $(HOST_LFS_CFLAGS)
+ HOSTCXXFLAGS = -O2 $(HOST_LFS_CFLAGS)
+ HOSTLDFLAGS = $(HOST_LFS_LDFLAGS)
+ HOST_LOADLIBES = $(HOST_LFS_LIBS)
+@@ -306,7 +306,8 @@
+ 
+ CFLAGS          := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
+                    -Werror-implicit-function-declaration \
+-                   -fno-strict-aliasing -fno-common -Os -pipe -Wmissing-prototypes
++                   -fno-strict-aliasing -fno-common -Os -pipe -Wmissing-prototypes \
++                   -std=gnu89
+ AFLAGS          := -D__ASSEMBLY__
+ 
+ LDFLAGS_barebox	:= -Map barebox.map
+--- a/scripts/dtc/dtc-lexer.l
++++ b/scripts/dtc/dtc-lexer.l
+@@ -38,7 +38,6 @@
+ #include "srcpos.h"
+ #include "dtc-parser.tab.h"
+ 
+-YYLTYPE yylloc;
+ extern bool treesource_error;
+ 
+ /* CAUTION: this will stop working if we ever use yyless() or yyunput() */
+-- 
+2.51.0

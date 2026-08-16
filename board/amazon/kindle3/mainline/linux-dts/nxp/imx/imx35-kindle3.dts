@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * Initial Device Tree for the Amazon Kindle 3 (Luigi).
+ *
+ * This intentionally describes only hardware whose wiring is established by
+ * the vendor kernel or Barebox.  Power management, display, Wi-Fi and other
+ * active peripherals should be added as their bindings are verified.
+ */
+
+/dts-v1/;
+#include "imx35.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "Amazon Kindle 3";
+	compatible = "amazon,kindle3", "fsl,imx35";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x10000000>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_gpio_keys>;
+
+		key-up {
+			label = "Five-way up";
+			linux,code = <KEY_UP>;
+			gpios = <&gpio2 27 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+
+		key-down {
+			label = "Five-way down";
+			linux,code = <KEY_DOWN>;
+			gpios = <&gpio2 28 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+
+		key-left {
+			label = "Five-way left";
+			linux,code = <KEY_LEFT>;
+			gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+
+		key-right {
+			label = "Five-way right";
+			linux,code = <KEY_RIGHT>;
+			gpios = <&gpio2 30 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+
+		key-select {
+			label = "Five-way select";
+			linux,code = <KEY_F24>;
+			gpios = <&gpio2 31 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+
+		key-volume-up {
+			label = "Volume up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&gpio1 4 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+
+		key-volume-down {
+			label = "Volume down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;
+			debounce-interval = <20>;
+		};
+	};
+};
+
+&esdhc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_esdhc1>;
+	bus-width = <4>;
+	non-removable;
+	no-sd;
+	no-sdio;
+	status = "okay";
+};
+
+&iomuxc {
+	pinctrl_gpio_keys: gpiokeysgrp {
+		fsl,pins = <
+			MX35_PAD_ATA_DATA14__GPIO2_27		0x21e0
+			MX35_PAD_ATA_DATA15__GPIO2_28		0x21e0
+			MX35_PAD_TX5_RX0__GPIO1_10		0x21e0
+			MX35_PAD_ATA_BUFF_EN__GPIO2_30		0x21e0
+			MX35_PAD_ATA_DMARQ__GPIO2_31		0x21e0
+			MX35_PAD_SCKR__GPIO1_4			0x21e0
+			MX35_PAD_FSR__GPIO1_5			0x21e0
+		>;
+	};
+
+	pinctrl_i2c1: i2c1grp {
+		fsl,pins = <
+			MX35_PAD_I2C1_CLK__I2C1_SCL		0x400001c8
+			MX35_PAD_I2C1_DAT__I2C1_SDA		0x400001c8
+		>;
+	};
+
+	pinctrl_i2c2: i2c2grp {
+		fsl,pins = <
+			MX35_PAD_I2C2_CLK__I2C2_SCL		0x400001c8
+			MX35_PAD_I2C2_DAT__I2C2_SDA		0x400001c8
+		>;
+	};
+
+	pinctrl_kpp: kppgrp {
+		fsl,pins = <
+			MX35_PAD_TX2_RX3__KPP_COL_0		0x20e0
+			MX35_PAD_TX1__KPP_COL_1		0x20e0
+			MX35_PAD_TX0__KPP_COL_2		0x20e0
+			MX35_PAD_HCKT__KPP_COL_3		0x20e0
+			MX35_PAD_RTS1__KPP_COL_6		0x20e0
+			MX35_PAD_CTS1__KPP_COL_7		0x20e0
+			MX35_PAD_TX4_RX1__KPP_ROW_0		0x20e0
+			MX35_PAD_TX3_RX2__KPP_ROW_1		0x20e0
+			MX35_PAD_SCKT__KPP_ROW_2		0x20e0
+			MX35_PAD_FST__KPP_ROW_3		0x20e0
+			MX35_PAD_RXD2__KPP_ROW_4		0x20e0
+			MX35_PAD_TXD2__KPP_ROW_5		0x20e0
+			MX35_PAD_RTS2__KPP_ROW_6		0x20e0
+			MX35_PAD_CTS2__KPP_ROW_7		0x20e0
+		>;
+	};
+
+	pinctrl_esdhc1: esdhc1grp {
+		fsl,pins = <
+			MX35_PAD_SD1_CMD__ESDHC1_CMD		0x80000000
+			MX35_PAD_SD1_CLK__ESDHC1_CLK		0x80000000
+			MX35_PAD_SD1_DATA0__ESDHC1_DAT0	0x80000000
+			MX35_PAD_SD1_DATA1__ESDHC1_DAT1	0x80000000
+			MX35_PAD_SD1_DATA2__ESDHC1_DAT2	0x80000000
+			MX35_PAD_SD1_DATA3__ESDHC1_DAT3	0x80000000
+		>;
+	};
+
+	pinctrl_uart1: uart1grp {
+		fsl,pins = <
+			MX35_PAD_TXD1__UART1_TXD_MUX		0x1c5
+			MX35_PAD_RXD1__UART1_RXD_MUX		0x1c5
+		>;
+	};
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c1>;
+	status = "okay";
+};
+
+&i2c2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c2>;
+	status = "okay";
+};
+
+&kpp {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_kpp>;
+	linux,keymap = <
+		MATRIX_KEY(0, 0, KEY_HOME)
+		MATRIX_KEY(0, 2, KEY_R)
+		MATRIX_KEY(0, 3, KEY_S)
+		MATRIX_KEY(0, 6, KEY_BACKSPACE)
+		MATRIX_KEY(0, 7, KEY_DOT)
+
+		MATRIX_KEY(1, 0, KEY_MENU)
+		MATRIX_KEY(1, 2, KEY_T)
+		MATRIX_KEY(1, 3, KEY_D)
+		MATRIX_KEY(1, 6, KEY_Z)
+
+		MATRIX_KEY(2, 0, KEY_BACK)
+		MATRIX_KEY(2, 2, KEY_Y)
+		MATRIX_KEY(2, 3, KEY_F)
+		MATRIX_KEY(2, 6, KEY_X)
+		MATRIX_KEY(2, 7, KEY_ENTER)
+
+		MATRIX_KEY(3, 0, KEY_PAGEUP)
+		MATRIX_KEY(3, 2, KEY_U)
+		MATRIX_KEY(3, 3, KEY_G)
+		MATRIX_KEY(3, 6, KEY_C)
+		MATRIX_KEY(3, 7, KEY_LEFTSHIFT)
+
+		MATRIX_KEY(4, 0, KEY_F21)
+		MATRIX_KEY(4, 2, KEY_I)
+		MATRIX_KEY(4, 3, KEY_H)
+		MATRIX_KEY(4, 6, KEY_V)
+		MATRIX_KEY(4, 7, KEY_LEFTALT)
+
+		MATRIX_KEY(5, 0, KEY_F23)
+		MATRIX_KEY(5, 1, KEY_Q)
+		MATRIX_KEY(5, 2, KEY_O)
+		MATRIX_KEY(5, 3, KEY_J)
+		MATRIX_KEY(5, 6, KEY_B)
+		MATRIX_KEY(5, 7, KEY_SPACE)
+
+		MATRIX_KEY(6, 0, KEY_PAGEDOWN)
+		MATRIX_KEY(6, 1, KEY_W)
+		MATRIX_KEY(6, 2, KEY_P)
+		MATRIX_KEY(6, 3, KEY_K)
+		MATRIX_KEY(6, 6, KEY_N)
+		MATRIX_KEY(6, 7, KEY_F20)
+
+		MATRIX_KEY(7, 1, KEY_E)
+		MATRIX_KEY(7, 2, KEY_A)
+		MATRIX_KEY(7, 3, KEY_L)
+		MATRIX_KEY(7, 6, KEY_M)
+		MATRIX_KEY(7, 7, KEY_RIGHTMETA)
+	>;
+	status = "okay";
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1>;
+	status = "okay";
+};
+
+&usbotg {
+	dr_mode = "peripheral";
+	phy_type = "utmi";
+	external-vbus-divider;
+	status = "okay";
+};

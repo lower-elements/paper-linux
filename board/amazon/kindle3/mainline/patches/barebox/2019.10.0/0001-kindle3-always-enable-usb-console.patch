@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 16 Aug 2026 14:00:00 +0100
+Subject: [PATCH] ARM: kindle3: always enable the USB recovery console
+
+The upstream environment only starts usbserial when the five-way select GPIO
+is asserted during Barebox initialization, and then allows autoboot after 60
+seconds. That makes an early RAM-boot failure indistinguishable from a missed
+button sample.
+
+Always register the USB serial gadget for the Paper Linux development image.
+The board code separately sets the autoboot state through Barebox's C API.
+
+Upstream: Not submitted (development-image policy)
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ arch/arm/boards/kindle3/env/init/usbconsole | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+--- a/arch/arm/boards/kindle3/env/init/usbconsole
++++ b/arch/arm/boards/kindle3/env/init/usbconsole
+@@ -1,8 +1,6 @@
+ #!/bin/sh
+ 
+-# Fiveway device select key activates usbserial access for 60s
++# The RAM-boot development image always exposes its recovery console and waits
++# without requiring the five-way select button.
+ echo
+-if gpio_get_value 63; then
+-	usbserial
+-	global.autoboot_timeout=60
+-fi
++usbserial
+-- 
+2.51.0

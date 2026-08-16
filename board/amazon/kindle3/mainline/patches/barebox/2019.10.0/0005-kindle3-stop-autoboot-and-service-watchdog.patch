@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 16 Aug 2026 20:05:00 +0100
+Subject: [PATCH] ARM: kindle3: stop autoboot and service the watchdog
+
+The recovery image is loaded entirely into RAM to provide an interactive USB
+console. Stop at that console instead of booting an entry from the internal
+eMMC.
+
+Amazon's preceding boot stage leaves the i.MX watchdog running. Enable the
+normal Barebox watchdog poller without changing its inherited timeout so a
+healthy recovery session remains available.
+
+Upstream: Not submitted (recovery-image policy)
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ arch/arm/boards/kindle3/kindle3.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/arch/arm/boards/kindle3/kindle3.c
++++ b/arch/arm/boards/kindle3/kindle3.c
+@@ -198,6 +198,14 @@ static const iomux_v3_cfg_t kindle3_pads[] = {
+ 
+ static int kindle3_part_init(void)
+ {
++	struct device_d *watchdog;
++
++	set_autoboot_state(AUTOBOOT_ABORT);
++
++	watchdog = get_device_by_name("wdog0");
++	if (watchdog)
++		dev_set_param(watchdog, "autoping", "1");
++
+ 	devfs_add_partition("disk0", SZ_1K, 2 * SZ_1K,
+ 			    DEVFS_PARTITION_FIXED, "disk0.imx_header");
+ 	devfs_add_partition("disk0", 4 * SZ_1K, (192 - 1) * SZ_1K,
+-- 
+2.51.0

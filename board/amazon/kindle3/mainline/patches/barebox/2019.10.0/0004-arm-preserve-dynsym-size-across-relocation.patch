@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 16 Aug 2026 20:05:00 +0100
+Subject: [PATCH] ARM: preserve dynsym size across relocation
+
+The relocation loop modifies literals in its own image. With modern
+compilers, calculating the dynamic-symbol-table size after that loop can
+reload an already-relocated linker-symbol literal and apply the runtime
+offset twice.
+
+Capture the size before applying relocations so clearing the table cannot
+depend on a literal modified by the loop itself.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ arch/arm/cpu/common.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+--- a/arch/arm/cpu/common.c
++++ b/arch/arm/cpu/common.c
+@@ -67,6 +67,7 @@ void relocate_to_current_adr(void)
+ {
+ 	unsigned long offset, offset_var;
+ 	unsigned long __maybe_unused *dynsym, *dynend;
++	volatile unsigned long __maybe_unused dynsym_size;
+ 	void *dstart, *dend;
+ 
+ 	/* Get offset between linked address and runtime address */
+@@ -102,6 +103,7 @@ void relocate_to_current_adr(void)
+ #elif defined(CONFIG_CPU_32)
+ 	dynsym = (void *)__dynsym_start + offset_var;
+ 	dynend = (void *)__dynsym_end + offset_var;
++	dynsym_size = (unsigned long)dynend - (unsigned long)dynsym;
+ 
+ 	while (dstart < dend) {
+ 		struct elf32_rel *rel = dstart;
+@@ -130,7 +132,7 @@ void relocate_to_current_adr(void)
+ 		dstart += sizeof(*rel);
+ 	}
+ 
+-	memset(dynsym, 0, (unsigned long)dynend - (unsigned long)dynsym);
++	memset(dynsym, 0, dynsym_size);
+ #else
+ #error "Architecture not specified"
+ #endif
+-- 
+2.51.0
