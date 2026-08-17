@@ -3,8 +3,8 @@
  * Initial Device Tree for the Amazon Kindle 3 (Luigi).
  *
  * This intentionally describes only hardware whose wiring is established by
- * the vendor kernel or Barebox.  Power management, display, Wi-Fi and other
- * active peripherals should be added as their bindings are verified.
+ * the vendor kernel or Barebox.  Additional power management, display, Wi-Fi
+ * and other active peripherals should be added as their bindings are verified.
  */
 
 /dts-v1/;
@@ -85,6 +85,7 @@
 &esdhc1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_esdhc1>;
+	vmmc-supply = <&vgen2_reg>;
 	bus-width = <4>;
 	non-removable;
 	no-sd;
@@ -258,6 +259,16 @@
 		interrupts = <12 IRQ_TYPE_LEVEL_HIGH>;
 		fsl,mc13xxx-uses-adc;
 		fsl,mc13xxx-uses-rtc;
+
+		regulators {
+			vgen2_reg: vgen2 {
+				regulator-name = "VGEN2";
+				regulator-min-microvolt = <3150000>;
+				regulator-max-microvolt = <3150000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+		};
 
 		buttons {
 			#address-cells = <1>;

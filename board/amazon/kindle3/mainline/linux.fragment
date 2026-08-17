@@ -28,6 +28,6 @@ CONFIG_INPUT_MC13783_PWRBUTTON=y
 CONFIG_SENSORS_MC13783_ADC=y
 CONFIG_RTC_DRV_MC13XXX=y
 
-# Do not let the regulator driver touch undocumented rails until their
-# consumers and safe constraints have been established.
-# CONFIG_REGULATOR_MC13892 is not set
+# Register only PMIC rails explicitly described by the board Device Tree.
+# Initially this is limited to the always-on 3.15 V eMMC supply.
+CONFIG_REGULATOR_MC13892=y

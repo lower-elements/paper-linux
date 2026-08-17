@@ -239,16 +239,23 @@ in the kernel wakeup-source list. Wake-from-suspend is therefore not wired yet.
 
 Amazon's regulator driver treats the MC13892 VPLL selector value 2 as 1.50 V
 on PMIC revision 2.0 or newer and as 1.65 V on earlier silicon. The inspected
-part is revision 2.1. Current mainline `mc13892-regulator.c` instead has a
-single fixed table that labels selector 2 as 1.65 V.
+part is revision 2.1. Upstream `mc13892-regulator.c` has a single fixed table
+that labels selector 2 as 1.65 V. Git history shows that table was present in
+the [driver's original 2010 commit](https://github.com/torvalds/linux/commit/5e428d5cecc3f109b52e993a1bd91f82137867b3),
+which was tested on an i.MX51 Babbage board; it is not a later correction based
+on observed MC13892 behaviour.
 
-Consequently, the upstream regulator driver must not be enabled with a guessed
-1.50 V constraint and assumed to reproduce the vendor behaviour. The revision
-handling needs to be reconciled first. More generally, binding the driver is
-only the mechanism for exposing regulators; Device Tree constraints and
-consumer links are still required to express safe Kindle policy and prevent
-the regulator core from disabling an apparently unused but physically required
-rail.
+The Kindle 3 mainline patch layer retains the existing table for pre-2.0
+silicon and selects the data-sheet table for revision 2.0 or newer. This only
+corrects Linux's selector-to-voltage mapping and does not write a voltage
+selector during probe. More generally, binding the driver is only the
+mechanism for exposing regulators; Device Tree constraints and consumer links
+are still required to express safe Kindle policy and prevent the regulator
+core from disabling an apparently unused but physically required rail. The
+initial regulator bring-up therefore registers only VGEN2, constrains it
+to its observed 3.15 V boot state, marks it always on, and connects it to the
+eMMC controller. All other PMIC rails remain unregistered and retain their
+bootloader-programmed state.
 
 ## Awake regulator state and known consumers
 

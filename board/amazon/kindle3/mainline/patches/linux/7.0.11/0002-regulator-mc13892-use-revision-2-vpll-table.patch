@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Mon, 17 Aug 2026 14:15:00 +0100
+Subject: [PATCH] regulator: mc13892: use revision 2 VPLL voltage table
+
+The MC13892 regulator driver has used the same VPLL table as VDIG since
+its introduction.  That describes older silicon, but the Rev. 19 data
+sheet specifies 1.20, 1.25, 1.50 and 1.80 V for the four VPLL selectors.
+Freescale's vendor driver also treats selector 2 as 1.50 V starting with
+revision 2.0 while retaining 1.65 V for older revisions.
+
+Keep the existing table for pre-2.0 silicon and select the documented
+VPLL table after identifying revision 2.0 or newer.  This only changes
+the regulator framework's selector-to-voltage mapping; it does not write
+the voltage selector during probe.
+
+Upstream: Not submitted
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ drivers/regulator/mc13892-regulator.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/regulator/mc13892-regulator.c b/drivers/regulator/mc13892-regulator.c
+--- a/drivers/regulator/mc13892-regulator.c
++++ b/drivers/regulator/mc13892-regulator.c
+@@ -18,6 +18,8 @@
+ #include "mc13xxx.h"
+ 
+ #define MC13892_REVISION			7
++#define MC13892_REVISION_REVFULL_M		(0x3 << 3)
++#define MC13892_REVISION_REVFULL_2_0		(0x2 << 3)
+ 
+ #define MC13892_POWERCTL0			13
+ #define MC13892_POWERCTL0_USEROFFSPI		3
+@@ -192,6 +194,10 @@ static const unsigned int mc13892_vpll[] = {
+ 	1050000, 1250000, 1650000, 1800000,
+ };
+ 
++static const unsigned int mc13892_vpll_rev2[] = {
++	1200000, 1250000, 1500000, 1800000,
++};
++
+ static const unsigned int mc13892_vdig[] = {
+ 	1050000, 1250000, 1650000, 1800000,
+ };
+@@ -559,6 +565,12 @@ static int mc13892_regulator_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		goto err_unlock;
+ 
++	/* VPLL selector voltages changed in revision 2.0 silicon. */
++	if ((val & MC13892_REVISION_REVFULL_M) >=
++	    MC13892_REVISION_REVFULL_2_0)
++		mc13892_regulators[MC13892_VPLL].desc.volt_table =
++			mc13892_vpll_rev2;
++
+ 	/* enable switch auto mode (on 2.0A silicon only) */
+ 	if ((val & 0x0000FFFF) == 0x45d0) {
+ 		ret = mc13xxx_reg_rmw(mc13892, MC13892_SWITCHERS4,
+-- 
+2.51.0
