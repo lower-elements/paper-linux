@@ -441,10 +441,23 @@ MC13892 VAUDIO, and VAUDIO was off in the snapshot. There is no evidence for
 linking VAUDIO to the codec.
 
 The stock battery interface is custom sysfs rather than Linux
-`/sys/class/power_supply`. The live I2C fuel-gauge address is `0x55`, but no
-reliable source found here names the chip. A teardown identifies the battery
-pack as S11GTSF01A, 3.7 V, 1750 mAh. Instantaneous charge, current and capacity
-readings are operating state, not fixed board properties.
+`/sys/class/power_supply`. Lab126 registers its `Luigi_Battery` device on the
+first I2C bus at address `0x55`, and its register choices and 20 mOhm sense
+resistor match the TI BQ27210 data sheet. Independent physical inspection of a
+Kindle 3 battery identifies the ten-pin gauge marking as `27210`; see the
+[Kindle 3 repair investigation](https://hackaday.io/project/202390-kindle-3-repair)
+and the [TI BQ27210 data sheet](https://www.ti.com/lit/ds/symlink/bq27210.pdf).
+A teardown identifies the battery pack as S11GTSF01A, 3.7 V, 1750 mAh.
+Instantaneous charge, current and capacity readings are operating state, not
+fixed board properties.
+
+Mainline's `bq27xxx-battery` driver binds successfully using the
+`ti,bq27210` compatible. A live RAM-boot test reported a present, healthy
+battery at 4.181 V and 22.9 degrees C, 100% capacity, approximately 1.47 Ah
+learned full capacity and 16 cycles, without I2C errors. The initial Device
+Tree deliberately omits `monitored-battery`, and
+`CONFIG_BATTERY_BQ27XXX_DT_UPDATES_NVM` remains disabled, so this enablement
+does not update the pack gauge's EEPROM.
 
 The USB gadget driver (`drivers/usb/gadget/arcotg_udc.c`) participates in a
 custom MC13892 charger state machine. USB was attached and charging during the
@@ -483,7 +496,6 @@ work, safe electrical measurement, or additional authoritative source code:
 - the physical source for eMMC VDD/interface and i.MX35 NVCC_SDIO;
 - the sources for the Wi-Fi module's VDD18/SDIO and 3.3 V FEM rails;
 - whether any populated load uses the disabled general-purpose LDOs;
-- the exact fuel-gauge model;
 - the exact Papyrus/TI display-PMIC model;
 - all accessory-connector rail destinations; and
 - a complete suspend-state voltage and current profile.
@@ -521,6 +533,9 @@ recorded by upstream path rather than by the generated `output/` location:
 
 - `drivers/mfd/mc13xxx-core.c`: PMIC identification, IRQ handling, WDIRESET
   setup and ADC conversions.
+- `drivers/power/supply/bq27xxx_battery.c` and
+  `drivers/power/supply/bq27xxx_battery_i2c.c`: upstream BQ27210 power-supply
+  interface and I2C transport.
 - `drivers/regulator/mc13892-regulator.c`: regulator register definitions,
   voltage tables and the fixed 1.65 V VPLL selector interpretation.
 - `drivers/hwmon/mc13783-adc.c`: exported ADC channels and their unit
