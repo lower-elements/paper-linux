@@ -178,6 +178,11 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c1>;
 	status = "okay";
+
+	fuel-gauge@55 {
+		compatible = "ti,bq27210";
+		reg = <0x55>;
+	};
 };
 
 &i2c2 {

@@ -31,3 +31,11 @@ CONFIG_RTC_DRV_MC13XXX=y
 # Register only PMIC rails explicitly described by the board Device Tree.
 # Initially this is limited to the always-on 3.15 V eMMC supply.
 CONFIG_REGULATOR_MC13892=y
+
+# The battery pack contains a TI BQ27210 fuel gauge on the first I2C bus.
+# Keep its EEPROM untouched: the minimal DT node has no battery parameters,
+# and support for updating gauge NVM remains explicitly disabled.
+CONFIG_BATTERY_BQ27XXX=y
+CONFIG_BATTERY_BQ27XXX_I2C=y
+# CONFIG_BATTERY_BQ27XXX_HDQ is not set
+# CONFIG_BATTERY_BQ27XXX_DT_UPDATES_NVM is not set
