@@ -22,5 +22,12 @@ board teardowns. It distinguishes confirmed regulator assignments from
 unverified physical connections that must not yet be encoded in the Device
 Tree.
 
+For bring-up, the mainline initramfs exposes a composite USB gadget containing
+the `ttyACM` console and an ECM network link. The Kindle uses `192.168.2.2/24`;
+the directly connected development host is expected to use `192.168.2.1/24`.
+Dropbear listens only on the Kindle's USB address. The RAM-only test image has
+an empty root password, so this interface is intentionally unsuitable for a
+normal or multi-user installation.
+
 Files under `common` must describe hardware or behavior shared by both
 kernel lines.

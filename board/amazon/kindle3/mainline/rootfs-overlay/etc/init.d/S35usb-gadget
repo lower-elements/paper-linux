@@ -1,0 +1,93 @@
+#!/bin/sh
+
+GADGET=/sys/kernel/config/usb_gadget/kindle3
+CONFIG="$GADGET/configs/c.1"
+
+start_gadget()
+{
+	mkdir -p /sys/kernel/config
+	if ! mountpoint -q /sys/kernel/config; then
+		mount -t configfs none /sys/kernel/config || return 1
+	fi
+
+	if [ -d "$GADGET" ]; then
+		return 0
+	fi
+
+	mkdir "$GADGET" || return 1
+	cd "$GADGET" || return 1
+
+	# Linux Foundation's development VID and multifunction gadget PID.  This
+	# image is only intended for direct, temporary bring-up connections.
+	echo 0x1d6b > idVendor
+	echo 0x0104 > idProduct
+	echo 0x0200 > bcdUSB
+	echo 0x0100 > bcdDevice
+
+	mkdir strings/0x409
+	echo kindle3-mainline > strings/0x409/serialnumber
+	echo "Paper Linux" > strings/0x409/manufacturer
+	echo "Kindle 3 bring-up console and network" > strings/0x409/product
+
+	mkdir -p "$CONFIG/strings/0x409"
+	echo "ACM console and ECM network" > "$CONFIG/strings/0x409/configuration"
+	echo 0x80 > "$CONFIG/bmAttributes"
+	echo 100 > "$CONFIG/MaxPower"
+
+	# ACM is mandatory: if ECM cannot be created, retain the serial recovery
+	# path instead of leaving the device with no usable console.
+	mkdir functions/acm.usb0 || return 1
+	ln -s functions/acm.usb0 "$CONFIG/acm.usb0" || return 1
+
+	if mkdir functions/ecm.usb0; then
+		echo 02:00:00:00:00:02 > functions/ecm.usb0/dev_addr
+		echo 02:00:00:00:00:01 > functions/ecm.usb0/host_addr
+		if ! ln -s functions/ecm.usb0 "$CONFIG/ecm.usb0"; then
+			rmdir functions/ecm.usb0
+		fi
+	fi
+
+	UDC=$(ls /sys/class/udc 2>/dev/null | head -n 1)
+	if [ -z "$UDC" ]; then
+		echo "No USB device controller is available" >&2
+		return 1
+	fi
+
+	echo "$UDC" > UDC
+}
+
+stop_gadget()
+{
+	[ -d "$GADGET" ] || return 0
+	cd "$GADGET" || return 1
+	echo "" > UDC
+	rm -f "$CONFIG/acm.usb0" "$CONFIG/ecm.usb0"
+	rmdir functions/acm.usb0 functions/ecm.usb0 2>/dev/null
+	rmdir "$CONFIG/strings/0x409" "$CONFIG"
+	rmdir strings/0x409
+	cd /sys/kernel/config/usb_gadget || return 1
+	rmdir "$GADGET"
+}
+
+case "$1" in
+	start)
+		printf "Starting Kindle 3 USB gadget: "
+		if start_gadget; then
+			echo "OK"
+		else
+			echo "FAIL"
+			exit 1
+		fi
+		;;
+	stop)
+		stop_gadget
+		;;
+	restart)
+		stop_gadget
+		start_gadget
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac
