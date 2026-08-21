@@ -39,3 +39,14 @@ CONFIG_BATTERY_BQ27XXX=y
 CONFIG_BATTERY_BQ27XXX_I2C=y
 # CONFIG_BATTERY_BQ27XXX_HDQ is not set
 # CONFIG_BATTERY_BQ27XXX_DT_UPDATES_NVM is not set
+
+# The WM8960 is connected to SSI1 through AUDMUX port 4.  Keep the initial
+# card built in and expose only its headphone route; speaker wiring and
+# automatic jack switching remain intentionally undescribed in the DT.
+CONFIG_SND=y
+CONFIG_SND_SOC=y
+CONFIG_SND_IMX_SOC=y
+CONFIG_SND_SOC_FSL_SSI=y
+CONFIG_SND_SOC_IMX_AUDMUX=y
+CONFIG_SND_SOC_FSL_ASOC_CARD=y
+CONFIG_SND_SOC_WM8960=y

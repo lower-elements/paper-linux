@@ -26,6 +26,18 @@
 		reg = <0x80000000 0x10000000>;
 	};
 
+	sound {
+		compatible = "fsl,imx-audio-wm8960";
+		model = "Kindle 3 WM8960";
+		audio-cpu = <&ssi1>;
+		audio-codec = <&wm8960>;
+		mux-int-port = <1>;
+		mux-ext-port = <4>;
+		audio-routing =
+			"Headphone Jack", "HP_L",
+			"Headphone Jack", "HP_R";
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 		pinctrl-names = "default";
@@ -93,7 +105,28 @@
 	status = "okay";
 };
 
+&audmux {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_audmux>;
+	status = "okay";
+};
+
 &iomuxc {
+	pinctrl_audio_clock: audioclockgrp {
+		fsl,pins = <
+			MX35_PAD_CLKO__CCM_CLKO			0x0
+		>;
+	};
+
+	pinctrl_audmux: audmuxgrp {
+		fsl,pins = <
+			MX35_PAD_STXD4__AUDMUX_AUD4_TXD	0x21e0
+			MX35_PAD_SRXD4__AUDMUX_AUD4_RXD	0x21e0
+			MX35_PAD_SCK4__AUDMUX_AUD4_TXC		0x21e0
+			MX35_PAD_STXFS4__AUDMUX_AUD4_TXFS	0x21e0
+		>;
+	};
+
 	pinctrl_gpio_keys: gpiokeysgrp {
 		fsl,pins = <
 			MX35_PAD_ATA_DATA14__GPIO2_27		0x21e0
@@ -189,6 +222,16 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c2>;
 	status = "okay";
+
+	wm8960: audio-codec@1a {
+		compatible = "wlf,wm8960";
+		reg = <0x1a>;
+		#sound-dai-cells = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_audio_clock>;
+		clocks = <&clks 83>;
+		clock-names = "mclk";
+	};
 };
 
 &kpp {
@@ -287,6 +330,10 @@
 			};
 		};
 	};
+};
+
+&ssi1 {
+	status = "okay";
 };
 
 &uart1 {

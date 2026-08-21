@@ -1,0 +1,46 @@
+From: Paper Linux contributors <paperlinux@localhost>
+Date: Mon, 17 Aug 2026 00:00:00 +0100
+Subject: [PATCH] clk: imx35: expose the CLKO gate
+
+The i.MX35 clock driver does not register the CCM CLKO output.  Boards such
+as the Amazon Kindle 3 feed a 24 MHz CLKO into an external WM8960 audio
+codec, so a codec consumer currently has no clock it can request or enable.
+
+Select CKIH with a divide-by-one setting, matching the initialization in
+the NXP/Lab126 2.6.26 clock code, then expose the existing CLKOEN bit as a
+normal clock gate.  The output remains disabled unless a consumer requests
+it.
+
+Signed-off-by: Paper Linux contributors <paperlinux@localhost>
+---
+ drivers/clk/imx/clk-imx35.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/clk/imx/clk-imx35.c
++++ b/drivers/clk/imx/clk-imx35.c
+@@ -76,7 +76,7 @@ enum mx35_clks {
+ 	/* 65 */ sdma_gate, spba_gate, spdif_gate, ssi1_gate, ssi2_gate,
+ 	/* 70 */ uart1_gate, uart2_gate, uart3_gate, usbotg_gate, wdog_gate,
+ 	/* 75 */ max_gate, admux_gate, csi_gate, csi_div, csi_sel, iim_gate,
+-	/* 81 */ gpu2d_gate, ckil, clk_max
++	/* 81 */ gpu2d_gate, ckil, clko, clk_max
+ };
+ 
+ static struct clk *clk[clk_max];
+@@ -105,6 +105,14 @@ static void __init _mx35_clocks_init(void)
+ 
+ 	clk[ckih] = imx_clk_fixed("ckih", 24000000);
+ 	clk[ckil] = imx_clk_fixed("ckil", 32768);
++	/*
++	 * CLKO's reset configuration is not represented by the common clock
++	 * framework.  Select the 24 MHz high-frequency crystal and divide it
++	 * by one before registering the output gate.
++	 */
++	__raw_writel((__raw_readl(base + 0x28) & ~0xfc5f) | 0x1,
++		     base + 0x28);
++	clk[clko] = imx_clk_gate("clko", "ckih", base + 0x28, 5);
+ 	clk[mpll] = imx_clk_pllv1(IMX_PLLV1_IMX35, "mpll", "ckih", base + MX35_CCM_MPCTL);
+ 	clk[ppll] = imx_clk_pllv1(IMX_PLLV1_IMX35, "ppll", "ckih", base + MX35_CCM_PPCTL);
+ 
+-- 
+2.51.0
