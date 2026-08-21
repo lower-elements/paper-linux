@@ -1,0 +1,218 @@
+#!/bin/sh
+
+set -u
+
+POLICY=/sys/devices/system/cpu/cpufreq/policy0
+DEBUGFS=/sys/kernel/debug
+LOAD_PID=
+
+usage()
+{
+	cat <<'EOF'
+Usage: kindle3-cpufreq-test status
+       kindle3-cpufreq-test stress [seconds]
+       kindle3-cpufreq-test cycle [iterations] [seconds-per-step]
+
+  status  Show cpufreq policy, live clock rates and the raw SW2 register.
+  stress  Load one CPU while sampling its reported frequency once a second.
+  cycle   Force 256 and 512 MHz under load, then restore the old policy.
+
+The cycle test defaults to 10 iterations with 5 seconds at each frequency.
+It never writes a regulator setting; SW2 should remain unchanged throughout.
+EOF
+}
+
+need_policy()
+{
+	if [ ! -d "$POLICY" ]; then
+		echo "cpufreq policy0 is missing" >&2
+		exit 1
+	fi
+}
+
+mount_debugfs()
+{
+	if ! mountpoint -q "$DEBUGFS" 2>/dev/null; then
+		mount -t debugfs none "$DEBUGFS" 2>/dev/null || true
+	fi
+}
+
+read_file()
+{
+	label=$1
+	path=$2
+	if [ -r "$path" ]; then
+		printf '%-28s %s\n' "$label:" "$(cat "$path")"
+	fi
+}
+
+show_clocks()
+{
+	clock_summary=$DEBUGFS/clk/clk_summary
+	if [ -r "$clock_summary" ]; then
+		echo "Relevant common-clock rates:"
+		awk '$1 == "mpll" || $1 == "arm" || $1 == "ahb" || $1 == "ipg" || $1 == "hsp" { print }' "$clock_summary"
+	fi
+}
+
+show_sw2()
+{
+	registers=
+	for regmap in "$DEBUGFS"/regmap/*; do
+		[ -r "$regmap/name" ] || continue
+		if [ "$(cat "$regmap/name")" = mc13xxx ]; then
+			registers=$regmap/registers
+			break
+		fi
+	done
+
+	if [ -r "$registers" ]; then
+		echo "MC13892 register 25 (SW2 slots; observation only):"
+		grep '^19:' "$registers"
+	else
+		echo "MC13892 register map not available"
+	fi
+}
+
+status()
+{
+	need_policy
+	mount_debugfs
+
+	read_file "driver" "$POLICY/scaling_driver"
+	read_file "governor" "$POLICY/scaling_governor"
+	read_file "available governors" "$POLICY/scaling_available_governors"
+	read_file "available frequencies" "$POLICY/scaling_available_frequencies"
+	read_file "hardware minimum (kHz)" "$POLICY/cpuinfo_min_freq"
+	read_file "hardware maximum (kHz)" "$POLICY/cpuinfo_max_freq"
+	read_file "policy minimum (kHz)" "$POLICY/scaling_min_freq"
+	read_file "policy maximum (kHz)" "$POLICY/scaling_max_freq"
+	read_file "current frequency (kHz)" "$POLICY/scaling_cur_freq"
+	show_clocks
+	show_sw2
+}
+
+stop_load()
+{
+	if [ -n "$LOAD_PID" ]; then
+		kill "$LOAD_PID" 2>/dev/null || true
+		wait "$LOAD_PID" 2>/dev/null || true
+		LOAD_PID=
+	fi
+}
+
+start_load()
+{
+	sha256sum /dev/zero >/dev/null &
+	LOAD_PID=$!
+}
+
+sample()
+{
+	freq=$(cat "$POLICY/scaling_cur_freq")
+	printf 'frequency=%s kHz' "$freq"
+
+	clock_summary=$DEBUGFS/clk/clk_summary
+	if [ -r "$clock_summary" ]; then
+		arm_rate=$(awk '$1 == "arm" { print $5; exit }' "$clock_summary")
+		[ -n "$arm_rate" ] && printf ' arm-clock=%s Hz' "$arm_rate"
+	fi
+	printf '\n'
+}
+
+stress()
+{
+	seconds=${1:-60}
+	need_policy
+	mount_debugfs
+	trap 'stop_load; exit 130' INT TERM HUP
+	start_load
+
+	i=0
+	while [ "$i" -lt "$seconds" ]; do
+		sample
+		sleep 1
+		i=$((i + 1))
+	done
+
+	stop_load
+	trap - INT TERM HUP
+}
+
+restore_policy()
+{
+	stop_load
+	# Widen the limits before restoring their exact original values.
+	echo 256000 >"$POLICY/scaling_min_freq" 2>/dev/null || true
+	echo 512000 >"$POLICY/scaling_max_freq" 2>/dev/null || true
+	echo "$OLD_MIN" >"$POLICY/scaling_min_freq" 2>/dev/null || true
+	echo "$OLD_MAX" >"$POLICY/scaling_max_freq" 2>/dev/null || true
+	echo "$OLD_GOVERNOR" >"$POLICY/scaling_governor" 2>/dev/null || true
+}
+
+hold_step()
+{
+	target=$1
+	seconds=$2
+
+	if [ "$target" -eq 256000 ]; then
+		echo 256000 >"$POLICY/scaling_min_freq"
+		echo 256000 >"$POLICY/scaling_max_freq"
+	else
+		echo 512000 >"$POLICY/scaling_max_freq"
+		echo 512000 >"$POLICY/scaling_min_freq"
+	fi
+
+	i=0
+	while [ "$i" -lt "$seconds" ]; do
+		sample
+		sleep 1
+		i=$((i + 1))
+	done
+}
+
+cycle()
+{
+	iterations=${1:-10}
+	step_seconds=${2:-5}
+	need_policy
+	mount_debugfs
+
+	OLD_GOVERNOR=$(cat "$POLICY/scaling_governor")
+	OLD_MIN=$(cat "$POLICY/scaling_min_freq")
+	OLD_MAX=$(cat "$POLICY/scaling_max_freq")
+	trap restore_policy EXIT
+	trap 'exit 130' INT TERM HUP
+
+	echo userspace >"$POLICY/scaling_governor"
+	start_load
+	n=1
+	while [ "$n" -le "$iterations" ]; do
+		echo "iteration $n/$iterations: 256 MHz"
+		hold_step 256000 "$step_seconds"
+		echo "iteration $n/$iterations: 512 MHz"
+		hold_step 512000 "$step_seconds"
+		n=$((n + 1))
+	done
+
+	restore_policy
+	trap - EXIT INT TERM HUP
+	echo "Original policy restored."
+	status
+}
+
+case "${1:-}" in
+	status)
+		status
+		;;
+	stress)
+		stress "${2:-60}"
+		;;
+	cycle)
+		cycle "${2:-10}" "${3:-5}"
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
+esac

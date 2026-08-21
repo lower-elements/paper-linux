@@ -26,6 +26,21 @@
 		reg = <0x80000000 0x10000000>;
 	};
 
+	cpu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+
+		/* These are the only two operating points used by Amazon. */
+		opp-256000000 {
+			opp-hz = /bits/ 64 <256000000>;
+			clock-latency-ns = <50000>;
+		};
+
+		opp-512000000 {
+			opp-hz = /bits/ 64 <512000000>;
+			clock-latency-ns = <50000>;
+		};
+	};
+
 	sound {
 		compatible = "fsl,imx-audio-wm8960";
 		model = "Kindle 3 WM8960";
@@ -92,6 +107,20 @@
 			debounce-interval = <20>;
 		};
 	};
+};
+
+&{/cpus/cpu@0} {
+	clocks = <&clks 4>;
+	clock-names = "cpu";
+	assigned-clocks = <&clks 4>;
+	assigned-clock-rates = <512000000>;
+	operating-points-v2 = <&cpu_opp_table>;
+
+	/*
+	 * Phase one intentionally has no cpu-supply and no OPP voltages.
+	 * SW2 remains at the safe 1.35 V inherited from Barebox, and neither
+	 * cpufreq-dt nor the regulator framework can alter it during a switch.
+	 */
 };
 
 &esdhc1 {

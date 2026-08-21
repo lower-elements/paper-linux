@@ -50,3 +50,15 @@ CONFIG_SND_SOC_FSL_SSI=y
 CONFIG_SND_SOC_IMX_AUDMUX=y
 CONFIG_SND_SOC_FSL_ASOC_CARD=y
 CONFIG_SND_SOC_WM8960=y
+
+# First-phase CPU frequency scaling uses only Amazon's measured 256/512 MHz
+# points.  The DT deliberately supplies no voltage data, so the inherited
+# 1.35 V SW2 setting remains unchanged while we validate clock switching.
+CONFIG_CPU_FREQ=y
+CONFIG_CPU_FREQ_STAT=y
+CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND=y
+CONFIG_CPU_FREQ_GOV_POWERSAVE=y
+CONFIG_CPU_FREQ_GOV_USERSPACE=y
+CONFIG_CPU_FREQ_GOV_ONDEMAND=y
+CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y
+CONFIG_CPUFREQ_DT=y
