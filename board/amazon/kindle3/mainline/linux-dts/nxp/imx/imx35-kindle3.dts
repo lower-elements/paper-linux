@@ -32,16 +32,12 @@
 		/* These are the only two operating points used by Amazon. */
 		opp-256000000 {
 			opp-hz = /bits/ 64 <256000000>;
-			opp-microvolt = <1450000>;
+			opp-microvolt = <1275000>;
 			clock-latency-ns = <50000>;
 		};
 
 		opp-512000000 {
 			opp-hz = /bits/ 64 <512000000>;
-			/*
-			 * Diagnostic isolation step: keep SW2 fixed at Amazon's high-OPP
-			 * 1.45 V while exercising both clock rates.
-			 */
 			opp-microvolt = <1450000>;
 			clock-latency-ns = <50000>;
 		};
@@ -341,7 +337,7 @@
 		regulators {
 			sw2_reg: sw2 {
 				regulator-name = "SW2";
-				regulator-min-microvolt = <1450000>;
+				regulator-min-microvolt = <1275000>;
 				regulator-max-microvolt = <1450000>;
 				/* Longer than Amazon's 20 us SW2 transition delay. */
 				regulator-settling-time-us = <50>;

@@ -19,8 +19,8 @@ Usage: kindle3-cpufreq-test status
   cycle   Force 256 and 512 MHz under load, then restore the old policy.
 
 The cycle test defaults to 10 iterations with 5 seconds at each frequency.
-This diagnostic build gives Linux ownership of SW2 but fixes it at 1.45 V
-for both clock rates.  No cpufreq operation should change the CPU voltage.
+This build uses Amazon's production operating points: 1.275 V at 256 MHz
+and 1.45 V at 512 MHz.  The cycle test verifies both reported voltages.
 EOF
 }
 
@@ -212,7 +212,11 @@ hold_step()
 	find_sw2
 	if [ -r "$SW2_PATH/microvolts" ]; then
 		actual_uv=$(cat "$SW2_PATH/microvolts")
-		expected_uv=1450000
+		if [ "$target" -eq 256000 ]; then
+			expected_uv=1275000
+		else
+			expected_uv=1450000
+		fi
 		if [ "$actual_uv" -ne "$expected_uv" ]; then
 			echo "SW2 voltage mismatch: expected $expected_uv uV, got $actual_uv uV" >&2
 			return 1
