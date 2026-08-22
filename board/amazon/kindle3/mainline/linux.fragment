@@ -27,6 +27,8 @@ CONFIG_MFD_MC13XXX_SPI=y
 CONFIG_INPUT_MC13783_PWRBUTTON=y
 CONFIG_SENSORS_MC13783_ADC=y
 CONFIG_RTC_DRV_MC13XXX=y
+CONFIG_LEDS_CLASS=y
+CONFIG_LEDS_MC13783=y
 
 # Register only PMIC rails explicitly described by the board Device Tree.
 # Initially this is limited to the always-on 3.15 V eMMC supply.

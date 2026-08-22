@@ -347,6 +347,18 @@
 			};
 		};
 
+		leds {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			/* 12 mA current limit, zero duty cycle at probe. */
+			led-control = <0x0 0x0 0x800000 0x0>;
+
+			green-led@4 {
+				reg = <4>;
+				label = "kindle3:green:status";
+			};
+		};
+
 		buttons {
 			#address-cells = <1>;
 			#size-cells = <0>;
