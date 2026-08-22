@@ -1,0 +1,73 @@
+From: Paper Linux Project <paperlinux@localhost>
+Date: Sat, 22 Aug 2026 16:00:00 +0100
+Subject: [PATCH] clk: imx35: program complete CPU working points
+
+The i.MX35 PDR0 consumer selector is coupled to bus and peripheral clock
+dividers.  Changing only the consumer selector lets the common clock
+framework predict descendant rates using the old selection, after which
+its generic AHB peripheral divider rewrites PER_PODF.  On Kindle 3 this
+produced PDR0 0x00025000 at 256 MHz and reproducible load-induced hangs.
+
+Match the vendor clock implementation by writing the complete validated
+PDR0 working-point values: 0x00001000 at 512 MHz and 0x00021000 at 256
+MHz.  Make the PDR0 peripheral divider read-only to the generic clock
+walker because it is now part of the atomic CPU working-point change.
+
+Signed-off-by: Paper Linux Project <paperlinux@localhost>
+---
+--- a/drivers/clk/imx/clk-imx35.c
++++ b/drivers/clk/imx/clk-imx35.c
+@@ -31,6 +31,8 @@
+ #define MX35_CCM_CGR2		0x34
+ #define MX35_CCM_CGR3		0x38
+ 
++#define MX35_PDR0_512MHZ	0x00001000
++#define MX35_PDR0_256MHZ	0x00021000
+ #define MX35_PDR0_CONSUMER_SHIFT	16
+ #define MX35_PDR0_CONSUMER_MASK	GENMASK(19, 16)
+ #define MX35_CONSUMER_512MHZ	0
+ #define MX35_CONSUMER_256MHZ	2
+ #define MX35_MPLL_RATE		512000000
+@@ -133,15 +131,15 @@
+ {
+ 	struct imx35_consumer_clk *consumer = to_imx35_consumer_clk(hw);
+ 	unsigned long flags;
+-	u32 pdr0, sel;
++	u32 pdr0;
+ 	int ret;
+ 
+ 	switch (rate) {
+ 	case MX35_ARM_RATE_LOW:
+-		sel = MX35_CONSUMER_256MHZ;
++		pdr0 = MX35_PDR0_256MHZ;
+ 		break;
+ 	case MX35_ARM_RATE_HIGH:
+-		sel = MX35_CONSUMER_512MHZ;
++		pdr0 = MX35_PDR0_512MHZ;
+ 		break;
+ 	default:
+ 		return -EINVAL;
+@@ -160,9 +158,6 @@
+ 	}
+ 
+ 	spin_lock_irqsave(&imx_ccm_lock, flags);
+-	pdr0 = readl(consumer->base + MXC_CCM_PDR0);
+-	pdr0 &= ~MX35_PDR0_CONSUMER_MASK;
+-	pdr0 |= sel << MX35_PDR0_CONSUMER_SHIFT;
+ 	writel(pdr0, consumer->base + MXC_CCM_PDR0);
+ 	spin_unlock_irqrestore(&imx_ccm_lock, flags);
+ 
+@@ -284,7 +279,12 @@
+ 	clk[ipg] = imx_clk_fixed_factor("ipg", "ahb", 1, 2);
+ 
+ 	clk[arm_per_div] = imx_clk_divider("arm_per_div", "arm", base + MX35_CCM_PDR4, 16, 6);
+-	clk[ahb_per_div] = imx_clk_divider("ahb_per_div", "ahb", base + MXC_CCM_PDR0, 12, 3);
++	clk[ahb_per_div] = to_clk(clk_hw_register_divider(NULL, "ahb_per_div",
++							   "ahb", 0,
++							   base + MXC_CCM_PDR0,
++							   12, 3,
++							   CLK_DIVIDER_READ_ONLY,
++							   &imx_ccm_lock));
+ 	clk[ipg_per] = imx_clk_mux("ipg_per", base + MXC_CCM_PDR0, 26, 1, ipg_per_sel, ARRAY_SIZE(ipg_per_sel));
+ 
+ 	clk[uart_sel] = imx_clk_mux("uart_sel", base + MX35_CCM_PDR3, 14, 1, std_sel, ARRAY_SIZE(std_sel));
