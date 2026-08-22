@@ -9,7 +9,8 @@ treated as a fact, and a programmed voltage is not treated as a measurement.
 The conclusions below combine:
 
 - read-only inspection of a running stock Kindle;
-- the GPL Lab126 Linux 2.6.26-rt source in `../lab126/linux-2.6.26`;
+- the exact Amazon GPL snapshot and its comparison sources under
+  `../kernel-worktrees`;
 - Barebox's Kindle 3 board support;
 - component manufacturers' documentation; and
 - board photographs and third-party teardowns.
@@ -50,9 +51,54 @@ the stock firmware:
 Only non-unique prefixes are recorded here. The full device serial and board
 ID are intentionally omitted.
 
-The Lab126 tree is shared by several Luigi variants and contains WAN/modem
-code even on Wi-Fi-only hardware. The mere presence of that code or of WAN
-sysfs entries is not evidence that a rail is populated on this board.
+The exact Amazon archive is shared by several Luigi variants and contains
+WAN/modem code even on Wi-Fi-only hardware. The mere presence of that code or
+of WAN sysfs entries is not evidence that a rail is populated on this board.
+
+## Source provenance boundaries
+
+The kernel source used here is the exact historyless GPL archive packaged by
+Amazon on 7 September 2012, preserved as
+`../kernel-worktrees/amazon-kindle3-3.4.3` and the ref
+`archive/amazon-kindle3-3.4.3`. The sibling `meta-provenance` worktree records
+its source URL, checksums, comparison method and confidence limits. Its
+current reconstruction finds:
+
+```text
+upstream Linux v2.6.26
+        |
+        +-- known Freescale MX35 BSP snapshot (2009-03-17)
+        +-- adapted PREEMPT_RT 2.6.26.8-rt16 work
+        +-- later unresolved Freescale, third-party and Lab126 changes
+              +-- exact Amazon GPL snapshot
+```
+
+This is source-lineage evidence, not a recovered commit graph. The Amazon
+archive is generally v2.6.26-derived rather than v2.6.26.8-derived, and the
+ordering of the RT adaptation and later BSP/integration work is not fully
+known. A synthetic reconstruction commit must never be used to assign
+authorship.
+
+For the power-related evidence in this document, the generated per-file matrix
+currently gives the following useful distinctions:
+
+- Kindle board policy files such as `mx35_luigi.c`, `cpufreq.c`, `wifi.c`,
+  `mx35_accessory.c`, `luigi_battery.c`, `luigi_button.c`, the Papyrus driver
+  and the WM8960 machine driver are `amazon-only`: absent from the compared
+  source states, but not thereby proved to have been authored by Amazon.
+- the MC13892 regulator driver and the MC9SDZ60 core/GPIO/regulator files are
+  byte-identical to the known Freescale 2009-03-17 snapshot.
+- `dvfs.c`, the i.MX35 clock/device files, `mx_sdhci.c`, the MC13892 core/light
+  code, the generic MC13892 LED driver and `arcotg_udc.c` are modified or from
+  a later unresolved source. Claims based on them are therefore attributed to
+  the exact Amazon snapshot unless a specific hunk is traced further.
+- `pmic_power.c` and `pmic_rtc.c` occur only in the Amazon archive among the
+  current comparison states; again, this is a source-presence classification,
+  not an authorship finding.
+
+These boundaries do not weaken an observed hardware contract. They prevent a
+board-specific finding from being mislabeled as a generic Freescale design, or
+a retained BSP implementation from being mislabeled as Lab126-authored code.
 
 ## Power architecture
 
@@ -67,8 +113,11 @@ There is more than one power-management device:
    panel's specialised high-voltage supplies, VCOM and temperature sensing.
    It is separate from the MC13892. The exact TI part number is not established
    by the available code or live identification.
-3. An I2C fuel gauge at address `0x55` is exposed as `Luigi_Battery`. Its exact
-   part number is not established, so this document does not guess one.
+3. A **TI BQ27210** fuel gauge is present in the battery pack and appears at
+   I2C address `0x55` as `Luigi_Battery`. The identification is supported by
+   the released driver's register protocol and sense-resistor value, physical
+   inspection of a Kindle 3 battery, and successful binding of mainline's
+   `ti,bq27210` driver.
 
 The live kernel logged `mc13892 Rev 2.1 FinVer 2 detected`, registered the PMIC
 regulator driver, initialized the RTC as `rtc0`, and exposed the PMIC character
@@ -257,6 +306,26 @@ to its observed 3.15 V boot state, marks it always on, and connects it to the
 eMMC controller. All other PMIC rails remain unregistered and retain their
 bootloader-programmed state.
 
+### Current conservative mainline boundary
+
+The following power-related support has been verified on the RAM-booted
+mainline system:
+
+- MC13892 identification and interrupt handling;
+- its RTC, ADC and power-button children;
+- the revision-correct VPLL voltage-table interpretation;
+- VGEN2 registered at a fixed 3.15 V, kept always on and supplied to eMMC;
+  and
+- the BQ27210 fuel gauge through the unmodified upstream measurement logic,
+  with Device Tree NVM updates disabled.
+
+The green MC13892 LED is implemented conservatively but remains unverified.
+The headphone-only WM8960 configuration binds and registers an ALSA card under
+mainline, although actual playback routing remains to be tested. The other
+MC13892 rails, charger control, internal-speaker control, suspend and orderly
+power-off remain deliberately unmanaged. This is the present safety boundary,
+not a claim that those devices are absent.
+
 ## Awake regulator state and known consumers
 
 | Rail | Programmed state in snapshot | Consumer or status | Confidence |
@@ -433,12 +502,56 @@ but does not establish the exact part number. Mainline display work should use
 the Papyrus driver's sequencing as evidence and must not infer that MC13892
 VAUDIO, VVIDEO or another conveniently named LDO powers the panel.
 
+## Status and charger LEDs
+
+The green status light is an MC13892 LED channel. Lab126's
+`drivers/char/luigi_button.c` and `drivers/usb/gadget/arcotg_udc.c` both drive
+`LIT_GREEN`, using the PMIC's 6-bit duty-cycle field and disabling ramping.
+Those special-purpose paths use current selector 7 and duty 63 when they want
+full brightness. The generic stock LED-class driver in
+`drivers/leds/leds-mc13892.c` is deliberately gentler: its comment says to use
+a medium current in case a larger current is unsafe, selects `LIT_CURR_12`
+(selector 4, 12 mA), and maps Linux brightness to the 0-63 duty range.
+
+The initial mainline node exposes only the green channel, selects the same
+12 mA limit as that generic vendor driver, and starts with duty zero. The
+upstream MC13xxx LED driver writes all four LED-control registers when it
+probes, so the Device Tree initializes the other registers to zero and must
+not be extended with guessed channels.
+
+The yellow charging light is separate. The Luigi GPIO code drives it from the
+i.MX35 `CSI_D12` pad and changes polarity for older board revisions. It is not
+part of this PMIC LED enablement and remains undescribed until charger policy
+and board-revision handling are implemented.
+
 ## Audio, battery and charger boundaries
 
 The audio codec was present at I2C address `0x1a` and is identified by source
 and teardown as a Wolfson WM8960. The active codec/board path does not request
 MC13892 VAUDIO, and VAUDIO was off in the snapshot. There is no evidence for
 linking VAUDIO to the codec.
+
+Read-only stock testing established an additional power-sequencing boundary.
+At idle the vendor codec cache showed all three WM8960 power registers at zero
+and its software power-status flag was zero. During a deliberately quiet
+headphone-jack playback test the status changed to one, then returned to zero
+through the vendor driver's delayed power-off work ten seconds after playback
+ended. Powered external speakers connected to the headphone jack produced
+substantial interference while the codec/output path was off; the interference
+disappeared while playback powered that path. This repeatable change is a
+useful qualitative state cue, but it is not a rail measurement and does not
+identify whether the noise comes from a floating output, board coupling,
+grounding or the external amplifier.
+
+Stock programmed both the OUT2 outputs and WM8960 class-D enable bits during
+that headphone test, yet the tone was audible only from the external speakers
+and not from the Kindle's internal speakers. The result is consistent with
+codec jack switching and/or the separate MC9SDZ60 `SPKR` control blocking the
+physical internal-speaker path, but does not distinguish between them. It
+reinforces the initial mainline policy: describe only the headphone DAPM
+route, leave codec hardware jack switching off, omit the MC9SDZ60 speaker
+control, and do not assign a guessed PMIC rail. The complete observations and
+register-cache evidence are recorded in [audio.md](audio.md).
 
 The stock battery interface is custom sysfs rather than Linux
 `/sys/class/power_supply`. Lab126 registers its `Luigi_Battery` device on the
@@ -504,10 +617,13 @@ These are not safe gaps to fill by analogy with another i.MX35 board.
 
 ## Evidence index
 
-### Lab126 GPL source
+### Exact Amazon GPL snapshot and provenance
 
-All paths below are relative to the external `../lab126/linux-2.6.26` source
-checkout and are not vendored into this repository:
+All paths below are relative to
+`../kernel-worktrees/amazon-kindle3-3.4.3`, the exact archive snapshot, and
+are not vendored into this repository. File-level origin classifications come
+from `../kernel-worktrees/meta-provenance/reports/path-provenance.tsv`; the
+limitations above apply to every attribution:
 
 - `arch/arm/mach-mx35/mx35_luigi.c`: PMIC SPI registration, eSDHC platform
   data, board revision handling and platform power-off.
@@ -523,8 +639,22 @@ checkout and are not vendored into this repository:
   removable-slot handling.
 - `drivers/video/eink/broadsheet/broadsheet_papyrus.c`: display-PMIC power,
   VCOM, temperature and power-good handling.
+- `drivers/char/luigi_button.c`, `drivers/leds/leds-mc13892.c` and
+  `drivers/mxc/pmic/mc13892/pmic_light.c`: green status-LED use, its
+  conservative 12 mA generic limit, and PMIC LED register programming.
+- `sound/soc/imx/mx35luigi_wm8960.c` and
+  `sound/soc/codecs/wm8960.c`: codec wiring, DAPM routes, output gains,
+  class-D setup, jack switching and delayed power sequencing.
+- `drivers/regulator/mc9sdz60/reg-mc9sdz60.c`: the separate `SPKR` control.
 - `drivers/usb/gadget/arcotg_udc.c`: USB/charger state machine.
 - the built stock `.config`: selected SDHCI and Atheros paths.
+
+The archive and lineage metadata are maintained separately under
+`../kernel-worktrees/meta-provenance`. Canonical sources include Amazon's
+[Kindle source-code download page](https://digprjsurvey.amazon.com/csad/help/node/200203720),
+the [upstream Linux repository](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git),
+the [NXP i.MX Linux repository](https://github.com/nxp-imx/linux-imx), and the
+[official 2.6.26 RT patch archive](https://cdn.kernel.org/pub/linux/kernel/projects/rt/2.6.26/).
 
 ### Mainline source inspected during RAM boot
 
