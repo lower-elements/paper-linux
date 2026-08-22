@@ -5,6 +5,7 @@ set -u
 POLICY=/sys/devices/system/cpu/cpufreq/policy0
 DEBUGFS=/sys/kernel/debug
 LOAD_PID=
+SW2_PATH=
 
 usage()
 {
@@ -13,12 +14,13 @@ Usage: kindle3-cpufreq-test status
        kindle3-cpufreq-test stress [seconds]
        kindle3-cpufreq-test cycle [iterations] [seconds-per-step]
 
-  status  Show cpufreq policy, live clock rates and the raw SW2 register.
+  status  Show cpufreq policy, live clock rates and SW2 state.
   stress  Load one CPU while sampling its reported frequency once a second.
   cycle   Force 256 and 512 MHz under load, then restore the old policy.
 
 The cycle test defaults to 10 iterations with 5 seconds at each frequency.
-It never writes a regulator setting; SW2 should remain unchanged throughout.
+This diagnostic build gives Linux ownership of SW2 but fixes it at 1.45 V
+for both clock rates.  No cpufreq operation should change the CPU voltage.
 EOF
 }
 
@@ -55,20 +57,60 @@ show_clocks()
 	fi
 }
 
-show_sw2()
+find_sw2()
 {
-	registers=
-	for regmap in "$DEBUGFS"/regmap/*; do
-		[ -r "$regmap/name" ] || continue
-		if [ "$(cat "$regmap/name")" = mc13xxx ]; then
-			registers=$regmap/registers
+	SW2_PATH=
+	for regulator in /sys/class/regulator/regulator.*; do
+		[ -r "$regulator/name" ] || continue
+		if [ "$(cat "$regulator/name")" = SW2 ]; then
+			SW2_PATH=$regulator
 			break
 		fi
 	done
+}
 
-	if [ -r "$registers" ]; then
-		echo "MC13892 register 25 (SW2 slots; observation only):"
-		grep '^19:' "$registers"
+find_mc13xxx_registers()
+{
+	MC13XXX_REGISTERS=
+	for regmap in "$DEBUGFS"/regmap/*; do
+		[ -r "$regmap/name" ] || continue
+		if [ "$(cat "$regmap/name")" = mc13xxx ]; then
+			MC13XXX_REGISTERS=$regmap/registers
+			break
+		fi
+	done
+}
+
+show_sw2()
+{
+	find_sw2
+	if [ -n "$SW2_PATH" ]; then
+		echo "SW2 regulator state:"
+		read_file "  voltage (uV)" "$SW2_PATH/microvolts"
+		read_file "  minimum (uV)" "$SW2_PATH/min_microvolts"
+		read_file "  maximum (uV)" "$SW2_PATH/max_microvolts"
+		read_file "  state" "$SW2_PATH/state"
+	else
+		echo "SW2 regulator is not registered"
+	fi
+
+	find_mc13xxx_registers
+	if [ -r "$MC13XXX_REGISTERS" ]; then
+		raw=$(awk '$1 == "19:" { print $2; exit }' "$MC13XXX_REGISTERS")
+		echo "MC13892 register 25 (SW2 slots): 0x$raw"
+		value=$((0x$raw))
+		normal=$((value & 31))
+		dvs=$(((value >> 5) & 31))
+		standby=$(((value >> 10) & 31))
+		if [ $((value & 0x800000)) -ne 0 ]; then
+			normal=$((normal + 20))
+			dvs=$((dvs + 20))
+			standby=$((standby + 20))
+		fi
+		printf '  decoded normal=%d uV DVS=%d uV standby=%d uV\n' \
+			$((600000 + normal * 25000)) \
+			$((600000 + dvs * 25000)) \
+			$((600000 + standby * 25000))
 	else
 		echo "MC13892 register map not available"
 	fi
@@ -111,6 +153,10 @@ sample()
 {
 	freq=$(cat "$POLICY/scaling_cur_freq")
 	printf 'frequency=%s kHz' "$freq"
+	find_sw2
+	if [ -r "$SW2_PATH/microvolts" ]; then
+		printf ' sw2=%s uV' "$(cat "$SW2_PATH/microvolts")"
+	fi
 
 	clock_summary=$DEBUGFS/clk/clk_summary
 	if [ -r "$clock_summary" ]; then
@@ -161,6 +207,16 @@ hold_step()
 	else
 		echo 512000 >"$POLICY/scaling_max_freq"
 		echo 512000 >"$POLICY/scaling_min_freq"
+	fi
+
+	find_sw2
+	if [ -r "$SW2_PATH/microvolts" ]; then
+		actual_uv=$(cat "$SW2_PATH/microvolts")
+		expected_uv=1450000
+		if [ "$actual_uv" -ne "$expected_uv" ]; then
+			echo "SW2 voltage mismatch: expected $expected_uv uV, got $actual_uv uV" >&2
+			return 1
+		fi
 	fi
 
 	i=0
