@@ -34,6 +34,12 @@ Build everything with:
 
 Artifacts end up under the corresponding directory in `output/`, such as `output/kindle3_vendor_2_6_26/` or `output/kindle3_mainline/`. Sources are cached in `dl/`.
 
+Hardware research uses a separate, reproducible catalog for large Git
+repositories and third-party documents that cannot be committed here. See
+[`docs/external-resources.md`](docs/external-resources.md) to list or populate
+it in any directory you choose. With `uv` and `just` installed, start with
+`just resource list`.
+
 ### Using the vendor rootfs today
 
 Copy the generated rootfs to your device (you can use USB networking, SD, internal flash, or whatever you have) and chroot into it from the stock system. Wi‑Fi and SSH are already included; the default root password is `paper`, so change it as soon as you boot.
