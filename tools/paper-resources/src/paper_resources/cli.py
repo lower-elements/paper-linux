@@ -13,9 +13,36 @@ import tempfile
 from typing import Any, Iterable
 from urllib.request import Request, urlopen
 
+from dotenv import load_dotenv
+
 
 class ResourceError(RuntimeError):
     pass
+
+
+RESOURCE_ROOT_ENV = "PAPER_RESOURCES_DIR"
+
+
+def load_environment(manifest_path: Path) -> None:
+    """Load the repository-local .env without overriding the shell."""
+    load_dotenv(
+        dotenv_path=manifest_path.expanduser().resolve().parent / ".env",
+        override=False,
+    )
+
+
+def resolve_root(manifest_path: Path, explicit_root: Path | None = None) -> Path:
+    if explicit_root is not None:
+        return explicit_root.expanduser().resolve()
+    configured = os.environ.get(RESOURCE_ROOT_ENV)
+    if not configured:
+        raise ResourceError(
+            f"{RESOURCE_ROOT_ENV} is not configured; set it in .env or pass --root PATH"
+        )
+    root = Path(configured).expanduser()
+    if not root.is_absolute():
+        root = manifest_path.expanduser().resolve().parent / root
+    return root.resolve()
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -309,9 +336,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--manifest", type=Path, default=Path("external-resources.json"))
     subparsers = result.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="list catalogued resources")
+    subparsers.add_parser("env", help="print the effective resource environment")
+    subparsers.add_parser("path", help="print the configured resource directory")
     for command, help_text in (("populate", "fetch and prepare resources"), ("check", "check an existing resource directory")):
         subparser = subparsers.add_parser(command, help=help_text)
-        subparser.add_argument("root", type=Path, help="external resource directory")
+        subparser.add_argument("--root", type=Path, help="override the configured resource directory")
         subparser.add_argument("resources", nargs="*", metavar="ID", help="resource IDs (default: all)")
     return result
 
@@ -320,8 +349,16 @@ def main(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     try:
         manifest = load_manifest(args.manifest)
+        load_environment(args.manifest)
         if args.command == "list":
             print_catalog(manifest)
+            return 0
+        if args.command in ("env", "path"):
+            root = resolve_root(args.manifest)
+            if args.command == "env":
+                print(f"{RESOURCE_ROOT_ENV}={root}")
+            else:
+                print(root)
             return 0
         requested = set(args.resources)
         known = {item["id"] for key in ("documents", "repositories") for item in manifest.get(key, [])}
@@ -333,7 +370,7 @@ def main(arguments: list[str] | None = None) -> int:
         unknown = requested - known
         if unknown:
             raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
-        root = args.root.expanduser().resolve()
+        root = resolve_root(args.manifest, args.root)
         if args.command == "populate":
             root.mkdir(parents=True, exist_ok=True)
             for document in manifest.get("documents", []):

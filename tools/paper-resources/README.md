@@ -5,8 +5,8 @@ documents from a JSON manifest. It is developed inside Paper Linux but kept as
 a self-contained Python project so its source, tests, packaging metadata and
 dependency lock can be extracted together later.
 
-It requires Python 3.10 or newer and Git. It currently has no third-party
-runtime dependencies.
+It requires Python 3.10 or newer and Git. It uses `python-dotenv` to load the
+repository-local `.env` configuration file.
 
 ## Running the tool
 
@@ -15,19 +15,31 @@ interface:
 
 ```sh
 just resource list
-just resource populate /path/to/paper-resources
-just resource check /path/to/paper-resources
+just resource env
+just resource path
+just resource populate
+just resource check
 just resource-test
 ```
 
 Arguments after `resource` are passed directly to the `paper-resources` CLI.
 The wrapper supplies Paper Linux's root `external-resources.json` manifest.
+The resource directory is read from `PAPER_RESOURCES_DIR` in `.env`; an
+already-set shell variable takes precedence. Use `--root PATH` on `populate`
+or `check` for a one-off override.
 
 The equivalent direct uv invocation is:
 
 ```sh
 uv run --project tools/paper-resources paper-resources \
     --manifest external-resources.json list
+```
+
+The effective resource settings can be inspected with:
+
+```sh
+uv run --project tools/paper-resources paper-resources \
+    --manifest external-resources.json env
 ```
 
 `uv run` creates or updates the project-local virtual environment as needed.

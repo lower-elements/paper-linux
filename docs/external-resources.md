@@ -8,24 +8,29 @@ accepted only when their SHA-256 checksum matches the catalog.
 
 The tool is a self-contained Python project under
 [`tools/paper-resources`](../tools/paper-resources). It needs Python 3.10 or
-newer and Git, and currently has no third-party runtime dependencies. Choose
-any directory outside the Paper Linux checkout, then populate the complete
-catalog:
+newer and Git. Set `PAPER_RESOURCES_DIR` in the repository-local, gitignored
+`.env` file (see `.env.example`), then discover and populate the catalog:
 
 ```sh
 just resource list
-just resource populate /path/to/paper-resources
-just resource check /path/to/paper-resources
+just resource env
+just resource path
+just resource populate
+just resource check
 ```
+
+The shell environment takes precedence over `.env`, so a temporary directory
+can be selected with `PAPER_RESOURCES_DIR=/tmp/resources just resource check`.
+An explicit `--root PATH` option is also available for `populate` and `check`.
 
 The [tool README](../tools/paper-resources/README.md) documents direct `uv`
 usage and a standard `venv`/`pip` alternative.
 
 An individual document, repository, or worktree ID may be supplied after the
-directory. For example:
+command. For example:
 
 ```sh
-just resource populate /path/to/paper-resources \
+just resource populate \
     linux-upstream-2.6.26 epson-s1d13521-hardware-spec-1.2
 ```
 

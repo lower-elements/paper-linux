@@ -9,7 +9,9 @@ description = "Populate external source and reference resources for Paper Linux"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-2.0-only"
-dependencies = []
+dependencies = [
+    "python-dotenv>=1.2.1,<2.0.0",
+]
 
 [project.scripts]
 paper-resources = "paper_resources.cli:main"
