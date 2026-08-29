@@ -181,8 +181,8 @@ not be used to infer a regulator connection or safe power sequence.
 
 ## Evidence index
 
-All stock paths below are relative to the exact external archive worktree
-`../kernel-worktrees/amazon-kindle3-3.4.3`:
+All stock paths below are relative to the exact external kernel-history ref
+`archive/amazon-kindle3-3.4.3`:
 
 - `sound/soc/imx/mx35luigi_wm8960.c`: address, I2S master/slave roles, SSI and
   AUDMUX ports, 24 MHz PLL input, and board audio routes.
@@ -200,8 +200,8 @@ WM8960 codec file as `amazon-only` among the compared source states. In
 contrast, the MC9SDZ60 core and `SPKR` regulator implementation are
 byte-identical to the known Freescale 2009-03-17 BSP snapshot. The i.MX35
 clock/device files are modified or from a later unresolved source. These are
-source-presence classifications, not proof of authorship; see
-`../kernel-worktrees/meta-provenance` for the trust model and lineage report.
+source-presence classifications, not proof of authorship; see the
+`meta/provenance` branch for the trust model and lineage report.
 
 Upstream Linux paths inspected at version 7.0.11:
 

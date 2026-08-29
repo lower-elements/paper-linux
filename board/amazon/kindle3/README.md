@@ -35,9 +35,9 @@ display and Wi-Fi remain outside the enabled mainline hardware set.
 
 ## Source provenance
 
-Kernel archaeology is maintained in the sibling `../kernel-worktrees`
-collection. Its exact Amazon GPL snapshot is
-`amazon-kindle3-3.4.3` (`archive/amazon-kindle3-3.4.3`); the known Freescale
+Kernel archaeology is maintained in the external kernel-history collection
+described by the [resource catalog](../../../docs/external-resources.md). Its
+exact Amazon GPL snapshot is `archive/amazon-kindle3-3.4.3`; the known Freescale
 MX35 BSP snapshot, upstream and stable bases, PREEMPT_RT reconstruction, NXP
 branches and Linux 7.0.11 source are separate worktrees. Provenance notes and
 the generated per-file matrix are under `meta-provenance`.

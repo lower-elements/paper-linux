@@ -9,8 +9,8 @@ treated as a fact, and a programmed voltage is not treated as a measurement.
 The conclusions below combine:
 
 - read-only inspection of a running stock Kindle;
-- the exact Amazon GPL snapshot and its comparison sources under
-  `../kernel-worktrees`;
+- the exact Amazon GPL snapshot and its external kernel-history comparison
+  sources;
 - Barebox's Kindle 3 board support;
 - component manufacturers' documentation; and
 - board photographs and third-party teardowns.
@@ -58,9 +58,8 @@ of WAN sysfs entries is not evidence that a rail is populated on this board.
 ## Source provenance boundaries
 
 The kernel source used here is the exact historyless GPL archive packaged by
-Amazon on 7 September 2012, preserved as
-`../kernel-worktrees/amazon-kindle3-3.4.3` and the ref
-`archive/amazon-kindle3-3.4.3`. The sibling `meta-provenance` worktree records
+Amazon on 7 September 2012, preserved as the external kernel-history ref
+`archive/amazon-kindle3-3.4.3`. The `meta/provenance` branch records
 its source URL, checksums, comparison method and confidence limits. Its
 current reconstruction finds:
 
@@ -619,10 +618,10 @@ These are not safe gaps to fill by analogy with another i.MX35 board.
 
 ### Exact Amazon GPL snapshot and provenance
 
-All paths below are relative to
-`../kernel-worktrees/amazon-kindle3-3.4.3`, the exact archive snapshot, and
-are not vendored into this repository. File-level origin classifications come
-from `../kernel-worktrees/meta-provenance/reports/path-provenance.tsv`; the
+All paths below are relative to the exact archive snapshot at external
+kernel-history ref `archive/amazon-kindle3-3.4.3` and are not vendored into
+this repository. File-level origin classifications come from
+`reports/path-provenance.tsv` on the `meta/provenance` branch; the
 limitations above apply to every attribution:
 
 - `arch/arm/mach-mx35/mx35_luigi.c`: PMIC SPI registration, eSDHC platform
@@ -649,8 +648,8 @@ limitations above apply to every attribution:
 - `drivers/usb/gadget/arcotg_udc.c`: USB/charger state machine.
 - the built stock `.config`: selected SDHCI and Atheros paths.
 
-The archive and lineage metadata are maintained separately under
-`../kernel-worktrees/meta-provenance`. Canonical sources include Amazon's
+The archive and lineage metadata are maintained separately on the external
+kernel-history `meta/provenance` branch. Canonical sources include Amazon's
 [Kindle source-code download page](https://digprjsurvey.amazon.com/csad/help/node/200203720),
 the [upstream Linux repository](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git),
 the [NXP i.MX Linux repository](https://github.com/nxp-imx/linux-imx), and the

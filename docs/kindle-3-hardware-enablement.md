@@ -18,11 +18,14 @@ in the display controller's own flash. The driver can also load a newer
 panel-matched waveform from the rootfs; that override path is not taken on the
 inspected unit.
 
-The exact matching Amazon archive is available at
-`../kernel-worktrees/amazon-kindle3-3.4.3`. Its provenance-separated upstream,
-stable, RT, Freescale/NXP and current-mainline comparison trees and confidence
-notes are under `../kernel-worktrees/meta-provenance`. “Archive-only” paths in
-that analysis are evidence of source presence, not proof of Amazon authorship.
+The exact matching Amazon archive is the
+`archive/amazon-kindle3-3.4.3` ref in the external kernel-history repository.
+Its provenance-separated upstream, stable, RT, Freescale/NXP and
+current-mainline comparison trees and confidence notes are on the
+`meta/provenance` branch. See the [external resource
+catalog](external-resources.md) for the portable public subset. “Archive-only”
+paths in that analysis are evidence of source presence, not proof of Amazon
+authorship.
 
 ## What SysV init starts
 
