@@ -30,6 +30,10 @@ Alternatively, configure the minimal mainline-development scaffold:
 
     just configure kindle3_mainline
 
+Change an existing output configuration through Buildroot's config helper:
+
+    just config kindle3_mainline --set-str BR2_PACKAGE_FOO y
+
 Build everything by naming the configured output tree:
 
     just build kindle3_vendor_2_6_26

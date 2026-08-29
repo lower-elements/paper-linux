@@ -36,7 +36,8 @@ Key paths to know:
 1) Install standard Buildroot prerequisites for your host distro and `just`.
 2) Fetch submodules: `git submodule update --init --recursive`
 3) Configure an output tree, for example: `just configure kindle3_vendor_2_6_26`
-4) Build it: `just build kindle3_vendor_2_6_26`
+4) Change an existing output configuration with `just config <configuration> ...`, then refresh it with `just build <configuration> olddefconfig`.
+5) Build it: `just build kindle3_vendor_2_6_26`
 
 Artifacts land under the matching `output/<configuration>/` directory; downloads cache in `dl/`.
 

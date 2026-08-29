@@ -20,6 +20,13 @@ resource-manifest := "external-resources.json"
     buildroot/utils/config --file "output/$1/.config" --set-str DL_DIR {{quote(download-dir)}}
     make -C "output/$1" olddefconfig
 
+# Modify an existing output configuration through Buildroot's config helper.
+[group: 'build']
+@config configuration +args:
+    case "$1" in *[!A-Za-z0-9_]*) echo "error: invalid configuration name: $1" >&2; exit 2;; esac
+    test -f "output/$1/.config" || { echo "error: configure $1 first with: just configure $1" >&2; exit 2; }
+    configuration="$1"; shift; buildroot/utils/config --file "output/$configuration/.config" "$@"
+
 # Build a configuration, optionally passing targets to its generated Makefile.
 [group: 'build']
 @build configuration *targets:
