@@ -37,7 +37,7 @@
   "repositories": [
     {
       "id": "linux-kernel-history",
-      "description": "Shared Linux history used to compare upstream, stable, and NXP/Freescale kernel versions",
+      "description": "Shared Linux history used to compare Amazon/Lab126, upstream, stable, and NXP/Freescale kernel versions",
       "tags": ["kernel", "kindle3", "imx35"],
       "path": "git/linux-kernel-history.git",
       "clone_url": "https://github.com/torvalds/linux.git",
@@ -57,6 +57,13 @@
           ]
         },
         {
+          "name": "katadelos",
+          "url": "https://github.com/katadelos/linux-2.6.26-lab126.git",
+          "fetch": [
+            "+refs/heads/master:refs/remotes/katadelos/master"
+          ]
+        },
+        {
           "name": "nxp",
           "url": "https://github.com/nxp-imx/linux-imx.git",
           "fetch": [
@@ -69,9 +76,7 @@
         {
           "id": "linux-amazon-kindle3-3.4.3",
           "path": "worktrees/linux/amazon-kindle3-3.4.3",
-          "ref": "archive/amazon-kindle3-3.4.3",
-          "manual": true,
-          "source_page": "https://digprjsurvey.amazon.com/csad/help/node/200203720"
+          "ref": "refs/remotes/katadelos/master"
         },
         {
           "id": "linux-kindle3-provenance",

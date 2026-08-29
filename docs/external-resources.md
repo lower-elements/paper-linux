@@ -60,10 +60,11 @@ just resource list
 
 The first version intentionally does not build synthetic Git histories or
 unpack source archives into commits. Amazon's historyless Kindle GPL release
-and the locally reconstructed comparison branches are catalogued as manual
-worktrees: once their named refs have been imported, `populate` creates them,
-but constructing those refs remains future recipe work. Public upstream,
-stable, and NXP states are reproducible now.
+is fetched from a public Git mirror. The locally reconstructed comparison
+branches are catalogued as manual worktrees: once their named refs have been
+imported, `populate` creates them, but constructing those refs remains future
+recipe work. Public Amazon/Lab126, upstream, stable, and NXP states are
+reproducible now.
 Documentation refers to reproducible entries by manifest ID and to those
 historical states by their Git ref, never by a developer-specific filesystem
 path.
