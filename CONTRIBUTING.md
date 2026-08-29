@@ -17,7 +17,9 @@ Builds are driven by the Buildroot external tree in this repo. Toolchains are mu
 Paper Linux is organized as a Buildroot external tree. That means upstream Buildroot does the heavy lifting while this repo supplies configs, patches, and packages. If you’re new to the pattern, the [Buildroot manual](https://buildroot.org/docs.html) has a good overview of external trees and how they plug into a build.
 
 Key paths to know:
-- `Makefile` — wrapper that drives Buildroot with `BR2_EXTERNAL` pointing here; outputs are under `output/`.
+
+- `Justfile` — command runner for configuring and building output trees and for
+  project tools; Buildroot outputs are under `output/`.
 - `configs/kindle3_vendor_2_6_26_defconfig` — established Kindle 3 vendor-kernel userspace.
 - `configs/kindle3_mainline_defconfig` — minimal mainline-development userspace scaffold.
 - `board/paper/common/busybox.config` — BusyBox feature set shared by targets.
@@ -30,16 +32,19 @@ Key paths to know:
 - `output/` — per-defconfig build output (created after building).
 
 ## Getting set up
-1) Install standard Buildroot prerequisites for your host distro.  
-2) Fetch submodules: `git submodule update --init --recursive`  
-3) Select a configuration, for example: `make kindle3_vendor_2_6_26_defconfig`
-4) Build: `make`  
+
+1) Install standard Buildroot prerequisites for your host distro and `just`.
+2) Fetch submodules: `git submodule update --init --recursive`
+3) Configure an output tree, for example: `just configure kindle3_vendor_2_6_26`
+4) Build it: `just build kindle3_vendor_2_6_26`
+
 Artifacts land under the matching `output/<configuration>/` directory; downloads cache in `dl/`.
 
 Every defconfig lists its patch layers explicitly in `BR2_GLOBAL_PATCH_DIR`.
 See `patches/README.md` before adding or moving a patch.
 
 ## Contribution workflow
+
 - Open a small PR when possible; keep patches focused.
 - Include repro steps or test notes. If you touched power, Wi‑Fi, or display behavior, mention which device you tested on and what changed functionally.
 - If adding packages, justify their resource footprint and E‑ink friendliness; prefer static/diet alternatives.

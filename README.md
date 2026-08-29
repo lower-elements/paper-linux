@@ -16,21 +16,28 @@ The established Kindle 3 target builds a dependable chroot-style environment tha
 
 ## Build instructions
 
-Install the usual Buildroot prerequisites for your host distro (compiler toolchain, `make`, `git`, flex/bison, ncurses headers; see the Buildroot manual if unsure). Then pull submodules:
+Install the usual Buildroot prerequisites for your host distro (compiler
+toolchain, `make`, `git`, flex/bison, ncurses headers; see the Buildroot manual
+if unsure) and install `just`. Then pull submodules:
 
     git submodule update --init --recursive
 
-Select the established vendor-kernel configuration:
+Configure the established vendor-kernel output tree:
 
-    make kindle3_vendor_2_6_26_defconfig
+    just configure kindle3_vendor_2_6_26
 
-Alternatively, select the minimal mainline-development scaffold:
+Alternatively, configure the minimal mainline-development scaffold:
 
-    make kindle3_mainline_defconfig
+    just configure kindle3_mainline
 
-Build everything with:
+Build everything by naming the configured output tree:
 
-    make
+    just build kindle3_vendor_2_6_26
+
+Buildroot targets can be passed after the configuration, for example:
+
+    just build kindle3_mainline olddefconfig
+    just build kindle3_mainline linux-rebuild
 
 Artifacts end up under the corresponding directory in `output/`, such as `output/kindle3_vendor_2_6_26/` or `output/kindle3_mainline/`. Sources are cached in `dl/`.
 
