@@ -138,6 +138,20 @@ class PageResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SectionResult:
+    resource_id: str
+    description: str
+    path: str
+    section_index: int
+    name: str
+    pages: list[int]
+    content: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 SCHEMA = """
 PRAGMA user_version = 1;
 
@@ -913,6 +927,68 @@ def read_page(
         path=str((root / document["path"]).resolve()),
         page_number=page_number,
         sections=sections,
+        content="\n\n".join(row["content"] for row in chunks),
+    )
+
+
+def read_section(
+    connection: sqlite3.Connection,
+    root: Path,
+    document_id: str,
+    section_index: int,
+) -> SectionResult:
+    document = connection.execute(
+        "SELECT id, description, path FROM documents WHERE id = ?", (document_id,)
+    ).fetchone()
+    if document is None:
+        raise CatalogIndexError(f"document is not indexed: {document_id}")
+    section = connection.execute(
+        """
+        SELECT id, name FROM document_sections
+        WHERE document_id = ? AND section_index = ?
+        """,
+        (document_id, section_index),
+    ).fetchone()
+    if section is None:
+        raise CatalogIndexError(
+            f"{document_id}: no indexed section {section_index}"
+        )
+    chunks = connection.execute(
+        """
+        SELECT chunks.content
+        FROM section_chunks
+        JOIN chunks
+          ON chunks.document_id = section_chunks.document_id
+         AND chunks.id = section_chunks.chunk_id
+        WHERE section_chunks.document_id = ?
+          AND section_chunks.section_id = ?
+        ORDER BY chunks.chunk_index
+        """,
+        (document_id, section["id"]),
+    ).fetchall()
+    pages = [
+        row[0]
+        for row in connection.execute(
+            """
+            SELECT DISTINCT chunk_pages.page_number
+            FROM section_chunks
+            JOIN chunk_pages
+              ON chunk_pages.document_id = section_chunks.document_id
+             AND chunk_pages.chunk_id = section_chunks.chunk_id
+            WHERE section_chunks.document_id = ?
+              AND section_chunks.section_id = ?
+            ORDER BY chunk_pages.page_number
+            """,
+            (document_id, section["id"]),
+        )
+    ]
+    return SectionResult(
+        resource_id=document["id"],
+        description=document["description"],
+        path=str((root / document["path"]).resolve()),
+        section_index=section_index,
+        name=section["name"],
+        pages=pages,
         content="\n\n".join(row["content"] for row in chunks),
     )
 

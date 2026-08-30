@@ -61,10 +61,11 @@ just resource search --fts 'VCOM OR VBNEG'
 ```
 
 Results include the resource ID, physical PDF page, description, snippet, and
-resolved file path. `page` prints the full indexed text for a page. `extract`
+resolved file path. `page` prints the full indexed text for a page, while
+`section` prints an extracted section and its associated pages. `extract`
 runs an extractor directly without opening or changing the database, which is
-useful for comparing extractors. `index`, `index-status`, `search`, `page`, and
-`extract` also accept `--json`.
+useful for comparing extractors. `index`, `index-status`, `search`, `page`,
+`section`, and `extract` also accept `--json`.
 
 Four PDF extractors are available:
 
@@ -151,9 +152,20 @@ An MCP host should launch that command with the Paper Linux repository as its
 working directory. `just resource-mcp` is an equivalent convenience command.
 The server exposes typed tools to inspect the catalog, search indexed text,
 read physical PDF pages, inspect index status, and update document indexes. It
-also exposes the catalog as `paper-resource://catalog`. Resource population is
-deliberately not exposed over MCP; continue to use `just resource populate`
-when downloads or repository creation are required.
+also exposes JSON resources for the complete catalog, document/repository/
+worktree collections, individual manifest resources, indexed physical PDF
+pages, and extracted sections. Resource templates use the following URI forms:
+
+```text
+paper-resource://documents/{document_id}
+paper-resource://documents/{document_id}/pages/{page_number}
+paper-resource://documents/{document_id}/sections/{section_index}
+paper-resource://repositories/{repository_id}
+paper-resource://worktrees/{worktree_id}
+```
+
+Resource population is deliberately not exposed over MCP; continue to use
+`just resource populate` when downloads or repository creation are required.
 
 Tool names, input schemas, outputs, and configuration are independent of any
 particular model or agent host. Host-specific setup should point at the same

@@ -7,10 +7,10 @@ from contextlib import contextmanager
 from dataclasses import asdict
 import json
 from pathlib import Path
-from typing import Annotated, Iterator, Literal
+from typing import Annotated, Any, Iterator, Literal
 
 from mcp.server import MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
@@ -35,6 +35,28 @@ def domain_errors() -> Iterator[None]:
         yield
     except (ResourceError, catalog_index.CatalogIndexError) as error:
         raise ToolError(str(error)) from error
+
+
+@contextmanager
+def resource_errors() -> Iterator[None]:
+    """Turn missing catalog/index entries into MCP resource lookup errors."""
+    try:
+        yield
+    except (ResourceError, catalog_index.CatalogIndexError) as error:
+        raise ResourceNotFoundError(str(error)) from error
+
+
+def json_resource(value: Any) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False)
+
+
+def resource_of_kind(
+    manager: ResourceManager, resource_id: str, kind: ResourceKind
+) -> ResourceInfo:
+    resource = manager.get_resource(resource_id)
+    if resource.kind != kind:
+        raise ResourceError(f"{resource_id} is not a {kind}")
+    return resource
 
 
 def create_server(manager: ResourceManager) -> MCPServer:
@@ -118,14 +140,95 @@ def create_server(manager: ResourceManager) -> MCPServer:
         with domain_errors():
             return manager.index_documents(resource_ids, extractor)
 
-    @server.resource("paper-resource://catalog")
+    @server.resource("paper-resource://catalog", mime_type="application/json")
     def catalog_resource() -> str:
         """The resource catalog and local availability as JSON."""
-        return json.dumps(
-            [asdict(resource) for resource in manager.list_resources()],
-            indent=2,
-            ensure_ascii=False,
+        return json_resource(
+            [asdict(resource) for resource in manager.list_resources()]
         )
+
+    @server.resource("paper-resource://documents", mime_type="application/json")
+    def documents_resource() -> str:
+        """All cataloged reference documents and their local availability."""
+        return json_resource(
+            [
+                asdict(resource)
+                for resource in manager.list_resources(kind="document")
+            ]
+        )
+
+    @server.resource("paper-resource://repositories", mime_type="application/json")
+    def repositories_resource() -> str:
+        """All cataloged Git repositories, remotes, and worktrees."""
+        return json_resource(
+            [
+                asdict(resource)
+                for resource in manager.list_resources(kind="repository")
+            ]
+        )
+
+    @server.resource("paper-resource://worktrees", mime_type="application/json")
+    def worktrees_resource() -> str:
+        """All cataloged Git worktrees and their local availability."""
+        return json_resource(
+            [
+                asdict(resource)
+                for resource in manager.list_resources(kind="worktree")
+            ]
+        )
+
+    @server.resource(
+        "paper-resource://documents/{document_id}", mime_type="application/json"
+    )
+    def document_resource(document_id: str) -> str:
+        """Manifest metadata and local availability for one document."""
+        with resource_errors():
+            return json_resource(
+                asdict(resource_of_kind(manager, document_id, "document"))
+            )
+
+    @server.resource(
+        "paper-resource://documents/{document_id}/pages/{page_number}",
+        mime_type="application/json",
+    )
+    def document_page_resource(document_id: str, page_number: int) -> str:
+        """Indexed text and context for one physical PDF page."""
+        with resource_errors():
+            return json_resource(
+                manager.get_document_page(document_id, page_number).to_dict()
+            )
+
+    @server.resource(
+        "paper-resource://documents/{document_id}/sections/{section_index}",
+        mime_type="application/json",
+    )
+    def document_section_resource(document_id: str, section_index: int) -> str:
+        """Indexed text and page context for one extracted document section."""
+        with resource_errors():
+            return json_resource(
+                manager.get_document_section(document_id, section_index).to_dict()
+            )
+
+    @server.resource(
+        "paper-resource://repositories/{repository_id}",
+        mime_type="application/json",
+    )
+    def repository_resource(repository_id: str) -> str:
+        """Manifest metadata, remotes, and worktrees for one Git repository."""
+        with resource_errors():
+            return json_resource(
+                asdict(resource_of_kind(manager, repository_id, "repository"))
+            )
+
+    @server.resource(
+        "paper-resource://worktrees/{worktree_id}", mime_type="application/json"
+    )
+    def worktree_resource(worktree_id: str) -> str:
+        """Manifest metadata and local availability for one Git worktree."""
+        with resource_errors():
+            return json_resource(
+                asdict(resource_of_kind(manager, worktree_id, "worktree"))
+            )
 
     return server
 

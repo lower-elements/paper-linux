@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 import anyio
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 
 from paper_resources import catalog_index, cli, manager as manager_module
 from paper_resources.config import ResourceSettings
@@ -295,6 +295,28 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(page["page_number"], 2)
         self.assertIn("Display power sequence", page["content"])
 
+        with sqlite3.connect(self.resources / "resources.db") as connection:
+            section_id = connection.execute(
+                "INSERT INTO document_sections(document_id, section_index, name) VALUES (?, ?, ?)",
+                ("test-document", 0, "Power sequencing"),
+            ).lastrowid
+            chunk_id = connection.execute(
+                "SELECT id FROM chunks WHERE document_id = ? AND chunk_index = ?",
+                ("test-document", 1),
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO section_chunks(document_id, section_id, chunk_id) VALUES (?, ?, ?)",
+                ("test-document", section_id, chunk_id),
+            )
+        section = json.loads(
+            self.tool(
+                "section", "--root", str(self.resources), "test-document", "0", "--json"
+            ).stdout
+        )
+        self.assertEqual(section["name"], "Power sequencing")
+        self.assertEqual(section["pages"], [2])
+        self.assertIn("Display power sequence", section["content"])
+
         extraction = json.loads(
             self.tool(
                 "extract",
@@ -368,6 +390,26 @@ class PaperResourcesTest(unittest.TestCase):
     def test_mcp_tools_and_resources(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
         self.tool("index", "--root", str(self.resources))
+        with sqlite3.connect(self.resources / "resources.db") as connection:
+            section_id = connection.execute(
+                """
+                INSERT INTO document_sections(document_id, section_index, name)
+                VALUES ('test-document', 0, 'Power sequencing')
+                """
+            ).lastrowid
+            chunk_id = connection.execute(
+                """
+                SELECT id FROM chunks
+                WHERE document_id = 'test-document' AND chunk_index = 1
+                """
+            ).fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO section_chunks(document_id, section_id, chunk_id)
+                VALUES ('test-document', ?, ?)
+                """,
+                (section_id, chunk_id),
+            )
         settings = ResourceSettings.load(self.manifest, self.resources)
         manager = ResourceManager.load(settings)
         self.addCleanup(manager.close)
@@ -395,6 +437,28 @@ class PaperResourcesTest(unittest.TestCase):
             )
             self.assertFalse(
                 tools_by_name["index_documents"].annotations.read_only_hint
+            )
+
+            resources = await server.list_resources()
+            self.assertEqual(
+                {str(resource.uri) for resource in resources},
+                {
+                    "paper-resource://catalog",
+                    "paper-resource://documents",
+                    "paper-resource://repositories",
+                    "paper-resource://worktrees",
+                },
+            )
+            templates = await server.list_resource_templates()
+            self.assertEqual(
+                {template.uri_template for template in templates},
+                {
+                    "paper-resource://documents/{document_id}",
+                    "paper-resource://documents/{document_id}/pages/{page_number}",
+                    "paper-resource://documents/{document_id}/sections/{section_index}",
+                    "paper-resource://repositories/{repository_id}",
+                    "paper-resource://worktrees/{worktree_id}",
+                },
             )
 
             catalog = await server.call_tool("get_catalog_info", {})
@@ -447,6 +511,46 @@ class PaperResourcesTest(unittest.TestCase):
 
             resource = await server.read_resource("paper-resource://catalog")
             self.assertIn("test-document", list(resource)[0].content)
+
+            document = await server.read_resource(
+                "paper-resource://documents/test-document"
+            )
+            self.assertEqual(
+                json.loads(list(document)[0].content)["kind"], "document"
+            )
+
+            page_resource = await server.read_resource(
+                "paper-resource://documents/test-document/pages/2"
+            )
+            page_content = json.loads(list(page_resource)[0].content)
+            self.assertEqual(page_content["page_number"], 2)
+            self.assertIn("Display power sequence", page_content["content"])
+
+            section_resource = await server.read_resource(
+                "paper-resource://documents/test-document/sections/0"
+            )
+            section_content = json.loads(list(section_resource)[0].content)
+            self.assertEqual(section_content["name"], "Power sequencing")
+            self.assertEqual(section_content["pages"], [2])
+
+            repository = await server.read_resource(
+                "paper-resource://repositories/test-repository"
+            )
+            self.assertEqual(
+                json.loads(list(repository)[0].content)["kind"], "repository"
+            )
+
+            worktree = await server.read_resource(
+                "paper-resource://worktrees/test-v1"
+            )
+            self.assertEqual(
+                json.loads(list(worktree)[0].content)["kind"], "worktree"
+            )
+
+            with self.assertRaises(ResourceNotFoundError):
+                await server.read_resource(
+                    "paper-resource://documents/not-present"
+                )
 
         with patch(
             "paper_resources.catalog_index.open_database",

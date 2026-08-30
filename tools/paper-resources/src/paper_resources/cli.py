@@ -33,6 +33,16 @@ def positive_integer(value: str) -> int:
     return result
 
 
+def nonnegative_integer(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if result < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
+    return result
+
+
 def run_git(arguments: Iterable[str], *, cwd: Path | None = None, capture: bool = False) -> str:
     command = ["git", *arguments]
     try:
@@ -277,6 +287,16 @@ def print_page_result(result: catalog_index.PageResult) -> None:
     print(result.content)
 
 
+def print_section_result(result: catalog_index.SectionResult) -> None:
+    print(f"{result.resource_id}, section {result.section_index}: {result.name}")
+    print(result.description)
+    if result.pages:
+        print(f"Pages: {', '.join(str(page) for page in result.pages)}")
+    print(result.path)
+    print()
+    print(result.content)
+
+
 def print_extraction(result: dict[str, Any]) -> None:
     pages_by_chunk: dict[int, list[int]] = {}
     for relation in result["chunk_pages"]:
@@ -356,6 +376,14 @@ def parser() -> argparse.ArgumentParser:
     page_parser.add_argument("resource", metavar="ID", help="document ID")
     page_parser.add_argument("page_number", type=positive_integer, metavar="PAGE")
 
+    section_parser = subparsers.add_parser(
+        "section", help="print indexed text for one extracted document section"
+    )
+    section_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    section_parser.add_argument("--json", action="store_true", help="print JSON output")
+    section_parser.add_argument("resource", metavar="ID", help="document ID")
+    section_parser.add_argument("section_index", type=nonnegative_integer, metavar="SECTION")
+
     for command, help_text in (("populate", "fetch and prepare resources"), ("check", "check an existing resource directory")):
         subparser = subparsers.add_parser(command, help=help_text)
         subparser.add_argument("--root", type=Path, help="override the configured resource directory")
@@ -433,6 +461,14 @@ def main(arguments: list[str] | None = None) -> int:
                 print(catalog_index.json_output(page.to_dict()))
             else:
                 print_page_result(page)
+            return 0
+
+        if args.command == "section":
+            section = manager.get_document_section(args.resource, args.section_index)
+            if args.json:
+                print(catalog_index.json_output(section.to_dict()))
+            else:
+                print_section_result(section)
             return 0
 
         requested = set(args.resources)

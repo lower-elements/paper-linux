@@ -260,6 +260,21 @@ class ResourceManager:
                 page_number,
             )
 
+    def get_document_section(
+        self, document_id: str, section_index: int
+    ) -> catalog_index.SectionResult:
+        if document_id not in self.documents_by_id:
+            raise ResourceError(f"unknown document ID: {document_id}")
+        if section_index < 0:
+            raise ResourceError("section index must be at least 0")
+        with self._database_lock:
+            return catalog_index.read_section(
+                self._database(create=False),
+                self.settings.root,
+                document_id,
+                section_index,
+            )
+
     def extract_document(
         self,
         document_id: str,
