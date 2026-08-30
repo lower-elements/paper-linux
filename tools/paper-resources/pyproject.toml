@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-2.0-only"
 dependencies = [
+    "pypdf>=6.0.0,<7.0.0",
     "python-dotenv>=1.2.1,<2.0.0",
 ]
 

@@ -15,12 +15,16 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 
+from . import catalog_index
+
 
 class ResourceError(RuntimeError):
     pass
 
 
 RESOURCE_ROOT_ENV = "PAPER_RESOURCES_DIR"
+RESOURCE_DATABASE_ENV = "PAPER_RESOURCES_DB"
+PDF_BACKEND_ENV = "PAPER_RESOURCES_PDF_BACKEND"
 
 
 def load_environment(manifest_path: Path) -> None:
@@ -43,6 +47,36 @@ def resolve_root(manifest_path: Path, explicit_root: Path | None = None) -> Path
     if not root.is_absolute():
         root = manifest_path.expanduser().resolve().parent / root
     return root.resolve()
+
+
+def resolve_database(root: Path) -> Path:
+    configured = os.environ.get(RESOURCE_DATABASE_ENV)
+    if not configured:
+        return root / "resources.db"
+    path = Path(configured).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def resolve_pdf_backend(explicit_backend: str | None = None) -> str:
+    backend = explicit_backend or os.environ.get(PDF_BACKEND_ENV, "pypdf")
+    if backend not in catalog_index.PDF_BACKENDS:
+        raise ResourceError(
+            f"invalid {PDF_BACKEND_ENV}: {backend!r}; "
+            f"choose from {', '.join(catalog_index.PDF_BACKENDS)}"
+        )
+    return backend
+
+
+def positive_integer(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if result < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return result
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
@@ -331,6 +365,55 @@ def print_catalog(manifest: dict[str, Any]) -> None:
                 print(f"    {worktree['id']}: {worktree['ref']}")
 
 
+def print_index_report(report: catalog_index.IndexReport) -> None:
+    for outcome in report.outcomes:
+        print(f"{outcome.action:10} {outcome.document_id} ({outcome.detail})")
+    updated = sum(outcome.action != "failed" for outcome in report.outcomes)
+    failed = sum(outcome.action == "failed" for outcome in report.outcomes)
+    summary = f"{updated} updated, {report.unchanged} already current"
+    if failed:
+        summary += f", {failed} failed"
+    print(summary)
+
+
+def print_search_results(results: list[catalog_index.SearchResult]) -> None:
+    if not results:
+        print("no matches")
+        return
+    for index, result in enumerate(results):
+        if index:
+            print()
+        pages = ", ".join(str(page) for page in result.pages) or "unknown"
+        print(f"{result.resource_id}, PDF page {pages}")
+        print(result.description)
+        if result.sections:
+            print(f"Sections: {'; '.join(result.sections)}")
+        print(result.snippet)
+        print(result.path)
+
+
+def print_page_result(result: catalog_index.PageResult) -> None:
+    print(f"{result.resource_id}, PDF page {result.page_number}")
+    print(result.description)
+    if result.sections:
+        print(f"Sections: {'; '.join(result.sections)}")
+    print(result.path)
+    print()
+    print(result.content)
+
+
+def print_extraction(result: dict[str, Any]) -> None:
+    for index, page in enumerate(result["pages"]):
+        if index:
+            print("\n\f")
+        print(f"{result['resource_id']}, PDF page {page['page_number']}")
+        print(result["description"])
+        print(f"Extractor: {result['extractor']} {result['extractor_version']}")
+        print(result["path"])
+        print()
+        print(page["content"])
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--manifest", type=Path, default=Path("external-resources.json"))
@@ -338,6 +421,45 @@ def parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="list catalogued resources")
     subparsers.add_parser("env", help="print the effective resource environment")
     subparsers.add_parser("path", help="print the configured resource directory")
+
+    index_parser = subparsers.add_parser("index", help="index document text for search")
+    index_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    index_parser.add_argument("--pdf-backend", choices=catalog_index.PDF_BACKENDS)
+    index_parser.add_argument("--json", action="store_true", help="print JSON output")
+    index_parser.add_argument("resources", nargs="*", metavar="ID", help="document IDs (default: all)")
+
+    status_parser = subparsers.add_parser(
+        "index-status", help="show whether document indexes are current"
+    )
+    status_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    status_parser.add_argument("--pdf-backend", choices=catalog_index.PDF_BACKENDS)
+    status_parser.add_argument("--json", action="store_true", help="print JSON output")
+    status_parser.add_argument("resources", nargs="*", metavar="ID", help="document IDs (default: all)")
+
+    extract_parser = subparsers.add_parser(
+        "extract", help="extract PDF text without modifying the index"
+    )
+    extract_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    extract_parser.add_argument("--pdf-backend", choices=catalog_index.PDF_BACKENDS)
+    extract_parser.add_argument("--page", type=positive_integer, help="extract one physical PDF page")
+    extract_parser.add_argument("--json", action="store_true", help="print JSON output")
+    extract_parser.add_argument("resource", metavar="ID", help="document ID")
+
+    search_parser = subparsers.add_parser("search", help="search indexed document text")
+    search_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    search_parser.add_argument("--document", metavar="ID", help="restrict matches to one document")
+    search_parser.add_argument("--tag", help="restrict matches to documents with this tag")
+    search_parser.add_argument("--limit", type=positive_integer, default=10)
+    search_parser.add_argument("--fts", action="store_true", help="interpret the query as raw FTS5 syntax")
+    search_parser.add_argument("--json", action="store_true", help="print JSON output")
+    search_parser.add_argument("query", help="search query")
+
+    page_parser = subparsers.add_parser("page", help="print indexed text for one PDF page")
+    page_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    page_parser.add_argument("--json", action="store_true", help="print JSON output")
+    page_parser.add_argument("resource", metavar="ID", help="document ID")
+    page_parser.add_argument("page_number", type=positive_integer, metavar="PAGE")
+
     for command, help_text in (("populate", "fetch and prepare resources"), ("check", "check an existing resource directory")):
         subparser = subparsers.add_parser(command, help=help_text)
         subparser.add_argument("--root", type=Path, help="override the configured resource directory")
@@ -357,9 +479,83 @@ def main(arguments: list[str] | None = None) -> int:
             root = resolve_root(args.manifest)
             if args.command == "env":
                 print(f"{RESOURCE_ROOT_ENV}={root}")
+                print(f"{RESOURCE_DATABASE_ENV}={resolve_database(root)}")
+                print(f"{PDF_BACKEND_ENV}={resolve_pdf_backend()}")
             else:
                 print(root)
             return 0
+
+        documents = manifest.get("documents", [])
+        documents_by_id = {document["id"]: document for document in documents}
+        root = resolve_root(args.manifest, args.root)
+        database = resolve_database(root)
+
+        if args.command in ("index", "index-status"):
+            requested = set(args.resources)
+            backend = resolve_pdf_backend(args.pdf_backend)
+            if args.command == "index":
+                report = catalog_index.index_documents(
+                    documents, root, database, backend, requested
+                )
+                if args.json:
+                    print(catalog_index.json_output(report.to_dict()))
+                else:
+                    print_index_report(report)
+                return 1 if report.failed else 0
+            statuses = catalog_index.index_status(
+                documents, root, database, backend, requested
+            )
+            if args.json:
+                print(catalog_index.json_output([status.to_dict() for status in statuses]))
+            else:
+                for status in statuses:
+                    print(f"{status.status:10} {status.document_id} ({status.detail})")
+            return 0 if all(status.status == "ok" for status in statuses) else 1
+
+        if args.command == "extract":
+            document = documents_by_id.get(args.resource)
+            if document is None:
+                raise ResourceError(f"unknown document ID: {args.resource}")
+            extraction = catalog_index.extract_document(
+                document,
+                root,
+                resolve_pdf_backend(args.pdf_backend),
+                args.page,
+            )
+            if args.json:
+                print(catalog_index.json_output(extraction))
+            else:
+                print_extraction(extraction)
+            return 0
+
+        if args.command == "search":
+            if args.document is not None and args.document not in documents_by_id:
+                raise ResourceError(f"unknown document ID: {args.document}")
+            results = catalog_index.search_database(
+                database,
+                root,
+                args.query,
+                raw_fts=args.fts,
+                document_id=args.document,
+                tag=args.tag,
+                limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output([result.to_dict() for result in results]))
+            else:
+                print_search_results(results)
+            return 0
+
+        if args.command == "page":
+            if args.resource not in documents_by_id:
+                raise ResourceError(f"unknown document ID: {args.resource}")
+            page = catalog_index.read_page(database, root, args.resource, args.page_number)
+            if args.json:
+                print(catalog_index.json_output(page.to_dict()))
+            else:
+                print_page_result(page)
+            return 0
+
         requested = set(args.resources)
         known = {item["id"] for key in ("documents", "repositories") for item in manifest.get(key, [])}
         known.update(
@@ -370,7 +566,6 @@ def main(arguments: list[str] | None = None) -> int:
         unknown = requested - known
         if unknown:
             raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
-        root = resolve_root(args.manifest, args.root)
         if args.command == "populate":
             root.mkdir(parents=True, exist_ok=True)
             for document in manifest.get("documents", []):
@@ -392,7 +587,7 @@ def main(arguments: list[str] | None = None) -> int:
                     success &= ok
                     print(message)
         return 0 if success else 1
-    except ResourceError as error:
+    except (ResourceError, catalog_index.CatalogIndexError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
