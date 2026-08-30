@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -13,54 +12,16 @@ import tempfile
 from typing import Any, Iterable
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
-
 from . import catalog_index
-
-
-class ResourceError(RuntimeError):
-    pass
-
-
-RESOURCE_ROOT_ENV = "PAPER_RESOURCES_DIR"
-RESOURCE_DATABASE_ENV = "PAPER_RESOURCES_DB"
-DEFAULT_EXTRACTOR_ENV = "PAPER_RESOURCES_DEFAULT_EXTRACTOR"
-
-
-def load_environment(manifest_path: Path) -> None:
-    """Load the repository-local .env without overriding the shell."""
-    load_dotenv(
-        dotenv_path=manifest_path.expanduser().resolve().parent / ".env",
-        override=False,
-    )
-
-
-def resolve_root(manifest_path: Path, explicit_root: Path | None = None) -> Path:
-    if explicit_root is not None:
-        return explicit_root.expanduser().resolve()
-    configured = os.environ.get(RESOURCE_ROOT_ENV)
-    if not configured:
-        raise ResourceError(
-            f"{RESOURCE_ROOT_ENV} is not configured; set it in .env or pass --root PATH"
-        )
-    root = Path(configured).expanduser()
-    if not root.is_absolute():
-        root = manifest_path.expanduser().resolve().parent / root
-    return root.resolve()
-
-
-def resolve_database(root: Path) -> Path:
-    configured = os.environ.get(RESOURCE_DATABASE_ENV)
-    if not configured:
-        return root / "resources.db"
-    path = Path(configured).expanduser()
-    if not path.is_absolute():
-        path = root / path
-    return path.resolve()
-
-
-def resolve_default_extractor() -> str:
-    return os.environ.get(DEFAULT_EXTRACTOR_ENV, "pypdf")
+from .config import (
+    DEFAULT_EXTRACTOR_ENV,
+    RESOURCE_DATABASE_ENV,
+    RESOURCE_ROOT_ENV,
+    ResourceError,
+    ResourceSettings,
+)
+from .manager import ResourceManager
+from .manifest import load_manifest
 
 
 def positive_integer(value: str) -> int:
@@ -71,92 +32,6 @@ def positive_integer(value: str) -> int:
     if result < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return result
-
-
-def load_manifest(path: Path) -> dict[str, Any]:
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ResourceError(f"cannot read manifest {path}: {error}") from error
-    if manifest.get("version") != 1:
-        raise ResourceError("manifest version must be 1")
-    for key in ("documents", "repositories"):
-        if not isinstance(manifest.get(key, []), list):
-            raise ResourceError(f"manifest field {key!r} must be a list")
-    validate_manifest(manifest)
-    return manifest
-
-
-def validate_relative_path(value: str, context: str) -> None:
-    path = Path(value)
-    if path.is_absolute() or not value or ".." in path.parts:
-        raise ResourceError(f"{context} must be a non-empty relative path: {value!r}")
-
-
-def validate_manifest(manifest: dict[str, Any]) -> None:
-    ids: set[str] = set()
-    paths: set[str] = set()
-    for kind in ("documents", "repositories"):
-        for resource in manifest.get(kind, []):
-            resource_id = resource.get("id")
-            if not isinstance(resource_id, str) or not resource_id:
-                raise ResourceError(f"every {kind[:-1]} needs a non-empty id")
-            if resource_id in ids:
-                raise ResourceError(f"duplicate resource id: {resource_id}")
-            ids.add(resource_id)
-            path = resource.get("path")
-            if not isinstance(path, str):
-                raise ResourceError(f"{resource_id}: path must be a string")
-            validate_relative_path(path, f"{resource_id}: path")
-            if path in paths:
-                raise ResourceError(f"duplicate resource path: {path}")
-            paths.add(path)
-            if kind == "documents":
-                checksum = resource.get("sha256")
-                if not isinstance(checksum, str) or len(checksum) != 64:
-                    raise ResourceError(f"{resource_id}: sha256 must contain 64 hex digits")
-                try:
-                    int(checksum, 16)
-                except ValueError as error:
-                    raise ResourceError(f"{resource_id}: invalid sha256") from error
-                extractor = resource.get("extractor")
-                if extractor is not None and (
-                    not isinstance(extractor, str) or not extractor
-                ):
-                    raise ResourceError(
-                        f"{resource_id}: extractor must be a non-empty string"
-                    )
-            else:
-                if not resource.get("clone_url"):
-                    raise ResourceError(f"{resource_id}: clone_url is required")
-                remote_names: set[str] = set()
-                for remote in resource.get("remotes", []):
-                    name = remote.get("name")
-                    if not name or name in remote_names:
-                        raise ResourceError(f"{resource_id}: invalid or duplicate remote name")
-                    remote_names.add(name)
-                    fetch = remote.get("fetch")
-                    if fetch is not None and (
-                        not isinstance(fetch, list)
-                        or not all(isinstance(refspec, str) and refspec for refspec in fetch)
-                    ):
-                        raise ResourceError(f"{resource_id}: remote fetch must be a list of refspecs")
-                worktree_paths: set[str] = set()
-                for worktree in resource.get("worktrees", []):
-                    worktree_id = worktree.get("id")
-                    if not worktree_id or not worktree.get("ref"):
-                        raise ResourceError(f"{resource_id}: every worktree needs id and ref")
-                    if worktree_id in ids:
-                        raise ResourceError(f"duplicate resource id: {worktree_id}")
-                    ids.add(worktree_id)
-                    worktree_path = worktree.get("path")
-                    if not isinstance(worktree_path, str):
-                        raise ResourceError(f"{resource_id}: worktree path must be a string")
-                    validate_relative_path(worktree_path, f"{resource_id}: worktree path")
-                    if worktree_path in paths or worktree_path in worktree_paths:
-                        raise ResourceError(f"duplicate resource path: {worktree_path}")
-                    worktree_paths.add(worktree_path)
-                paths.update(worktree_paths)
 
 
 def run_git(arguments: Iterable[str], *, cwd: Path | None = None, capture: bool = False) -> str:
@@ -493,50 +368,31 @@ def main(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     try:
         manifest = load_manifest(args.manifest)
-        load_environment(args.manifest)
         if args.command == "list":
             print_catalog(manifest)
             return 0
         if args.command in ("env", "path"):
-            root = resolve_root(args.manifest)
+            settings = ResourceSettings.load(args.manifest)
             if args.command == "env":
-                print(f"{RESOURCE_ROOT_ENV}={root}")
-                print(f"{RESOURCE_DATABASE_ENV}={resolve_database(root)}")
-                print(f"{DEFAULT_EXTRACTOR_ENV}={resolve_default_extractor()}")
+                print(f"{RESOURCE_ROOT_ENV}={settings.root}")
+                print(f"{RESOURCE_DATABASE_ENV}={settings.database}")
+                print(f"{DEFAULT_EXTRACTOR_ENV}={settings.default_extractor}")
             else:
-                print(root)
+                print(settings.root)
             return 0
 
-        documents = manifest.get("documents", [])
-        documents_by_id = {document["id"]: document for document in documents}
-        root = resolve_root(args.manifest, args.root)
-        database = resolve_database(root)
+        manager = ResourceManager.load(args.manifest, args.root)
+        root = manager.settings.root
 
         if args.command in ("index", "index-status"):
-            requested = set(args.resources)
-            default_extractor = resolve_default_extractor()
             if args.command == "index":
-                report = catalog_index.index_documents(
-                    documents,
-                    root,
-                    database,
-                    default_extractor,
-                    args.extractor,
-                    requested,
-                )
+                report = manager.index_documents(args.resources, args.extractor)
                 if args.json:
                     print(catalog_index.json_output(report.to_dict()))
                 else:
                     print_index_report(report)
                 return 1 if report.failed else 0
-            statuses = catalog_index.index_status(
-                documents,
-                root,
-                database,
-                default_extractor,
-                args.extractor,
-                requested,
-            )
+            statuses = manager.index_status(args.resources, args.extractor)
             if args.json:
                 print(catalog_index.json_output([status.to_dict() for status in statuses]))
             else:
@@ -545,15 +401,8 @@ def main(arguments: list[str] | None = None) -> int:
             return 0 if all(status.status == "ok" for status in statuses) else 1
 
         if args.command == "extract":
-            document = documents_by_id.get(args.resource)
-            if document is None:
-                raise ResourceError(f"unknown document ID: {args.resource}")
-            extraction = catalog_index.extract_document(
-                document,
-                root,
-                resolve_default_extractor(),
-                args.extractor,
-                args.page,
+            extraction = manager.extract_document(
+                args.resource, args.extractor, args.page
             )
             if args.json:
                 print(catalog_index.json_output(extraction))
@@ -562,11 +411,7 @@ def main(arguments: list[str] | None = None) -> int:
             return 0
 
         if args.command == "search":
-            if args.document is not None and args.document not in documents_by_id:
-                raise ResourceError(f"unknown document ID: {args.document}")
-            results = catalog_index.search_database(
-                database,
-                root,
+            results = manager.search_documents(
                 args.query,
                 raw_fts=args.fts,
                 document_id=args.document,
@@ -580,9 +425,7 @@ def main(arguments: list[str] | None = None) -> int:
             return 0
 
         if args.command == "page":
-            if args.resource not in documents_by_id:
-                raise ResourceError(f"unknown document ID: {args.resource}")
-            page = catalog_index.read_page(database, root, args.resource, args.page_number)
+            page = manager.get_document_page(args.resource, args.page_number)
             if args.json:
                 print(catalog_index.json_output(page.to_dict()))
             else:

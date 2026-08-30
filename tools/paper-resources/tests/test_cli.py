@@ -9,7 +9,12 @@ import sys
 import tempfile
 import unittest
 
+import anyio
+from mcp.server.mcpserver.exceptions import ToolError
+
 from paper_resources import catalog_index
+from paper_resources.manager import ResourceManager
+from paper_resources.mcp_server import create_server
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -337,6 +342,88 @@ class PaperResourcesTest(unittest.TestCase):
             environment={"PAPER_RESOURCES_DEFAULT_EXTRACTOR": "pypdf-layout"},
         )
         self.assertIn("extractor pypdf -> pypdf-layout", from_environment.stdout)
+
+    def test_mcp_tools_and_resources(self) -> None:
+        self.tool("populate", "--root", str(self.resources), "test-document")
+        self.tool("index", "--root", str(self.resources))
+        server = create_server(ResourceManager.load(self.manifest, self.resources))
+
+        async def exercise_server() -> None:
+            tools = await server.list_tools()
+            names = {tool.name for tool in tools}
+            self.assertEqual(
+                names,
+                {
+                    "get_catalog_info",
+                    "list_resources",
+                    "get_resource",
+                    "search_documents",
+                    "get_document_page",
+                    "get_index_status",
+                    "index_documents",
+                },
+            )
+            self.assertNotIn("populate_resources", names)
+            tools_by_name = {tool.name: tool for tool in tools}
+            self.assertTrue(
+                tools_by_name["search_documents"].annotations.read_only_hint
+            )
+            self.assertFalse(
+                tools_by_name["index_documents"].annotations.read_only_hint
+            )
+
+            catalog = await server.call_tool("get_catalog_info", {})
+            self.assertEqual(catalog.structured_content["documents"], 1)
+
+            listed = await server.call_tool(
+                "list_resources", {"kind": "document", "tag": "display"}
+            )
+            self.assertEqual(
+                listed.structured_content["result"][0]["id"], "test-document"
+            )
+
+            detail = await server.call_tool(
+                "get_resource", {"resource_id": "test-document"}
+            )
+            self.assertTrue(detail.structured_content["available"])
+
+            with self.assertRaisesRegex(ToolError, "unknown resource ID"):
+                await server.call_tool(
+                    "get_resource", {"resource_id": "not-present"}
+                )
+
+            search = await server.call_tool(
+                "search_documents", {"query": "power sequence"}
+            )
+            self.assertFalse(search.is_error)
+            self.assertEqual(
+                search.structured_content["result"][0]["resource_id"],
+                "test-document",
+            )
+            self.assertEqual(search.structured_content["result"][0]["pages"], [2])
+
+            page = await server.call_tool(
+                "get_document_page",
+                {"document_id": "test-document", "page_number": 2},
+            )
+            self.assertFalse(page.is_error)
+            self.assertIn("Display power sequence", page.structured_content["content"])
+
+            status = await server.call_tool(
+                "get_index_status", {"resource_ids": ["test-document"]}
+            )
+            self.assertEqual(status.structured_content["result"][0]["status"], "ok")
+
+            indexed = await server.call_tool(
+                "index_documents", {"resource_ids": ["test-document"]}
+            )
+            self.assertFalse(indexed.is_error)
+            self.assertEqual(indexed.structured_content["unchanged"], 1)
+
+            resource = await server.read_resource("paper-resource://catalog")
+            self.assertIn("test-document", list(resource)[0].content)
+
+        anyio.run(exercise_server)
 
     def test_failed_reindex_preserves_previous_content(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")

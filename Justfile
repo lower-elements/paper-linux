@@ -37,6 +37,11 @@ resource-manifest := "external-resources.json"
 @resource +args:
     uv run --project {{resource-project}} paper-resources --manifest {{resource-manifest}} "$@"
 
+# Run the agent-neutral Paper Resources MCP server over stdio.
+[group: 'resources']
+@resource-mcp:
+    exec uv run --project {{resource-project}} paper-resources-mcp --manifest {{resource-manifest}}
+
 # Create or update the resource manager's environment and lockfile.
 [group: 'resources']
 @resource-sync:

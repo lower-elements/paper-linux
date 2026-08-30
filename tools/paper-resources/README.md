@@ -6,8 +6,9 @@ a self-contained Python project so its source, tests, packaging metadata and
 dependency lock can be extracted together later.
 
 It requires Python 3.10 or newer and Git. It uses `python-dotenv` to load the
-repository-local `.env` configuration file and pypdf for its default PDF text
-extractor. Poppler's `pdftotext` command is optional.
+repository-local `.env` configuration file, pypdf for its default PDF text
+extractor, and the official MCP Python SDK for its agent-facing server.
+Poppler's `pdftotext` command is optional.
 
 ## Running the tool
 
@@ -134,3 +135,28 @@ just resource-test
 The root `external-resources.json` belongs to Paper Linux rather than this
 package. Another project can use the tool with its own version-1 manifest by
 passing `--manifest PATH` before the subcommand.
+
+## MCP server
+
+Paper Resources also provides an agent-neutral MCP server over stdio. It uses
+the same manifest, dotenv configuration, application service, extractors, and
+SQLite database as the CLI:
+
+```sh
+uv run --project tools/paper-resources paper-resources-mcp \
+    --manifest external-resources.json
+```
+
+An MCP host should launch that command with the Paper Linux repository as its
+working directory. `just resource-mcp` is an equivalent convenience command.
+The server exposes typed tools to inspect the catalog, search indexed text,
+read physical PDF pages, inspect index status, and update document indexes. It
+also exposes the catalog as `paper-resource://catalog`. Resource population is
+deliberately not exposed over MCP; continue to use `just resource populate`
+when downloads or repository creation are required.
+
+Tool names, input schemas, outputs, and configuration are independent of any
+particular model or agent host. Host-specific setup should point at the same
+stdio command rather than adding host behavior to the server. The
+project-scoped `.codex/config.toml` registration is one client example; other
+MCP hosts can register the command using their own configuration format.
