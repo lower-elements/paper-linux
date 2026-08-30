@@ -36,17 +36,19 @@ accept `--root PATH` as a one-off override.
 
 ## Document index
 
-`just resource index` extracts each manifest PDF into one chunk per physical
-page and stores it in an SQLite FTS5 database. The database defaults to
-`<resource-dir>/resources.db`; `PAPER_RESOURCES_DB` can override it with an
+`just resource index` drives each document's extractor and stores its yielded
+chunks, pages, sections, and relationships in an SQLite FTS5 database. The
+current PDF extractors yield one chunk per physical page. The database defaults
+to `<resource-dir>/resources.db`; `PAPER_RESOURCES_DB` can override it with an
 absolute path or a path relative to the resource directory.
 
 Indexing is incremental. A document is extracted only when it is new or its
-manifest checksum, extractor, or extractor version has changed. Description,
-path, and tags are updated without extracting again. Each changed document is
-reported as it is indexed, and a failed extraction leaves its previous index
-intact. `just resource index-status` reports stale or missing entries without
-changing the database. Optional document IDs restrict either command.
+manifest checksum, selected extractor, or extractor version has changed.
+Description, path, and tags are updated without extracting again. Each changed
+document is reported as it is indexed, and a failed extraction leaves its
+previous index intact. `just resource index-status` reports stale or missing
+entries without changing the database. Optional document IDs restrict either
+command.
 
 Search terms are ANDed and safely quoted by default:
 
@@ -60,18 +62,36 @@ just resource search --fts 'VCOM OR VBNEG'
 Results include the resource ID, physical PDF page, description, snippet, and
 resolved file path. `page` prints the full indexed text for a page. `extract`
 runs an extractor directly without opening or changing the database, which is
-useful for comparing backends. `index`, `index-status`, `search`, `page`, and
+useful for comparing extractors. `index`, `index-status`, `search`, `page`, and
 `extract` also accept `--json`.
 
-Four PDF extraction modes are available:
+Four PDF extractors are available:
 
 - `pypdf` and `pypdf-layout`
 - `pdftotext` and `pdftotext-layout`
 
-Select one with `--pdf-backend` on `index`, `index-status`, or `extract`, or
-set `PAPER_RESOURCES_PDF_BACKEND` in `.env`. An existing process environment
-variable takes precedence over `.env`; an explicit command-line option takes
-precedence over both. The default is `pypdf`.
+Set the default with `PAPER_RESOURCES_DEFAULT_EXTRACTOR` in `.env`, and select
+the best extractor for an individual document with an optional manifest field:
+
+```json
+{
+  "id": "example-datasheet",
+  "extractor": "pdftotext-layout"
+}
+```
+
+Use `--extractor` on `index`, `index-status`, or `extract` for a one-off
+override or extractor comparison. Selection precedence is the command-line
+override, the document manifest setting, the environment default, and finally
+the built-in `pypdf` default. An existing process environment variable takes
+precedence over `.env`.
+
+Extractors are generators. They yield opaque page and section handles before
+yielding chunks which reference them. The indexer assigns sequential page,
+section, and chunk ordering and translates handles to SQLite identities while
+driving the generator. Reindexing one document—including removal of its old
+rows and all FTS updates—takes place in one transaction, so any extraction or
+validation failure restores the complete previous index.
 
 The equivalent direct uv invocation is:
 

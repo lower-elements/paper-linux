@@ -1,8 +1,9 @@
-"""PDF extraction and SQLite full-text indexing for external documents."""
+"""Structured extraction and SQLite full-text indexing for external documents."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import cache
 import hashlib
 from importlib.metadata import version as package_version
 import json
@@ -10,14 +11,14 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from pypdf import PdfReader
 
 
 SCHEMA_VERSION = 1
 EXTRACTION_PIPELINE_VERSION = 1
-PDF_BACKENDS = (
+EXTRACTORS = (
     "pypdf",
     "pypdf-layout",
     "pdftotext",
@@ -29,20 +30,47 @@ class CatalogIndexError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True)
-class PdfExtractor:
-    backend: str
+@dataclass(frozen=True, eq=False, slots=True)
+class Page:
+    """Opaque handle declaring a page in an extractor event stream."""
+
+    label: str | None = None
+
+
+@dataclass(frozen=True, eq=False, slots=True)
+class Section:
+    """Opaque handle declaring a section in an extractor event stream."""
+
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class Chunk:
+    """A text chunk associated with previously yielded page/section handles."""
+
+    content: str
+    pages: tuple[Page, ...] = ()
+    sections: tuple[Section, ...] = ()
+
+
+ExtractionEvent = Page | Section | Chunk
+
+
+@dataclass(frozen=True, slots=True)
+class Extractor:
     name: str
     version: str
+    producer: Callable[[Path], Iterator[ExtractionEvent]]
 
-    def extract_pages(self, path: Path, page_number: int | None = None) -> list[str]:
-        if self.backend.startswith("pypdf"):
-            return extract_with_pypdf(
-                path, layout=self.backend.endswith("-layout"), page_number=page_number
-            )
-        return extract_with_pdftotext(
-            path, layout=self.backend.endswith("-layout"), page_number=page_number
-        )
+    def extract(self, path: Path) -> Iterator[ExtractionEvent]:
+        return self.producer(path)
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionCounts:
+    chunks: int
+    pages: int
+    sections: int
 
 
 @dataclass(frozen=True)
@@ -249,7 +277,7 @@ def pdftotext_version() -> str:
         )
     except FileNotFoundError as error:
         raise CatalogIndexError(
-            "pdftotext is required for the selected PDF backend (install poppler-utils)"
+            "pdftotext is required for the selected extractor (install poppler-utils)"
         ) from error
     except subprocess.CalledProcessError as error:
         detail = (error.stderr or error.stdout).strip()
@@ -261,63 +289,52 @@ def pdftotext_version() -> str:
     return match.group(1)
 
 
-def make_pdf_extractor(backend: str) -> PdfExtractor:
-    if backend not in PDF_BACKENDS:
+@cache
+def make_extractor(name: str) -> Extractor:
+    if name not in EXTRACTORS:
         raise CatalogIndexError(
-            f"unknown PDF backend {backend!r}; choose from {', '.join(PDF_BACKENDS)}"
+            f"unknown extractor {name!r}; choose from {', '.join(EXTRACTORS)}"
         )
-    mode = "layout" if backend.endswith("-layout") else "plain"
-    if backend.startswith("pypdf"):
+    if name.startswith("pypdf"):
         library_version = package_version("pypdf")
-        name = f"pypdf/{mode}"
+        producer = lambda path: extract_with_pypdf(
+            path, layout=name.endswith("-layout")
+        )
     else:
         library_version = pdftotext_version()
-        name = f"pdftotext/{mode}"
-    return PdfExtractor(
-        backend=backend,
+        producer = lambda path: extract_with_pdftotext(
+            path, layout=name.endswith("-layout")
+        )
+    return Extractor(
         name=name,
         version=f"{library_version};pipeline={EXTRACTION_PIPELINE_VERSION}",
+        producer=producer,
     )
 
 
-def extract_with_pypdf(
-    path: Path, *, layout: bool, page_number: int | None = None
-) -> list[str]:
+def extract_with_pypdf(path: Path, *, layout: bool) -> Iterator[ExtractionEvent]:
     try:
         reader = PdfReader(path)
-        if page_number is not None:
-            if page_number > len(reader.pages):
-                raise CatalogIndexError(
-                    f"no PDF page {page_number} (document has {len(reader.pages)})"
-                )
-            pages = [reader.pages[page_number - 1]]
-        else:
-            pages = reader.pages
-        return [
-            normalize_text(
+        for pdf_page in reader.pages:
+            page = Page()
+            yield page
+            yield Chunk(
                 (
-                    page.extract_text(extraction_mode="layout")
+                    pdf_page.extract_text(extraction_mode="layout")
                     if layout
-                    else page.extract_text()
+                    else pdf_page.extract_text()
                 )
-                or ""
+                or "",
+                pages=(page,),
             )
-            for page in pages
-        ]
-    except CatalogIndexError:
-        raise
     except Exception as error:
         raise CatalogIndexError(f"cannot extract {path} with pypdf: {error}") from error
 
 
-def extract_with_pdftotext(
-    path: Path, *, layout: bool, page_number: int | None = None
-) -> list[str]:
+def extract_with_pdftotext(path: Path, *, layout: bool) -> Iterator[ExtractionEvent]:
     command = ["pdftotext"]
     if layout:
         command.append("-layout")
-    if page_number is not None:
-        command.extend(["-f", str(page_number), "-l", str(page_number)])
     command.extend(["-enc", "UTF-8", "-eol", "unix", "-q", str(path), "-"])
     try:
         result = subprocess.run(
@@ -330,7 +347,7 @@ def extract_with_pdftotext(
         )
     except FileNotFoundError as error:
         raise CatalogIndexError(
-            "pdftotext is required for the selected PDF backend (install poppler-utils)"
+            "pdftotext is required for the selected extractor (install poppler-utils)"
         ) from error
     except subprocess.CalledProcessError as error:
         detail = error.stderr.strip() or f"exit status {error.returncode}"
@@ -338,7 +355,10 @@ def extract_with_pdftotext(
     pages = result.stdout.split("\f")
     if len(pages) > 1 and not pages[-1].strip():
         pages.pop()
-    return [normalize_text(page) for page in pages]
+    for content in pages:
+        page = Page()
+        yield page
+        yield Chunk(content, pages=(page,))
 
 
 def open_database(path: Path, *, create: bool) -> sqlite3.Connection:
@@ -373,10 +393,16 @@ def document_map(documents: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any
     return {document["id"]: document for document in documents}
 
 
+def extractor_for_document(
+    document: dict[str, Any], default_extractor: str, override_extractor: str | None
+) -> Extractor:
+    return make_extractor(
+        override_extractor or document.get("extractor") or default_extractor
+    )
+
+
 def validate_document_file(document: dict[str, Any], root: Path) -> Path:
     path = root / document["path"]
-    if path.suffix.lower() != ".pdf":
-        raise CatalogIndexError(f"{document['id']}: indexing currently supports PDF documents only")
     if not path.is_file():
         raise CatalogIndexError(f"{document['id']}: document is missing: {path}")
     actual = file_sha256(path)
@@ -398,11 +424,82 @@ def tags_for_document(connection: sqlite3.Connection, document_id: str) -> list[
     ]
 
 
-def insert_document(
+class ExtractionState:
+    """Assign ordered identities and validate references in an event stream."""
+
+    def __init__(self) -> None:
+        self.page_numbers: dict[Page, int] = {}
+        self.section_indexes: dict[Section, int] = {}
+        self.chunk_count = 0
+
+    def add_page(self, page: Page) -> int:
+        if page in self.page_numbers:
+            raise CatalogIndexError("extractor yielded the same page handle twice")
+        if page.label is not None and not isinstance(page.label, str):
+            raise CatalogIndexError("extractor yielded a page with a non-text label")
+        page_number = len(self.page_numbers) + 1
+        self.page_numbers[page] = page_number
+        return page_number
+
+    def add_section(self, section: Section) -> int:
+        if section in self.section_indexes:
+            raise CatalogIndexError("extractor yielded the same section handle twice")
+        if not isinstance(section.name, str):
+            raise CatalogIndexError("extractor yielded a section with a non-text name")
+        section_index = len(self.section_indexes)
+        self.section_indexes[section] = section_index
+        return section_index
+
+    def add_chunk(
+        self, chunk: Chunk
+    ) -> tuple[int, str, tuple[int, ...], tuple[int, ...]]:
+        if not isinstance(chunk.content, str):
+            raise CatalogIndexError("extractor yielded a chunk with non-text content")
+        if not all(isinstance(page, Page) for page in chunk.pages):
+            raise CatalogIndexError("extractor chunk contains an invalid page handle")
+        if not all(isinstance(section, Section) for section in chunk.sections):
+            raise CatalogIndexError("extractor chunk contains an invalid section handle")
+        try:
+            page_numbers = tuple(self.page_numbers[page] for page in chunk.pages)
+        except KeyError as error:
+            raise CatalogIndexError(
+                "extractor chunk references a page before yielding it"
+            ) from error
+        try:
+            section_indexes = tuple(
+                self.section_indexes[section] for section in chunk.sections
+            )
+        except KeyError as error:
+            raise CatalogIndexError(
+                "extractor chunk references a section before yielding it"
+            ) from error
+        if len(set(page_numbers)) != len(page_numbers):
+            raise CatalogIndexError("extractor chunk references the same page twice")
+        if len(set(section_indexes)) != len(section_indexes):
+            raise CatalogIndexError("extractor chunk references the same section twice")
+        chunk_index = self.chunk_count
+        self.chunk_count += 1
+        return (
+            chunk_index,
+            normalize_text(chunk.content),
+            page_numbers,
+            section_indexes,
+        )
+
+    def counts(self) -> ExtractionCounts:
+        if self.chunk_count == 0:
+            raise CatalogIndexError("extractor yielded no chunks")
+        return ExtractionCounts(
+            chunks=self.chunk_count,
+            pages=len(self.page_numbers),
+            sections=len(self.section_indexes),
+        )
+
+
+def insert_document_metadata(
     connection: sqlite3.Connection,
     document: dict[str, Any],
-    extractor: PdfExtractor,
-    pages: list[str],
+    extractor: Extractor,
 ) -> None:
     document_id = document["id"]
     connection.execute(
@@ -423,37 +520,91 @@ def insert_document(
         "INSERT INTO document_tags(document_id, tag) VALUES (?, ?)",
         [(document_id, tag) for tag in sorted(set(document.get("tags", [])))],
     )
-    for chunk_index, content in enumerate(pages):
-        page_number = chunk_index + 1
-        connection.execute(
-            "INSERT INTO document_pages(document_id, page_number) VALUES (?, ?)",
-            (document_id, page_number),
-        )
-        cursor = connection.execute(
-            """
-            INSERT INTO chunks(document_id, chunk_index, content, content_sha256)
-            VALUES (?, ?, ?, ?)
-            """,
-            (document_id, chunk_index, content, text_sha256(content)),
-        )
-        connection.execute(
-            "INSERT INTO chunk_pages(document_id, page_number, chunk_id) VALUES (?, ?, ?)",
-            (document_id, page_number, cursor.lastrowid),
-        )
+
+
+def consume_extraction(
+    connection: sqlite3.Connection,
+    document_id: str,
+    events: Iterable[ExtractionEvent],
+) -> ExtractionCounts:
+    state = ExtractionState()
+    section_ids: dict[int, int] = {}
+    for event in events:
+        match event:
+            case Page(label=label):
+                page_number = state.add_page(event)
+                connection.execute(
+                    """
+                    INSERT INTO document_pages(document_id, page_number, page_label)
+                    VALUES (?, ?, ?)
+                    """,
+                    (document_id, page_number, label),
+                )
+            case Section(name=name):
+                section_index = state.add_section(event)
+                cursor = connection.execute(
+                    """
+                    INSERT INTO document_sections(document_id, section_index, name)
+                    VALUES (?, ?, ?)
+                    """,
+                    (document_id, section_index, name),
+                )
+                if cursor.lastrowid is None:
+                    raise CatalogIndexError("SQLite did not assign a section row ID")
+                section_ids[section_index] = cursor.lastrowid
+            case Chunk():
+                chunk_index, content, page_numbers, section_indexes = state.add_chunk(
+                    event
+                )
+                cursor = connection.execute(
+                    """
+                    INSERT INTO chunks(document_id, chunk_index, content, content_sha256)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (document_id, chunk_index, content, text_sha256(content)),
+                )
+                if cursor.lastrowid is None:
+                    raise CatalogIndexError("SQLite did not assign a chunk row ID")
+                chunk_id = cursor.lastrowid
+                connection.executemany(
+                    """
+                    INSERT INTO chunk_pages(document_id, page_number, chunk_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (document_id, page_number, chunk_id)
+                        for page_number in page_numbers
+                    ],
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO section_chunks(document_id, section_id, chunk_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (document_id, section_ids[section_index], chunk_id)
+                        for section_index in section_indexes
+                    ],
+                )
+            case _:
+                raise CatalogIndexError(
+                    f"extractor yielded unsupported event {type(event).__name__}"
+                )
+    return state.counts()
 
 
 def index_documents(
     documents: list[dict[str, Any]],
     root: Path,
     database_path: Path,
-    backend: str,
+    default_extractor: str,
+    override_extractor: str | None,
     requested: set[str],
 ) -> IndexReport:
     available = document_map(documents)
     unknown = requested - available.keys()
     if unknown:
         raise CatalogIndexError(f"unknown document ID(s): {', '.join(sorted(unknown))}")
-    extractor = make_pdf_extractor(backend)
     connection = open_database(database_path, create=True)
     outcomes: list[IndexOutcome] = []
     unchanged = 0
@@ -465,6 +616,9 @@ def index_documents(
             document_id = document["id"]
             try:
                 path = validate_document_file(document, root)
+                extractor = extractor_for_document(
+                    document, default_extractor, override_extractor
+                )
                 existing = connection.execute(
                     "SELECT * FROM documents WHERE id = ?", (document_id,)
                 ).fetchone()
@@ -518,11 +672,21 @@ def index_documents(
                             "extractor version "
                             f"{existing['extractor_version']} -> {fingerprint[2]}"
                         )
-                pages = extractor.extract_pages(path)
+                counts: ExtractionCounts
                 with connection:
                     connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-                    insert_document(connection, document, extractor, pages)
-                detail = "; ".join([*reasons, f"{len(pages)} pages"])
+                    insert_document_metadata(connection, document, extractor)
+                    counts = consume_extraction(
+                        connection, document_id, extractor.extract(path)
+                    )
+                detail = "; ".join(
+                    [
+                        *reasons,
+                        f"{counts.chunks} chunks",
+                        f"{counts.pages} pages",
+                        f"{counts.sections} sections",
+                    ]
+                )
                 outcomes.append(IndexOutcome(action, document_id, detail))
             except (CatalogIndexError, OSError, sqlite3.Error) as error:
                 outcomes.append(IndexOutcome("failed", document_id, str(error)))
@@ -545,14 +709,14 @@ def index_status(
     documents: list[dict[str, Any]],
     root: Path,
     database_path: Path,
-    backend: str,
+    default_extractor: str,
+    override_extractor: str | None,
     requested: set[str],
 ) -> list[IndexStatus]:
     available = document_map(documents)
     unknown = requested - available.keys()
     if unknown:
         raise CatalogIndexError(f"unknown document ID(s): {', '.join(sorted(unknown))}")
-    extractor = make_pdf_extractor(backend)
     selected = [
         document for document in documents if not requested or document["id"] in requested
     ]
@@ -563,6 +727,9 @@ def index_status(
     try:
         for document in selected:
             document_id = document["id"]
+            extractor = extractor_for_document(
+                document, default_extractor, override_extractor
+            )
             path = root / document["path"]
             if not path.is_file():
                 statuses.append(IndexStatus(document_id, "missing", "document file is missing"))
@@ -769,26 +936,86 @@ def read_page(
 def extract_document(
     document: dict[str, Any],
     root: Path,
-    backend: str,
+    default_extractor: str,
+    override_extractor: str | None,
     page_number: int | None,
 ) -> dict[str, Any]:
     path = validate_document_file(document, root)
-    extractor = make_pdf_extractor(backend)
-    pages = extractor.extract_pages(path, page_number)
+    extractor = extractor_for_document(
+        document, default_extractor, override_extractor
+    )
+    state = ExtractionState()
+    pages: list[dict[str, Any]] = []
+    sections: list[dict[str, Any]] = []
+    chunks: list[dict[str, Any]] = []
+    chunk_pages: list[dict[str, int]] = []
+    section_chunks: list[dict[str, int]] = []
+    for event in extractor.extract(path):
+        match event:
+            case Page(label=label):
+                number = state.add_page(event)
+                pages.append({"page_number": number, "page_label": label})
+            case Section(name=name):
+                index = state.add_section(event)
+                sections.append({"section_index": index, "name": name})
+            case Chunk():
+                index, content, page_numbers, section_indexes = state.add_chunk(event)
+                chunks.append({"chunk_index": index, "content": content})
+                chunk_pages.extend(
+                    {"chunk_index": index, "page_number": number}
+                    for number in page_numbers
+                )
+                section_chunks.extend(
+                    {"section_index": section_index, "chunk_index": index}
+                    for section_index in section_indexes
+                )
+            case _:
+                raise CatalogIndexError(
+                    f"extractor yielded unsupported event {type(event).__name__}"
+                )
+    state.counts()
     if page_number is not None:
-        selected_pages = [(page_number, pages[0])]
-    else:
-        selected_pages = list(enumerate(pages, start=1))
+        if not any(page["page_number"] == page_number for page in pages):
+            raise CatalogIndexError(f"{document['id']}: no page {page_number}")
+        selected_chunks = {
+            relation["chunk_index"]
+            for relation in chunk_pages
+            if relation["page_number"] == page_number
+        }
+        selected_sections = {
+            relation["section_index"]
+            for relation in section_chunks
+            if relation["chunk_index"] in selected_chunks
+        }
+        pages = [page for page in pages if page["page_number"] == page_number]
+        chunks = [chunk for chunk in chunks if chunk["chunk_index"] in selected_chunks]
+        chunk_pages = [
+            relation
+            for relation in chunk_pages
+            if relation["chunk_index"] in selected_chunks
+            and relation["page_number"] == page_number
+        ]
+        sections = [
+            section
+            for section in sections
+            if section["section_index"] in selected_sections
+        ]
+        section_chunks = [
+            relation
+            for relation in section_chunks
+            if relation["chunk_index"] in selected_chunks
+        ]
     return {
         "resource_id": document["id"],
         "description": document.get("description", ""),
         "path": str(path.resolve()),
         "extractor": extractor.name,
         "extractor_version": extractor.version,
-        "pages": [
-            {"page_number": number, "content": content}
-            for number, content in selected_pages
-        ],
+        "chunks": chunks,
+        "pages": pages,
+        "sections": sections,
+        "chunk_pages": chunk_pages,
+        "section_chunks": section_chunks,
     }
 
 

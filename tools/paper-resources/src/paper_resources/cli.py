@@ -24,7 +24,7 @@ class ResourceError(RuntimeError):
 
 RESOURCE_ROOT_ENV = "PAPER_RESOURCES_DIR"
 RESOURCE_DATABASE_ENV = "PAPER_RESOURCES_DB"
-PDF_BACKEND_ENV = "PAPER_RESOURCES_PDF_BACKEND"
+DEFAULT_EXTRACTOR_ENV = "PAPER_RESOURCES_DEFAULT_EXTRACTOR"
 
 
 def load_environment(manifest_path: Path) -> None:
@@ -59,14 +59,8 @@ def resolve_database(root: Path) -> Path:
     return path.resolve()
 
 
-def resolve_pdf_backend(explicit_backend: str | None = None) -> str:
-    backend = explicit_backend or os.environ.get(PDF_BACKEND_ENV, "pypdf")
-    if backend not in catalog_index.PDF_BACKENDS:
-        raise ResourceError(
-            f"invalid {PDF_BACKEND_ENV}: {backend!r}; "
-            f"choose from {', '.join(catalog_index.PDF_BACKENDS)}"
-        )
-    return backend
+def resolve_default_extractor() -> str:
+    return os.environ.get(DEFAULT_EXTRACTOR_ENV, "pypdf")
 
 
 def positive_integer(value: str) -> int:
@@ -125,6 +119,13 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                     int(checksum, 16)
                 except ValueError as error:
                     raise ResourceError(f"{resource_id}: invalid sha256") from error
+                extractor = resource.get("extractor")
+                if extractor is not None and (
+                    not isinstance(extractor, str) or not extractor
+                ):
+                    raise ResourceError(
+                        f"{resource_id}: extractor must be a non-empty string"
+                    )
             else:
                 if not resource.get("clone_url"):
                     raise ResourceError(f"{resource_id}: clone_url is required")
@@ -403,15 +404,34 @@ def print_page_result(result: catalog_index.PageResult) -> None:
 
 
 def print_extraction(result: dict[str, Any]) -> None:
-    for index, page in enumerate(result["pages"]):
+    pages_by_chunk: dict[int, list[int]] = {}
+    for relation in result["chunk_pages"]:
+        pages_by_chunk.setdefault(relation["chunk_index"], []).append(
+            relation["page_number"]
+        )
+    section_names = {
+        section["section_index"]: section["name"] for section in result["sections"]
+    }
+    sections_by_chunk: dict[int, list[str]] = {}
+    for relation in result["section_chunks"]:
+        sections_by_chunk.setdefault(relation["chunk_index"], []).append(
+            section_names[relation["section_index"]]
+        )
+    for index, chunk in enumerate(result["chunks"]):
         if index:
             print("\n\f")
-        print(f"{result['resource_id']}, PDF page {page['page_number']}")
+        print(f"{result['resource_id']}, chunk {chunk['chunk_index']}")
         print(result["description"])
         print(f"Extractor: {result['extractor']} {result['extractor_version']}")
+        pages = pages_by_chunk.get(chunk["chunk_index"], [])
+        if pages:
+            print(f"Pages: {', '.join(str(page) for page in pages)}")
+        sections = sections_by_chunk.get(chunk["chunk_index"], [])
+        if sections:
+            print(f"Sections: {'; '.join(sections)}")
         print(result["path"])
         print()
-        print(page["content"])
+        print(chunk["content"])
 
 
 def parser() -> argparse.ArgumentParser:
@@ -424,7 +444,7 @@ def parser() -> argparse.ArgumentParser:
 
     index_parser = subparsers.add_parser("index", help="index document text for search")
     index_parser.add_argument("--root", type=Path, help="override the configured resource directory")
-    index_parser.add_argument("--pdf-backend", choices=catalog_index.PDF_BACKENDS)
+    index_parser.add_argument("--extractor", choices=catalog_index.EXTRACTORS)
     index_parser.add_argument("--json", action="store_true", help="print JSON output")
     index_parser.add_argument("resources", nargs="*", metavar="ID", help="document IDs (default: all)")
 
@@ -432,16 +452,18 @@ def parser() -> argparse.ArgumentParser:
         "index-status", help="show whether document indexes are current"
     )
     status_parser.add_argument("--root", type=Path, help="override the configured resource directory")
-    status_parser.add_argument("--pdf-backend", choices=catalog_index.PDF_BACKENDS)
+    status_parser.add_argument("--extractor", choices=catalog_index.EXTRACTORS)
     status_parser.add_argument("--json", action="store_true", help="print JSON output")
     status_parser.add_argument("resources", nargs="*", metavar="ID", help="document IDs (default: all)")
 
     extract_parser = subparsers.add_parser(
-        "extract", help="extract PDF text without modifying the index"
+        "extract", help="extract document text without modifying the index"
     )
     extract_parser.add_argument("--root", type=Path, help="override the configured resource directory")
-    extract_parser.add_argument("--pdf-backend", choices=catalog_index.PDF_BACKENDS)
-    extract_parser.add_argument("--page", type=positive_integer, help="extract one physical PDF page")
+    extract_parser.add_argument("--extractor", choices=catalog_index.EXTRACTORS)
+    extract_parser.add_argument(
+        "--page", type=positive_integer, help="show chunks associated with one page"
+    )
     extract_parser.add_argument("--json", action="store_true", help="print JSON output")
     extract_parser.add_argument("resource", metavar="ID", help="document ID")
 
@@ -480,7 +502,7 @@ def main(arguments: list[str] | None = None) -> int:
             if args.command == "env":
                 print(f"{RESOURCE_ROOT_ENV}={root}")
                 print(f"{RESOURCE_DATABASE_ENV}={resolve_database(root)}")
-                print(f"{PDF_BACKEND_ENV}={resolve_pdf_backend()}")
+                print(f"{DEFAULT_EXTRACTOR_ENV}={resolve_default_extractor()}")
             else:
                 print(root)
             return 0
@@ -492,10 +514,15 @@ def main(arguments: list[str] | None = None) -> int:
 
         if args.command in ("index", "index-status"):
             requested = set(args.resources)
-            backend = resolve_pdf_backend(args.pdf_backend)
+            default_extractor = resolve_default_extractor()
             if args.command == "index":
                 report = catalog_index.index_documents(
-                    documents, root, database, backend, requested
+                    documents,
+                    root,
+                    database,
+                    default_extractor,
+                    args.extractor,
+                    requested,
                 )
                 if args.json:
                     print(catalog_index.json_output(report.to_dict()))
@@ -503,7 +530,12 @@ def main(arguments: list[str] | None = None) -> int:
                     print_index_report(report)
                 return 1 if report.failed else 0
             statuses = catalog_index.index_status(
-                documents, root, database, backend, requested
+                documents,
+                root,
+                database,
+                default_extractor,
+                args.extractor,
+                requested,
             )
             if args.json:
                 print(catalog_index.json_output([status.to_dict() for status in statuses]))
@@ -519,7 +551,8 @@ def main(arguments: list[str] | None = None) -> int:
             extraction = catalog_index.extract_document(
                 document,
                 root,
-                resolve_pdf_backend(args.pdf_backend),
+                resolve_default_extractor(),
+                args.extractor,
                 args.page,
             )
             if args.json:

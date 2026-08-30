@@ -9,12 +9,14 @@ import sys
 import tempfile
 import unittest
 
+from paper_resources import catalog_index
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def write_test_pdf(path: Path, pages: list[str]) -> None:
-    """Write a small Type 1-font PDF whose text is extractable by both backends."""
+    """Write a small Type 1-font PDF whose text is extractable by all extractors."""
     objects: list[bytes] = []
     page_ids = [3 + index * 2 for index in range(len(pages))]
     objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
@@ -159,7 +161,7 @@ class PaperResourcesTest(unittest.TestCase):
         for variable in (
             "PAPER_RESOURCES_DIR",
             "PAPER_RESOURCES_DB",
-            "PAPER_RESOURCES_PDF_BACKEND",
+            "PAPER_RESOURCES_DEFAULT_EXTRACTOR",
         ):
             env.pop(variable, None)
         if environment is not None:
@@ -214,7 +216,9 @@ class PaperResourcesTest(unittest.TestCase):
         dotenv_root = self.base / "dotenv-resources"
         shell_root = self.base / "shell-resources"
         (self.base / ".env").write_text(
-            f"PAPER_RESOURCES_DIR={dotenv_root}\n", encoding="utf-8"
+            f"PAPER_RESOURCES_DIR={dotenv_root}\n"
+            "PAPER_RESOURCES_DEFAULT_EXTRACTOR=pypdf-layout\n",
+            encoding="utf-8",
         )
         self.assertEqual(self.tool("path").stdout.strip(), str(dotenv_root.resolve()))
         self.assertEqual(
@@ -222,7 +226,7 @@ class PaperResourcesTest(unittest.TestCase):
             [
                 f"PAPER_RESOURCES_DIR={shell_root.resolve()}",
                 f"PAPER_RESOURCES_DB={shell_root.resolve() / 'resources.db'}",
-                "PAPER_RESOURCES_PDF_BACKEND=pypdf",
+                "PAPER_RESOURCES_DEFAULT_EXTRACTOR=pypdf-layout",
             ],
         )
 
@@ -234,7 +238,10 @@ class PaperResourcesTest(unittest.TestCase):
         self.tool("populate", "--root", str(self.resources), "test-document")
 
         indexed = self.tool("index", "--root", str(self.resources))
-        self.assertIn("indexed    test-document (new; 2 pages)", indexed.stdout)
+        self.assertIn(
+            "indexed    test-document (new; 2 chunks; 2 pages; 0 sections)",
+            indexed.stdout,
+        )
         self.assertTrue((self.resources / "resources.db").is_file())
 
         current = self.tool("index", "--root", str(self.resources))
@@ -272,28 +279,33 @@ class PaperResourcesTest(unittest.TestCase):
                 "test-document",
             ).stdout
         )
-        self.assertEqual(extraction["extractor"], "pypdf/plain")
+        self.assertEqual(extraction["extractor"], "pypdf")
         self.assertEqual([page["page_number"] for page in extraction["pages"]], [1])
+        self.assertEqual(len(extraction["chunks"]), 1)
+        self.assertIn("Reference material", extraction["chunks"][0]["content"])
+        self.assertEqual(
+            extraction["chunk_pages"], [{"chunk_index": 0, "page_number": 1}]
+        )
 
         with sqlite3.connect(self.resources / "resources.db") as connection:
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
             self.assertEqual(connection.execute("SELECT count(*) FROM chunks_fts").fetchone()[0], 2)
 
-    def test_reindexes_for_backend_and_updates_metadata_without_extraction(self) -> None:
+    def test_manifest_extractor_and_cli_override_precedence(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
         self.tool("index", "--root", str(self.resources))
 
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        manifest["documents"][0]["extractor"] = "pypdf-layout"
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
         reindexed = self.tool(
             "index",
             "--root",
             str(self.resources),
-            "--pdf-backend",
-            "pypdf-layout",
         )
         self.assertIn("reindexed  test-document", reindexed.stdout)
-        self.assertIn("extractor pypdf/plain -> pypdf/layout", reindexed.stdout)
+        self.assertIn("extractor pypdf -> pypdf-layout", reindexed.stdout)
 
-        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
         manifest["documents"][0]["description"] = "updated test document"
         manifest["documents"][0]["tags"].append("updated")
         self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
@@ -301,10 +313,30 @@ class PaperResourcesTest(unittest.TestCase):
             "index",
             "--root",
             str(self.resources),
-            "--pdf-backend",
+            "--extractor",
             "pypdf-layout",
         )
         self.assertIn("updated    test-document (metadata)", metadata.stdout)
+
+        overridden = self.tool(
+            "index",
+            "--root",
+            str(self.resources),
+            "--extractor",
+            "pypdf",
+            environment={"PAPER_RESOURCES_DEFAULT_EXTRACTOR": "not-used"},
+        )
+        self.assertIn("extractor pypdf-layout -> pypdf", overridden.stdout)
+
+        del manifest["documents"][0]["extractor"]
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        from_environment = self.tool(
+            "index",
+            "--root",
+            str(self.resources),
+            environment={"PAPER_RESOURCES_DEFAULT_EXTRACTOR": "pypdf-layout"},
+        )
+        self.assertIn("extractor pypdf -> pypdf-layout", from_environment.stdout)
 
     def test_failed_reindex_preserves_previous_content(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
@@ -325,17 +357,103 @@ class PaperResourcesTest(unittest.TestCase):
         )
         self.assertIn("test-document, PDF page 2", preserved.stdout)
 
+    def test_generator_events_assign_ids_and_create_relationships(self) -> None:
+        database = self.base / "events.db"
+        connection = catalog_index.open_database(database, create=True)
+        document = {
+            "id": "event-document",
+            "description": "event document",
+            "path": "documents/event.html",
+            "sha256": "0" * 64,
+            "tags": ["event"],
+        }
+        extractor = catalog_index.Extractor(
+            "test", "test;pipeline=1", lambda path: iter(())
+        )
+
+        def events():
+            page = catalog_index.Page(label="iv")
+            section = catalog_index.Section(name="Introduction")
+            yield page
+            yield section
+            yield catalog_index.Chunk(
+                "Generated content", pages=(page,), sections=(section,)
+            )
+
+        try:
+            with connection:
+                catalog_index.insert_document_metadata(
+                    connection, document, extractor
+                )
+                counts = catalog_index.consume_extraction(
+                    connection, document["id"], events()
+                )
+            self.assertEqual(counts, catalog_index.ExtractionCounts(1, 1, 1))
+            self.assertEqual(
+                tuple(connection.execute(
+                    "SELECT page_number, page_label FROM document_pages"
+                ).fetchall()[0]),
+                (1, "iv"),
+            )
+            self.assertEqual(
+                tuple(connection.execute(
+                    """
+                    SELECT document_sections.section_index, document_sections.name,
+                           chunks.chunk_index, chunks.content
+                    FROM section_chunks
+                    JOIN document_sections ON document_sections.id = section_chunks.section_id
+                    JOIN chunks ON chunks.id = section_chunks.chunk_id
+                    """
+                ).fetchall()[0]),
+                (0, "Introduction", 0, "Generated content"),
+            )
+
+            def broken_events():
+                page = catalog_index.Page()
+                yield page
+                yield catalog_index.Chunk("Partial replacement", pages=(page,))
+                raise catalog_index.CatalogIndexError("deliberate extraction failure")
+
+            with self.assertRaisesRegex(
+                catalog_index.CatalogIndexError, "deliberate extraction failure"
+            ):
+                with connection:
+                    connection.execute(
+                        "DELETE FROM documents WHERE id = ?", (document["id"],)
+                    )
+                    catalog_index.insert_document_metadata(
+                        connection, document, extractor
+                    )
+                    catalog_index.consume_extraction(
+                        connection, document["id"], broken_events()
+                    )
+            self.assertEqual(
+                connection.execute("SELECT content FROM chunks").fetchone()[0],
+                "Generated content",
+            )
+            future_page = catalog_index.Page()
+            with self.assertRaisesRegex(
+                catalog_index.CatalogIndexError, "before yielding it"
+            ):
+                catalog_index.consume_extraction(
+                    connection,
+                    document["id"],
+                    [catalog_index.Chunk("Out of order", pages=(future_page,))],
+                )
+        finally:
+            connection.close()
+
     @unittest.skipUnless(shutil.which("pdftotext"), "pdftotext is not installed")
-    def test_pdftotext_backends(self) -> None:
+    def test_pdftotext_extractors(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
-        for backend in ("pdftotext", "pdftotext-layout"):
+        for extractor in ("pdftotext", "pdftotext-layout"):
             extraction = json.loads(
                 self.tool(
                     "extract",
                     "--root",
                     str(self.resources),
-                    "--pdf-backend",
-                    backend,
+                    "--extractor",
+                    extractor,
                     "--page",
                     "2",
                     "--json",
@@ -344,7 +462,8 @@ class PaperResourcesTest(unittest.TestCase):
             )
             self.assertEqual(len(extraction["pages"]), 1)
             self.assertEqual(extraction["pages"][0]["page_number"], 2)
-            self.assertIn("Display power sequence", extraction["pages"][0]["content"])
+            self.assertEqual(len(extraction["chunks"]), 1)
+            self.assertIn("Display power sequence", extraction["chunks"][0]["content"])
 
 
 if __name__ == "__main__":
