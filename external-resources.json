@@ -6,6 +6,7 @@
       "description": "S1D13521 Broadsheet hardware functional specification, revision 1.2",
       "tags": ["display", "kindle3", "s1d13521"],
       "path": "documents/display/S1D13521B01-hardware-functional-spec-rev1.2.pdf",
+      "extractor": "pypdf",
       "url": "https://essentialscrap.com/eink/S1D13521B01_Spec.pdf",
       "sha256": "c8b3c087ff6eff7a3aaa5e5a2006701d3915648dac469afab7c34265124921d7"
     },
@@ -14,6 +15,7 @@
       "description": "S1D13522 ISIS e-paper display controller product brief, revision 1.3",
       "tags": ["display", "kindle3", "s1d13522"],
       "path": "documents/display/S1D13522-product-brief-rev1.3.pdf",
+      "extractor": "pypdf",
       "url": "https://media.digikey.com/pdf/Data%20Sheets/Epson%20PDFs/S1D13522_Feb%2C2013.pdf",
       "sha256": "8b6b4ae3646711a4560f8d7756cfb74c0e7ee7504e3118ecdfb51d8d84f4564d"
     },
@@ -22,6 +24,7 @@
       "description": "S4E5B001B000A00 S1D13522 controller module specification, revision 1.2",
       "tags": ["display", "kindle3", "s1d13522"],
       "path": "documents/display/S4E5B001B000A00-S1D13522-module-spec-rev1.2.pdf",
+      "extractor": "pdftotext-layout",
       "source_page": "contact Epson or use an authorised archive",
       "sha256": "10663f16fd3f6bcabcf3e7392bba6281e3db73d304cbb4aa1e235da33f72697c"
     },
@@ -30,6 +33,7 @@
       "description": "TPS65180/TPS65181 e-paper display PMIC data sheet, revision G",
       "tags": ["display", "power", "kindle3"],
       "path": "documents/power/TPS65180-TPS65181-TPS65180B-TPS65181B-datasheet-revG.pdf",
+      "extractor": "pdftotext-layout",
       "url": "https://www.ti.com/lit/ds/symlink/tps65180.pdf",
       "sha256": "da5e8961406a6bea880e2c47f7c3fa88c2f03101b9e332a879f5195e367d6ffb"
     }
