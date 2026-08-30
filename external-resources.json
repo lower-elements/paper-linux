@@ -53,7 +53,7 @@
       "path": "documents/imx35/IMX35RM.pdf",
       "extractor": "pdftotext-layout",
       "url": "https://www.nxp.com/docs/en/reference-manual/IMX35RM.pdf",
-      "sha256": "a534a9e6f1d6d4c569fedd1d972a0f2d7982fb7c9ab82d1355dcc9f19370331f"
+      "sha256": "e97085f8acfce7a331073b8ebe2e67ac14f7ad7f4bf5720d25eb77bd5a526050"
     },
     {
       "id": "nxp-mc13892-datasheet",
