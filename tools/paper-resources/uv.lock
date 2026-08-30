@@ -368,7 +368,6 @@ name = "paper-resources"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anyio" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pypdf" },
@@ -377,7 +376,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", specifier = ">=4.0.0,<5.0.0" },
     { name = "mcp", specifier = ">=2.0.0,<3.0.0" },
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
     { name = "pypdf", specifier = ">=6.0.0,<7.0.0" },
