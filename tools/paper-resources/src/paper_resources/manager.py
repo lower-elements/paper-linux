@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal
 
 from . import catalog_index
@@ -71,10 +70,7 @@ class ResourceManager:
         }
 
     @classmethod
-    def load(
-        cls, manifest_path: Path, explicit_root: Path | None = None
-    ) -> "ResourceManager":
-        settings = ResourceSettings.load(manifest_path, explicit_root)
+    def load(cls, settings: ResourceSettings) -> "ResourceManager":
         return cls(settings, load_manifest(settings.manifest_path))
 
     def catalog_info(self) -> CatalogInfo:

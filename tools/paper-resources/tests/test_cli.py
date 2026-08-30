@@ -8,11 +8,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import anyio
 from mcp.server.mcpserver.exceptions import ToolError
 
-from paper_resources import catalog_index
+from paper_resources import catalog_index, cli, manager as manager_module
+from paper_resources.config import ResourceSettings
 from paper_resources.manager import ResourceManager
 from paper_resources.mcp_server import create_server
 
@@ -239,6 +241,26 @@ class PaperResourcesTest(unittest.TestCase):
         result = self.tool("path", expected=2, environment={"PAPER_RESOURCES_DIR": ""})
         self.assertIn("PAPER_RESOURCES_DIR is not configured", result.stderr)
 
+    def test_cli_reuses_loaded_manifest_for_resource_manager(self) -> None:
+        with (
+            patch(
+                "paper_resources.manager.load_manifest",
+                wraps=manager_module.load_manifest,
+            ) as load_manifest,
+            patch("builtins.print"),
+        ):
+            result = cli.main(
+                [
+                    "--manifest",
+                    str(self.manifest),
+                    "index-status",
+                    "--root",
+                    str(self.resources),
+                ]
+            )
+        self.assertEqual(result, 1)
+        load_manifest.assert_called_once_with(self.manifest)
+
     def test_index_search_page_extract_and_json(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
 
@@ -346,7 +368,8 @@ class PaperResourcesTest(unittest.TestCase):
     def test_mcp_tools_and_resources(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
         self.tool("index", "--root", str(self.resources))
-        server = create_server(ResourceManager.load(self.manifest, self.resources))
+        settings = ResourceSettings.load(self.manifest, self.resources)
+        server = create_server(ResourceManager.load(settings))
 
         async def exercise_server() -> None:
             tools = await server.list_tools()

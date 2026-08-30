@@ -15,7 +15,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from . import catalog_index
-from .config import ResourceError
+from .config import ResourceError, ResourceSettings
 from .manager import CatalogInfo, ResourceInfo, ResourceKind, ResourceManager
 
 
@@ -141,7 +141,8 @@ def parser() -> argparse.ArgumentParser:
 
 def main(arguments: list[str] | None = None) -> None:
     args = parser().parse_args(arguments)
-    create_server(ResourceManager.load(args.manifest, args.root)).run()
+    settings = ResourceSettings.load(args.manifest, args.root)
+    create_server(ResourceManager.load(settings)).run()
 
 
 if __name__ == "__main__":

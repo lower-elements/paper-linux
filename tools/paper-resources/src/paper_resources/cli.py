@@ -21,7 +21,6 @@ from .config import (
     ResourceSettings,
 )
 from .manager import ResourceManager
-from .manifest import load_manifest
 
 
 def positive_integer(value: str) -> int:
@@ -367,12 +366,14 @@ def parser() -> argparse.ArgumentParser:
 def main(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     try:
-        manifest = load_manifest(args.manifest)
+        settings = ResourceSettings.load(
+            args.manifest, getattr(args, "root", None)
+        )
         if args.command == "list":
-            print_catalog(manifest)
+            manager = ResourceManager.load(settings)
+            print_catalog(manager.manifest)
             return 0
         if args.command in ("env", "path"):
-            settings = ResourceSettings.load(args.manifest)
             if args.command == "env":
                 print(f"{RESOURCE_ROOT_ENV}={settings.root}")
                 print(f"{RESOURCE_DATABASE_ENV}={settings.database}")
@@ -381,7 +382,8 @@ def main(arguments: list[str] | None = None) -> int:
                 print(settings.root)
             return 0
 
-        manager = ResourceManager.load(args.manifest, args.root)
+        manager = ResourceManager.load(settings)
+        manifest = manager.manifest
         root = manager.settings.root
 
         if args.command in ("index", "index-status"):
