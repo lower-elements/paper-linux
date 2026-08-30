@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterable, Iterator
 from pypdf import PdfReader
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EXTRACTION_PIPELINE_VERSION = 1
 EXTRACTORS = (
     "pypdf",
@@ -42,6 +42,8 @@ class Section:
     """Opaque handle declaring a section in an extractor event stream."""
 
     name: str
+    level: int | None = None
+    parent: "Section | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +147,8 @@ class SectionResult:
     path: str
     section_index: int
     name: str
+    level: int | None
+    parent_section_index: int | None
     pages: list[int]
     content: str
 
@@ -153,7 +157,7 @@ class SectionResult:
 
 
 SCHEMA = """
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,
@@ -215,8 +219,13 @@ CREATE TABLE document_sections (
         REFERENCES documents(id) ON DELETE CASCADE,
     section_index INTEGER NOT NULL CHECK(section_index >= 0),
     name TEXT NOT NULL,
+    level INTEGER CHECK(level IS NULL OR level >= 0),
+    parent_section_id INTEGER,
     UNIQUE (document_id, section_index),
-    UNIQUE (document_id, id)
+    UNIQUE (document_id, id),
+    FOREIGN KEY (document_id, parent_section_id)
+        REFERENCES document_sections(document_id, id)
+        ON DELETE CASCADE
 );
 
 CREATE TABLE section_chunks (
@@ -460,6 +469,10 @@ class ExtractionState:
             raise CatalogIndexError("extractor yielded the same section handle twice")
         if not isinstance(section.name, str):
             raise CatalogIndexError("extractor yielded a section with a non-text name")
+        if section.level is not None and (not isinstance(section.level, int) or section.level < 0):
+            raise CatalogIndexError("extractor yielded a section with an invalid level")
+        if section.parent is not None and section.parent not in self.section_indexes:
+            raise CatalogIndexError("extractor section references a parent before yielding it")
         section_index = len(self.section_indexes)
         self.section_indexes[section] = section_index
         return section_index
@@ -554,14 +567,18 @@ def consume_extraction(
                     """,
                     (document_id, page_number, label),
                 )
-            case Section(name=name):
+            case Section(name=name, level=level, parent=parent):
                 section_index = state.add_section(event)
                 cursor = connection.execute(
                     """
-                    INSERT INTO document_sections(document_id, section_index, name)
-                    VALUES (?, ?, ?)
+                    INSERT INTO document_sections(
+                        document_id, section_index, name, level, parent_section_id
+                    ) VALUES (?, ?, ?, ?, ?)
                     """,
-                    (document_id, section_index, name),
+                    (
+                        document_id, section_index, name, level,
+                        section_ids[state.section_indexes[parent]] if parent is not None else None,
+                    ),
                 )
                 if cursor.lastrowid is None:
                     raise CatalogIndexError("SQLite did not assign a section row ID")
@@ -944,7 +961,7 @@ def read_section(
         raise CatalogIndexError(f"document is not indexed: {document_id}")
     section = connection.execute(
         """
-        SELECT id, name FROM document_sections
+        SELECT id, name, level, parent_section_id FROM document_sections
         WHERE document_id = ? AND section_index = ?
         """,
         (document_id, section_index),
@@ -953,33 +970,47 @@ def read_section(
         raise CatalogIndexError(
             f"{document_id}: no indexed section {section_index}"
         )
-    chunks = connection.execute(
+    descendants = connection.execute(
         """
+        WITH RECURSIVE tree(id) AS (
+            SELECT id FROM document_sections WHERE document_id = ? AND id = ?
+            UNION ALL
+            SELECT child.id FROM document_sections child
+            JOIN tree ON child.parent_section_id = tree.id
+            WHERE child.document_id = ?
+        ) SELECT id FROM tree
+        """,
+        (document_id, section["id"], document_id),
+    ).fetchall()
+    section_ids = [row[0] for row in descendants]
+    placeholders = ",".join("?" for _ in section_ids)
+    chunks = connection.execute(
+        f"""
         SELECT chunks.content
         FROM section_chunks
         JOIN chunks
           ON chunks.document_id = section_chunks.document_id
          AND chunks.id = section_chunks.chunk_id
         WHERE section_chunks.document_id = ?
-          AND section_chunks.section_id = ?
+          AND section_chunks.section_id IN ({placeholders})
         ORDER BY chunks.chunk_index
         """,
-        (document_id, section["id"]),
+        (document_id, *section_ids),
     ).fetchall()
     pages = [
         row[0]
         for row in connection.execute(
-            """
+            f"""
             SELECT DISTINCT chunk_pages.page_number
             FROM section_chunks
             JOIN chunk_pages
               ON chunk_pages.document_id = section_chunks.document_id
              AND chunk_pages.chunk_id = section_chunks.chunk_id
             WHERE section_chunks.document_id = ?
-              AND section_chunks.section_id = ?
+              AND section_chunks.section_id IN ({placeholders})
             ORDER BY chunk_pages.page_number
             """,
-            (document_id, section["id"]),
+            (document_id, *section_ids),
         )
     ]
     return SectionResult(
@@ -988,6 +1019,13 @@ def read_section(
         path=str((root / document["path"]).resolve()),
         section_index=section_index,
         name=section["name"],
+        level=section["level"],
+        parent_section_index=(
+            connection.execute(
+                "SELECT section_index FROM document_sections WHERE document_id = ? AND id = ?",
+                (document_id, section["parent_section_id"]),
+            ).fetchone()[0] if section["parent_section_id"] is not None else None
+        ),
         pages=pages,
         content="\n\n".join(row["content"] for row in chunks),
     )
@@ -1015,9 +1053,14 @@ def extract_document(
             case Page(label=label):
                 number = state.add_page(event)
                 pages.append({"page_number": number, "page_label": label})
-            case Section(name=name):
+            case Section(name=name, level=level, parent=parent):
                 index = state.add_section(event)
-                sections.append({"section_index": index, "name": name})
+                sections.append({
+                    "section_index": index, "name": name, "level": level,
+                    "parent_section_index": (
+                        state.section_indexes[parent] if parent is not None else None
+                    ),
+                })
             case Chunk():
                 index, content, page_numbers, section_indexes = state.add_chunk(event)
                 chunks.append({"chunk_index": index, "content": content})
