@@ -7,7 +7,7 @@ import sqlite3
 from threading import RLock
 from typing import Any, Literal
 
-from . import catalog_index
+from . import artifacts, catalog_index, git_resources
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
 
@@ -189,6 +189,60 @@ class ResourceManager:
             if resource.id == resource_id:
                 return resource
         raise ResourceError(f"unknown resource ID: {resource_id}")
+
+    def _known_resource_ids(self) -> set[str]:
+        ids = {document["id"] for document in self.documents}
+        for repository in self.repositories:
+            ids.add(repository["id"])
+            ids.update(worktree["id"] for worktree in repository.get("worktrees", []))
+        return ids
+
+    def populate(self, resource_ids: list[str] | None = None) -> list[str]:
+        requested = set(resource_ids or [])
+        unknown = requested - self._known_resource_ids()
+        if unknown:
+            raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
+        output: list[str] = []
+        for document in self.documents:
+            if not requested or document["id"] in requested:
+                output.append(artifacts.populate_file(document, self.settings.root))
+        for repository in self.repositories:
+            selected = not requested or repository["id"] in requested or any(
+                worktree["id"] in requested
+                for worktree in repository.get("worktrees", [])
+            )
+            if selected:
+                output.extend(
+                    git_resources.populate_repository(
+                        repository, self.settings.root, requested
+                    )
+                )
+        return output
+
+    def check(self, resource_ids: list[str] | None = None) -> tuple[bool, list[str]]:
+        requested = set(resource_ids or [])
+        unknown = requested - self._known_resource_ids()
+        if unknown:
+            raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
+        success = True
+        output: list[str] = []
+        for document in self.documents:
+            if not requested or document["id"] in requested:
+                ok, message = artifacts.check_file(document, self.settings.root)
+                success &= ok
+                output.append(message)
+        for repository in self.repositories:
+            selected = not requested or repository["id"] in requested or any(
+                worktree["id"] in requested
+                for worktree in repository.get("worktrees", [])
+            )
+            if selected:
+                for ok, message in git_resources.check_repository(
+                    repository, self.settings.root, requested
+                ):
+                    success &= ok
+                    output.append(message)
+        return success, output
 
     def index_documents(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
