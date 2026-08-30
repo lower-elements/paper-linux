@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import asdict
+from functools import partial
 import json
 from pathlib import Path
 from typing import Annotated, Iterator, Literal
 
+from anyio import to_thread
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -77,12 +79,15 @@ def create_server(manager: ResourceManager) -> MCPServer:
     ) -> list[catalog_index.SearchResult]:
         """Search FTS5 text and return bounded excerpts with physical PDF pages."""
         with domain_errors():
-            return manager.search_documents(
-                query,
-                document_id=document_id,
-                tag=tag,
-                limit=limit,
-                raw_fts=raw_fts,
+            return await to_thread.run_sync(
+                partial(
+                    manager.search_documents,
+                    query,
+                    document_id=document_id,
+                    tag=tag,
+                    limit=limit,
+                    raw_fts=raw_fts,
+                )
             )
 
     @server.tool(title="Get indexed document page", annotations=READ_ONLY)
@@ -92,7 +97,9 @@ def create_server(manager: ResourceManager) -> MCPServer:
     ) -> catalog_index.PageResult:
         """Return indexed text for one physical PDF page of a document."""
         with domain_errors():
-            return manager.get_document_page(document_id, page_number)
+            return await to_thread.run_sync(
+                manager.get_document_page, document_id, page_number
+            )
 
     @server.tool(title="Get document index status", annotations=READ_ONLY)
     async def get_index_status(
@@ -104,7 +111,9 @@ def create_server(manager: ResourceManager) -> MCPServer:
     ) -> list[catalog_index.IndexStatus]:
         """Report whether selected document indexes are current, stale, or missing."""
         with domain_errors():
-            return manager.index_status(resource_ids, extractor)
+            return await to_thread.run_sync(
+                manager.index_status, resource_ids, extractor
+            )
 
     @server.tool(title="Index documents", annotations=INDEX_WRITE)
     async def index_documents(
@@ -116,7 +125,9 @@ def create_server(manager: ResourceManager) -> MCPServer:
     ) -> catalog_index.IndexReport:
         """Index selected documents, or update every stale document when IDs are omitted."""
         with domain_errors():
-            return manager.index_documents(resource_ids, extractor)
+            return await to_thread.run_sync(
+                manager.index_documents, resource_ids, extractor
+            )
 
     @server.resource("paper-resource://catalog")
     async def catalog_resource() -> str:
@@ -142,7 +153,11 @@ def parser() -> argparse.ArgumentParser:
 def main(arguments: list[str] | None = None) -> None:
     args = parser().parse_args(arguments)
     settings = ResourceSettings.load(args.manifest, args.root)
-    create_server(ResourceManager.load(settings)).run()
+    manager = ResourceManager.load(settings)
+    try:
+        create_server(manager).run()
+    finally:
+        manager.close()
 
 
 if __name__ == "__main__":

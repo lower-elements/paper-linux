@@ -368,7 +368,7 @@ def open_database(path: Path, *, create: bool) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
     connection: sqlite3.Connection | None = None
     try:
-        connection = sqlite3.connect(path)
+        connection = sqlite3.connect(path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -596,7 +596,7 @@ def consume_extraction(
 def index_documents(
     documents: list[dict[str, Any]],
     root: Path,
-    database_path: Path,
+    connection: sqlite3.Connection,
     default_extractor: str,
     override_extractor: str | None,
     requested: set[str],
@@ -605,110 +605,106 @@ def index_documents(
     unknown = requested - available.keys()
     if unknown:
         raise CatalogIndexError(f"unknown document ID(s): {', '.join(sorted(unknown))}")
-    connection = open_database(database_path, create=True)
     outcomes: list[IndexOutcome] = []
     unchanged = 0
-    try:
-        selected = [
-            document for document in documents if not requested or document["id"] in requested
-        ]
-        for document in selected:
-            document_id = document["id"]
-            try:
-                path = validate_document_file(document, root)
-                extractor = extractor_for_document(
-                    document, default_extractor, override_extractor
+    selected = [
+        document for document in documents if not requested or document["id"] in requested
+    ]
+    for document in selected:
+        document_id = document["id"]
+        try:
+            path = validate_document_file(document, root)
+            extractor = extractor_for_document(
+                document, default_extractor, override_extractor
+            )
+            existing = connection.execute(
+                "SELECT * FROM documents WHERE id = ?", (document_id,)
+            ).fetchone()
+            fingerprint = (
+                document["sha256"].lower(),
+                extractor.name,
+                extractor.version,
+            )
+            if existing is not None and fingerprint == (
+                existing["sha256"],
+                existing["extractor"],
+                existing["extractor_version"],
+            ):
+                expected_tags = sorted(set(document.get("tags", [])))
+                metadata_changed = (
+                    existing["description"] != document.get("description", "")
+                    or existing["path"] != document["path"]
+                    or tags_for_document(connection, document_id) != expected_tags
                 )
-                existing = connection.execute(
-                    "SELECT * FROM documents WHERE id = ?", (document_id,)
-                ).fetchone()
-                fingerprint = (
-                    document["sha256"].lower(),
-                    extractor.name,
-                    extractor.version,
-                )
-                if existing is not None and fingerprint == (
-                    existing["sha256"],
-                    existing["extractor"],
-                    existing["extractor_version"],
-                ):
-                    expected_tags = sorted(set(document.get("tags", [])))
-                    metadata_changed = (
-                        existing["description"] != document.get("description", "")
-                        or existing["path"] != document["path"]
-                        or tags_for_document(connection, document_id) != expected_tags
-                    )
-                    if metadata_changed:
-                        with connection:
-                            connection.execute(
-                                "UPDATE documents SET description = ?, path = ? WHERE id = ?",
-                                (document.get("description", ""), document["path"], document_id),
-                            )
-                            connection.execute(
-                                "DELETE FROM document_tags WHERE document_id = ?", (document_id,)
-                            )
-                            connection.executemany(
-                                "INSERT INTO document_tags(document_id, tag) VALUES (?, ?)",
-                                [(document_id, tag) for tag in expected_tags],
-                            )
-                        outcomes.append(IndexOutcome("updated", document_id, "metadata"))
-                    else:
-                        unchanged += 1
-                    continue
-
-                reasons: list[str] = []
-                action = "indexed" if existing is None else "reindexed"
-                if existing is None:
-                    reasons.append("new")
+                if metadata_changed:
+                    with connection:
+                        connection.execute(
+                            "UPDATE documents SET description = ?, path = ? WHERE id = ?",
+                            (document.get("description", ""), document["path"], document_id),
+                        )
+                        connection.execute(
+                            "DELETE FROM document_tags WHERE document_id = ?", (document_id,)
+                        )
+                        connection.executemany(
+                            "INSERT INTO document_tags(document_id, tag) VALUES (?, ?)",
+                            [(document_id, tag) for tag in expected_tags],
+                        )
+                    outcomes.append(IndexOutcome("updated", document_id, "metadata"))
                 else:
-                    if existing["sha256"] != fingerprint[0]:
-                        reasons.append("sha256 changed")
-                    if existing["extractor"] != fingerprint[1]:
-                        reasons.append(
-                            f"extractor {existing['extractor']} -> {fingerprint[1]}"
-                        )
-                    if existing["extractor_version"] != fingerprint[2]:
-                        reasons.append(
-                            "extractor version "
-                            f"{existing['extractor_version']} -> {fingerprint[2]}"
-                        )
-                counts: ExtractionCounts
-                with connection:
-                    connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-                    insert_document_metadata(connection, document, extractor)
-                    counts = consume_extraction(
-                        connection, document_id, extractor.extract(path)
-                    )
-                detail = "; ".join(
-                    [
-                        *reasons,
-                        f"{counts.chunks} chunks",
-                        f"{counts.pages} pages",
-                        f"{counts.sections} sections",
-                    ]
-                )
-                outcomes.append(IndexOutcome(action, document_id, detail))
-            except (CatalogIndexError, OSError, sqlite3.Error) as error:
-                outcomes.append(IndexOutcome("failed", document_id, str(error)))
+                    unchanged += 1
+                continue
 
-        if not requested:
-            manifest_ids = set(available)
-            indexed_ids = {
-                row[0] for row in connection.execute("SELECT id FROM documents")
-            }
-            for document_id in sorted(indexed_ids - manifest_ids):
-                with connection:
-                    connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-                outcomes.append(IndexOutcome("removed", document_id, "not in manifest"))
-        return IndexReport(outcomes, unchanged)
-    finally:
-        connection.close()
+            reasons: list[str] = []
+            action = "indexed" if existing is None else "reindexed"
+            if existing is None:
+                reasons.append("new")
+            else:
+                if existing["sha256"] != fingerprint[0]:
+                    reasons.append("sha256 changed")
+                if existing["extractor"] != fingerprint[1]:
+                    reasons.append(
+                        f"extractor {existing['extractor']} -> {fingerprint[1]}"
+                    )
+                if existing["extractor_version"] != fingerprint[2]:
+                    reasons.append(
+                        "extractor version "
+                        f"{existing['extractor_version']} -> {fingerprint[2]}"
+                    )
+            counts: ExtractionCounts
+            with connection:
+                connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+                insert_document_metadata(connection, document, extractor)
+                counts = consume_extraction(
+                    connection, document_id, extractor.extract(path)
+                )
+            detail = "; ".join(
+                [
+                    *reasons,
+                    f"{counts.chunks} chunks",
+                    f"{counts.pages} pages",
+                    f"{counts.sections} sections",
+                ]
+            )
+            outcomes.append(IndexOutcome(action, document_id, detail))
+        except (CatalogIndexError, OSError, sqlite3.Error) as error:
+            outcomes.append(IndexOutcome("failed", document_id, str(error)))
+
+    if not requested:
+        manifest_ids = set(available)
+        indexed_ids = {
+            row[0] for row in connection.execute("SELECT id FROM documents")
+        }
+        for document_id in sorted(indexed_ids - manifest_ids):
+            with connection:
+                connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+            outcomes.append(IndexOutcome("removed", document_id, "not in manifest"))
+    return IndexReport(outcomes, unchanged)
 
 
 def index_status(
     documents: list[dict[str, Any]],
     root: Path,
-    database_path: Path,
+    connection: sqlite3.Connection | None,
     default_extractor: str,
     override_extractor: str | None,
     requested: set[str],
@@ -720,56 +716,52 @@ def index_status(
     selected = [
         document for document in documents if not requested or document["id"] in requested
     ]
-    if not database_path.is_file():
+    if connection is None:
         return [IndexStatus(document["id"], "missing", "not indexed") for document in selected]
-    connection = open_database(database_path, create=False)
     statuses: list[IndexStatus] = []
-    try:
-        for document in selected:
-            document_id = document["id"]
-            extractor = extractor_for_document(
-                document, default_extractor, override_extractor
-            )
-            path = root / document["path"]
-            if not path.is_file():
-                statuses.append(IndexStatus(document_id, "missing", "document file is missing"))
-                continue
-            if file_sha256(path) != document["sha256"].lower():
-                statuses.append(IndexStatus(document_id, "changed", "document checksum differs"))
-                continue
-            existing = connection.execute(
-                "SELECT * FROM documents WHERE id = ?", (document_id,)
-            ).fetchone()
-            if existing is None:
-                statuses.append(IndexStatus(document_id, "missing", "not indexed"))
-                continue
-            reasons: list[str] = []
-            if existing["sha256"] != document["sha256"].lower():
-                reasons.append("sha256")
-            if existing["extractor"] != extractor.name:
-                reasons.append("extractor")
-            if existing["extractor_version"] != extractor.version:
-                reasons.append("extractor version")
-            expected_tags = sorted(set(document.get("tags", [])))
-            if (
-                existing["description"] != document.get("description", "")
-                or existing["path"] != document["path"]
-                or tags_for_document(connection, document_id) != expected_tags
-            ):
-                reasons.append("metadata")
-            if reasons:
-                statuses.append(IndexStatus(document_id, "stale", ", ".join(reasons)))
-            else:
-                statuses.append(IndexStatus(document_id, "ok", "current"))
-        if not requested:
-            indexed_ids = {
-                row[0] for row in connection.execute("SELECT id FROM documents")
-            }
-            for document_id in sorted(indexed_ids - set(available)):
-                statuses.append(IndexStatus(document_id, "stale", "not in manifest"))
-        return statuses
-    finally:
-        connection.close()
+    for document in selected:
+        document_id = document["id"]
+        extractor = extractor_for_document(
+            document, default_extractor, override_extractor
+        )
+        path = root / document["path"]
+        if not path.is_file():
+            statuses.append(IndexStatus(document_id, "missing", "document file is missing"))
+            continue
+        if file_sha256(path) != document["sha256"].lower():
+            statuses.append(IndexStatus(document_id, "changed", "document checksum differs"))
+            continue
+        existing = connection.execute(
+            "SELECT * FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        if existing is None:
+            statuses.append(IndexStatus(document_id, "missing", "not indexed"))
+            continue
+        reasons: list[str] = []
+        if existing["sha256"] != document["sha256"].lower():
+            reasons.append("sha256")
+        if existing["extractor"] != extractor.name:
+            reasons.append("extractor")
+        if existing["extractor_version"] != extractor.version:
+            reasons.append("extractor version")
+        expected_tags = sorted(set(document.get("tags", [])))
+        if (
+            existing["description"] != document.get("description", "")
+            or existing["path"] != document["path"]
+            or tags_for_document(connection, document_id) != expected_tags
+        ):
+            reasons.append("metadata")
+        if reasons:
+            statuses.append(IndexStatus(document_id, "stale", ", ".join(reasons)))
+        else:
+            statuses.append(IndexStatus(document_id, "ok", "current"))
+    if not requested:
+        indexed_ids = {
+            row[0] for row in connection.execute("SELECT id FROM documents")
+        }
+        for document_id in sorted(indexed_ids - set(available)):
+            statuses.append(IndexStatus(document_id, "stale", "not in manifest"))
+    return statuses
 
 
 def plain_fts_query(value: str) -> str:
@@ -780,7 +772,7 @@ def plain_fts_query(value: str) -> str:
 
 
 def search_database(
-    database_path: Path,
+    connection: sqlite3.Connection,
     root: Path,
     query: str,
     *,
@@ -789,148 +781,140 @@ def search_database(
     tag: str | None,
     limit: int,
 ) -> list[SearchResult]:
-    connection = open_database(database_path, create=False)
+    expression = query if raw_fts else plain_fts_query(query)
+    conditions = ["chunks_fts MATCH ?"]
+    parameters: list[Any] = [expression]
+    if document_id:
+        conditions.append("documents.id = ?")
+        parameters.append(document_id)
+    if tag:
+        conditions.append(
+            "EXISTS (SELECT 1 FROM document_tags "
+            "WHERE document_tags.document_id = documents.id AND document_tags.tag = ?)"
+        )
+        parameters.append(tag)
+    parameters.append(limit)
+    sql = f"""
+        SELECT chunks.id AS chunk_id,
+               documents.id AS resource_id,
+               documents.description,
+               documents.path,
+               chunks.chunk_index,
+               bm25(chunks_fts) AS score,
+               snippet(chunks_fts, 0, '[[', ']]', ' … ', 32) AS snippet
+        FROM chunks_fts
+        JOIN chunks ON chunks.id = chunks_fts.rowid
+        JOIN documents ON documents.id = chunks.document_id
+        WHERE {' AND '.join(conditions)}
+        ORDER BY score, documents.id, chunks.chunk_index
+        LIMIT ?
+    """
     try:
-        expression = query if raw_fts else plain_fts_query(query)
-        conditions = ["chunks_fts MATCH ?"]
-        parameters: list[Any] = [expression]
-        if document_id:
-            conditions.append("documents.id = ?")
-            parameters.append(document_id)
-        if tag:
-            conditions.append(
-                "EXISTS (SELECT 1 FROM document_tags "
-                "WHERE document_tags.document_id = documents.id AND document_tags.tag = ?)"
+        rows = connection.execute(sql, parameters).fetchall()
+    except sqlite3.Error as error:
+        raise CatalogIndexError(f"invalid FTS5 query: {error}") from error
+    results: list[SearchResult] = []
+    for row in rows:
+        pages = [
+            item[0]
+            for item in connection.execute(
+                """
+                SELECT page_number FROM chunk_pages
+                WHERE document_id = ? AND chunk_id = ?
+                ORDER BY page_number
+                """,
+                (row["resource_id"], row["chunk_id"]),
             )
-            parameters.append(tag)
-        parameters.append(limit)
-        sql = f"""
-            SELECT chunks.id AS chunk_id,
-                   documents.id AS resource_id,
-                   documents.description,
-                   documents.path,
-                   chunks.chunk_index,
-                   bm25(chunks_fts) AS score,
-                   snippet(chunks_fts, 0, '[[', ']]', ' … ', 32) AS snippet
-            FROM chunks_fts
-            JOIN chunks ON chunks.id = chunks_fts.rowid
-            JOIN documents ON documents.id = chunks.document_id
-            WHERE {' AND '.join(conditions)}
-            ORDER BY score, documents.id, chunks.chunk_index
-            LIMIT ?
-        """
-        try:
-            rows = connection.execute(sql, parameters).fetchall()
-        except sqlite3.Error as error:
-            raise CatalogIndexError(f"invalid FTS5 query: {error}") from error
-        results: list[SearchResult] = []
-        for row in rows:
-            pages = [
-                item[0]
-                for item in connection.execute(
-                    """
-                    SELECT page_number FROM chunk_pages
-                    WHERE document_id = ? AND chunk_id = ?
-                    ORDER BY page_number
-                    """,
-                    (row["resource_id"], row["chunk_id"]),
-                )
-            ]
-            sections = [
-                item[0]
-                for item in connection.execute(
-                    """
-                    SELECT document_sections.name
-                    FROM section_chunks
-                    JOIN document_sections
-                      ON document_sections.document_id = section_chunks.document_id
-                     AND document_sections.id = section_chunks.section_id
-                    WHERE section_chunks.document_id = ?
-                      AND section_chunks.chunk_id = ?
-                    ORDER BY document_sections.section_index
-                    """,
-                    (row["resource_id"], row["chunk_id"]),
-                )
-            ]
-            results.append(
-                SearchResult(
-                    chunk_id=row["chunk_id"],
-                    resource_id=row["resource_id"],
-                    description=row["description"],
-                    path=str((root / row["path"]).resolve()),
-                    pages=pages,
-                    sections=sections,
-                    score=row["score"],
-                    snippet=row["snippet"],
-                )
+        ]
+        sections = [
+            item[0]
+            for item in connection.execute(
+                """
+                SELECT document_sections.name
+                FROM section_chunks
+                JOIN document_sections
+                  ON document_sections.document_id = section_chunks.document_id
+                 AND document_sections.id = section_chunks.section_id
+                WHERE section_chunks.document_id = ?
+                  AND section_chunks.chunk_id = ?
+                ORDER BY document_sections.section_index
+                """,
+                (row["resource_id"], row["chunk_id"]),
             )
-        return results
-    finally:
-        connection.close()
+        ]
+        results.append(
+            SearchResult(
+                chunk_id=row["chunk_id"],
+                resource_id=row["resource_id"],
+                description=row["description"],
+                path=str((root / row["path"]).resolve()),
+                pages=pages,
+                sections=sections,
+                score=row["score"],
+                snippet=row["snippet"],
+            )
+        )
+    return results
 
 
 def read_page(
-    database_path: Path,
+    connection: sqlite3.Connection,
     root: Path,
     document_id: str,
     page_number: int,
 ) -> PageResult:
-    connection = open_database(database_path, create=False)
-    try:
-        document = connection.execute(
-            "SELECT id, description, path FROM documents WHERE id = ?", (document_id,)
-        ).fetchone()
-        if document is None:
-            raise CatalogIndexError(f"document is not indexed: {document_id}")
-        page = connection.execute(
+    document = connection.execute(
+        "SELECT id, description, path FROM documents WHERE id = ?", (document_id,)
+    ).fetchone()
+    if document is None:
+        raise CatalogIndexError(f"document is not indexed: {document_id}")
+    page = connection.execute(
+        """
+        SELECT 1 FROM document_pages
+        WHERE document_id = ? AND page_number = ?
+        """,
+        (document_id, page_number),
+    ).fetchone()
+    if page is None:
+        raise CatalogIndexError(f"{document_id}: no PDF page {page_number}")
+    chunks = connection.execute(
+        """
+        SELECT chunks.content
+        FROM chunk_pages
+        JOIN chunks
+          ON chunks.document_id = chunk_pages.document_id
+         AND chunks.id = chunk_pages.chunk_id
+        WHERE chunk_pages.document_id = ? AND chunk_pages.page_number = ?
+        ORDER BY chunks.chunk_index
+        """,
+        (document_id, page_number),
+    ).fetchall()
+    sections = [
+        row[0]
+        for row in connection.execute(
             """
-            SELECT 1 FROM document_pages
-            WHERE document_id = ? AND page_number = ?
-            """,
-            (document_id, page_number),
-        ).fetchone()
-        if page is None:
-            raise CatalogIndexError(f"{document_id}: no PDF page {page_number}")
-        chunks = connection.execute(
-            """
-            SELECT chunks.content
+            SELECT DISTINCT document_sections.name, document_sections.section_index
             FROM chunk_pages
-            JOIN chunks
-              ON chunks.document_id = chunk_pages.document_id
-             AND chunks.id = chunk_pages.chunk_id
+            JOIN section_chunks
+              ON section_chunks.document_id = chunk_pages.document_id
+             AND section_chunks.chunk_id = chunk_pages.chunk_id
+            JOIN document_sections
+              ON document_sections.document_id = section_chunks.document_id
+             AND document_sections.id = section_chunks.section_id
             WHERE chunk_pages.document_id = ? AND chunk_pages.page_number = ?
-            ORDER BY chunks.chunk_index
+            ORDER BY document_sections.section_index
             """,
             (document_id, page_number),
-        ).fetchall()
-        sections = [
-            row[0]
-            for row in connection.execute(
-                """
-                SELECT DISTINCT document_sections.name, document_sections.section_index
-                FROM chunk_pages
-                JOIN section_chunks
-                  ON section_chunks.document_id = chunk_pages.document_id
-                 AND section_chunks.chunk_id = chunk_pages.chunk_id
-                JOIN document_sections
-                  ON document_sections.document_id = section_chunks.document_id
-                 AND document_sections.id = section_chunks.section_id
-                WHERE chunk_pages.document_id = ? AND chunk_pages.page_number = ?
-                ORDER BY document_sections.section_index
-                """,
-                (document_id, page_number),
-            )
-        ]
-        return PageResult(
-            resource_id=document["id"],
-            description=document["description"],
-            path=str((root / document["path"]).resolve()),
-            page_number=page_number,
-            sections=sections,
-            content="\n\n".join(row["content"] for row in chunks),
         )
-    finally:
-        connection.close()
+    ]
+    return PageResult(
+        resource_id=document["id"],
+        description=document["description"],
+        path=str((root / document["path"]).resolve()),
+        page_number=page_number,
+        sections=sections,
+        content="\n\n".join(row["content"] for row in chunks),
+    )
 
 
 def extract_document(

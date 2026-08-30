@@ -369,7 +369,9 @@ class PaperResourcesTest(unittest.TestCase):
         self.tool("populate", "--root", str(self.resources), "test-document")
         self.tool("index", "--root", str(self.resources))
         settings = ResourceSettings.load(self.manifest, self.resources)
-        server = create_server(ResourceManager.load(settings))
+        manager = ResourceManager.load(settings)
+        self.addCleanup(manager.close)
+        server = create_server(manager)
 
         async def exercise_server() -> None:
             tools = await server.list_tools()
@@ -446,7 +448,31 @@ class PaperResourcesTest(unittest.TestCase):
             resource = await server.read_resource("paper-resource://catalog")
             self.assertIn("test-document", list(resource)[0].content)
 
-        anyio.run(exercise_server)
+        with patch(
+            "paper_resources.catalog_index.open_database",
+            wraps=catalog_index.open_database,
+        ) as open_database:
+            anyio.run(exercise_server)
+        open_database.assert_called_once_with(settings.database, create=False)
+
+    def test_resource_manager_reopens_database_after_close(self) -> None:
+        self.tool("populate", "--root", str(self.resources), "test-document")
+        settings = ResourceSettings.load(self.manifest, self.resources)
+        manager = ResourceManager.load(settings)
+        self.addCleanup(manager.close)
+
+        with patch(
+            "paper_resources.catalog_index.open_database",
+            wraps=catalog_index.open_database,
+        ) as open_database:
+            manager.index_documents()
+            manager.search_documents("power sequence")
+            manager.get_document_page("test-document", 2)
+            open_database.assert_called_once_with(settings.database, create=True)
+
+            manager.close()
+            manager.index_status()
+            self.assertEqual(open_database.call_count, 2)
 
     def test_failed_reindex_preserves_previous_content(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")

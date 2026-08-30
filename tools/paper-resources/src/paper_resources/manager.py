@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sqlite3
+from threading import RLock
 from typing import Any, Literal
 
 from . import catalog_index
@@ -68,10 +70,26 @@ class ResourceManager:
         self.documents_by_id = {
             document["id"]: document for document in self.documents
         }
+        self._connection: sqlite3.Connection | None = None
+        self._database_lock = RLock()
 
     @classmethod
     def load(cls, settings: ResourceSettings) -> "ResourceManager":
         return cls(settings, load_manifest(settings.manifest_path))
+
+    def _database(self, *, create: bool) -> sqlite3.Connection:
+        if self._connection is None:
+            self._connection = catalog_index.open_database(
+                self.settings.database, create=create
+            )
+        return self._connection
+
+    def close(self) -> None:
+        """Close the lazily opened document-index connection, if any."""
+        with self._database_lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
 
     def catalog_info(self) -> CatalogInfo:
         return CatalogInfo(
@@ -175,26 +193,33 @@ class ResourceManager:
     def index_documents(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> catalog_index.IndexReport:
-        return catalog_index.index_documents(
-            self.documents,
-            self.settings.root,
-            self.settings.database,
-            self.settings.default_extractor,
-            extractor,
-            set(resource_ids or []),
-        )
+        with self._database_lock:
+            return catalog_index.index_documents(
+                self.documents,
+                self.settings.root,
+                self._database(create=True),
+                self.settings.default_extractor,
+                extractor,
+                set(resource_ids or []),
+            )
 
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> list[catalog_index.IndexStatus]:
-        return catalog_index.index_status(
-            self.documents,
-            self.settings.root,
-            self.settings.database,
-            self.settings.default_extractor,
-            extractor,
-            set(resource_ids or []),
-        )
+        with self._database_lock:
+            connection = (
+                self._database(create=False)
+                if self._connection is not None or self.settings.database.is_file()
+                else None
+            )
+            return catalog_index.index_status(
+                self.documents,
+                self.settings.root,
+                connection,
+                self.settings.default_extractor,
+                extractor,
+                set(resource_ids or []),
+            )
 
     def search_documents(
         self,
@@ -209,15 +234,16 @@ class ResourceManager:
             raise ResourceError(f"unknown document ID: {document_id}")
         if not 1 <= limit <= 50:
             raise ResourceError("search limit must be between 1 and 50")
-        return catalog_index.search_database(
-            self.settings.database,
-            self.settings.root,
-            query,
-            raw_fts=raw_fts,
-            document_id=document_id,
-            tag=tag,
-            limit=limit,
-        )
+        with self._database_lock:
+            return catalog_index.search_database(
+                self._database(create=False),
+                self.settings.root,
+                query,
+                raw_fts=raw_fts,
+                document_id=document_id,
+                tag=tag,
+                limit=limit,
+            )
 
     def get_document_page(
         self, document_id: str, page_number: int
@@ -226,9 +252,13 @@ class ResourceManager:
             raise ResourceError(f"unknown document ID: {document_id}")
         if page_number < 1:
             raise ResourceError("page number must be at least 1")
-        return catalog_index.read_page(
-            self.settings.database, self.settings.root, document_id, page_number
-        )
+        with self._database_lock:
+            return catalog_index.read_page(
+                self._database(create=False),
+                self.settings.root,
+                document_id,
+                page_number,
+            )
 
     def extract_document(
         self,

@@ -365,6 +365,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
+    manager: ResourceManager | None = None
     try:
         settings = ResourceSettings.load(
             args.manifest, getattr(args, "root", None)
@@ -468,6 +469,9 @@ def main(arguments: list[str] | None = None) -> int:
     except (ResourceError, catalog_index.CatalogIndexError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
+    finally:
+        if manager is not None:
+            manager.close()
 
 
 if __name__ == "__main__":
