@@ -36,6 +36,78 @@
       "extractor": "pdftotext-layout",
       "url": "https://www.ti.com/lit/ds/symlink/tps65180.pdf",
       "sha256": "da5e8961406a6bea880e2c47f7c3fa88c2f03101b9e332a879f5195e367d6ffb"
+    },
+    {
+      "id": "cirrus-class-d-audio-design-tips",
+      "description": "Cirrus Logic class-D audio design guidance",
+      "tags": ["audio", "kindle3"],
+      "path": "documents/audio/cirrus-class-d-audio-design-tips.pdf",
+      "extractor": "pypdf",
+      "url": "https://statics.cirrus.com/pubs/whitePaper/WP_Class_D_Audio_Design_Tips_indd.pdf",
+      "sha256": "d9f38351349c980731549d95ac694c6e44dcc4fa7f76c623a3de7fc1aa3a7615"
+    },
+    {
+      "id": "nxp-imx35-reference-manual",
+      "description": "NXP i.MX35 reference manual",
+      "tags": ["imx35", "kindle3", "hardware"],
+      "path": "documents/imx35/IMX35RM.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.nxp.com/docs/en/reference-manual/IMX35RM.pdf",
+      "sha256": "a534a9e6f1d6d4c569fedd1d972a0f2d7982fb7c9ab82d1355dcc9f19370331f"
+    },
+    {
+      "id": "nxp-mc13892-datasheet",
+      "description": "NXP MC13892 power management IC data sheet",
+      "tags": ["power", "kindle3"],
+      "path": "documents/power/MC13892.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.nxp.com/docs/en/data-sheet/MC13892.pdf",
+      "sha256": "c8427c00a8a26ee5208812055665356bc668a9663421dd08e63f182bab81289e"
+    },
+    {
+      "id": "nxp-imx35-datasheet",
+      "description": "NXP i.MX35 processor data sheet",
+      "tags": ["imx35", "kindle3", "hardware"],
+      "path": "documents/imx35/MCIMX35SR2CEC.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.nxp.com/docs/en/data-sheet/MCIMX35SR2CEC.pdf",
+      "sha256": "88e9254144ae53574c33fa562dc84411b15907f3c000a8a8f89f536042bc1ce1"
+    },
+    {
+      "id": "samsung-klm4g1eehm-b101-datasheet",
+      "description": "Samsung KLM4G1EEHM-B101 eMMC data sheet mirror",
+      "tags": ["storage", "kindle3"],
+      "path": "documents/storage/KLM4G1EEHM-B101.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://datasheet4u.com/pdf/749070/KLM4G1EEHM-B101.pdf",
+      "sha256": "f731746d4cfaf2be91994c1323ceff280aa7b107438257abae97e1691f97d093"
+    },
+    {
+      "id": "atheros-ar6102-datasheet",
+      "description": "Atheros AR6102 wireless chipset data sheet archive",
+      "tags": ["wireless", "kindle3"],
+      "path": "documents/wireless/AR6102.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.dzsc.com/uploadfile/company/193739/201192094443150.pdf",
+      "sha256": "983dd6d8419b88f6070f45399b3b594e7cf2eceb73b94045ff6c5e89c1e0e758"
+    },
+    {
+      "id": "ti-bq27210-datasheet",
+      "description": "TI BQ27210 battery fuel gauge data sheet",
+      "tags": ["power", "battery", "kindle3"],
+      "path": "documents/power/BQ27210.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.ti.com/lit/ds/symlink/bq27210.pdf",
+      "sha256": "b0689cf431955009a929af5d40fc29d0dcde9667b941ae2e97e0a3395ebc8225"
+    },
+    {
+      "id": "atheros-ar6002-hardware-document",
+      "description": "Atheros AR6002 hardware document archive",
+      "tags": ["wireless", "kindle3"],
+      "path": "documents/wireless/AR6002-Atheros.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.akkit.org/info/AR6002-Atheros.pdf",
+      "sha256": "6723ed13bb9c8559bb0dd801ecd5926246a2a1a8ce65a9194b1ab4a2e0a48325"
     }
   ],
   "repositories": [
