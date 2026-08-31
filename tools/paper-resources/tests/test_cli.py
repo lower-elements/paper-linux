@@ -1596,6 +1596,15 @@ class PaperResourcesTest(unittest.TestCase):
                     "get_patch",
                     "list_worktrees",
                     "get_worktree",
+                    "search_code_tags",
+                    "outline_file",
+                    "outline_scope",
+                    "inspect_tags",
+                    "read_tagged_code",
+                    "read_code_file",
+                    "read_enclosing_scope",
+                    "diff_tagged_code",
+                    "describe_code_index",
                 },
             )
             self.assertNotIn("populate_resources", names)
@@ -1636,6 +1645,9 @@ class PaperResourcesTest(unittest.TestCase):
                     "paper-resource://worktrees/{repository_id}",
                     "paper-resource://worktrees/{repository_id}/{revision_id}",
                     "paper-resource://worktrees/{repository_id}/{revision_id}/{worktree_id}",
+                    "paper-resource://code/tags/{tag_id}",
+                    "paper-resource://code/tags/{tag_id}/source",
+                    "paper-resource://code/tags/{tag_id}/scope",
                 },
             )
 
@@ -1678,6 +1690,54 @@ class PaperResourcesTest(unittest.TestCase):
                 },
             )
             self.assertIn("+second", file_diff.structured_content["diff"])
+
+            code_search = await server.call_tool(
+                "search_code_tags",
+                {
+                    "repository": "test-repository",
+                    "revision": "v1",
+                    "path": "driver.c",
+                    "name": "driver_start",
+                },
+            )
+            code_result = code_search.structured_content["search"]["results"][0]
+            function_tag = code_result["tag_id"]
+            self.assertEqual(code_result["name"], "driver_start")
+            state_search = await server.call_tool(
+                "search_code_tags",
+                {
+                    "repository": "test-repository",
+                    "revision": "v1",
+                    "path": "driver.c",
+                    "name": "state",
+                },
+            )
+            state_tag = state_search.structured_content["search"]["results"][0]["tag_id"]
+            outline = await server.call_tool(
+                "outline_file",
+                {
+                    "repository": "test-repository",
+                    "revision": "v1",
+                    "path": "driver.c",
+                },
+            )
+            self.assertEqual(outline.structured_content["file"]["path"], "driver.c")
+            inspected = await server.call_tool(
+                "inspect_tags", {"tag_ids": [function_tag]}
+            )
+            self.assertEqual(inspected.structured_content["result"][0]["kind"], "function")
+            source = await server.call_tool(
+                "read_tagged_code", {"tag_ids": [function_tag]}
+            )
+            self.assertIn(
+                "driver_start", source.structured_content["regions"][0]["source"]
+            )
+            enclosing = await server.call_tool(
+                "read_enclosing_scope", {"tag_ids": [state_tag]}
+            )
+            self.assertIsNotNone(enclosing.structured_content["scopes"][0]["scope_tag_id"])
+            description = await server.call_tool("describe_code_index", {})
+            self.assertGreater(description.structured_content["tags"], 0)
 
             with self.assertRaisesRegex(ToolError, "unknown resource ID"):
                 await server.call_tool(
@@ -1755,6 +1815,21 @@ class PaperResourcesTest(unittest.TestCase):
             )
             self.assertEqual(
                 json.loads(list(revision)[0].content)["author"], "test"
+            )
+
+            code_tag_resource = await server.read_resource(
+                f"paper-resource://code/tags/{function_tag}"
+            )
+            self.assertEqual(
+                json.loads(list(code_tag_resource)[0].content)["name"],
+                "driver_start",
+            )
+            code_source_resource = await server.read_resource(
+                f"paper-resource://code/tags/{function_tag}/source"
+            )
+            self.assertIn(
+                "driver_start",
+                json.loads(list(code_source_resource)[0].content)["regions"][0]["source"],
             )
 
             with self.assertRaises(ResourceNotFoundError):

@@ -239,6 +239,183 @@ def create_server(manager: ResourceManager) -> MCPServer:
         with domain_errors():
             return manager.index_documents(resource_ids, extractor)
 
+    @server.tool(title="Search code tags", annotations=READ_ONLY)
+    def search_code_tags(
+        repository: str | list[str] | None = None,
+        revision: str | list[str] | None = None,
+        path: str | list[str] | None = None,
+        path_prefix: str | None = None,
+        tag_id: int | list[int] | None = None,
+        name: str | list[str] | None = None,
+        name_prefix: str | None = None,
+        qualified_name: str | list[str] | None = None,
+        qualified_name_prefix: str | None = None,
+        language: str | list[str] | None = None,
+        kind: str | list[str] | None = None,
+        role: str | list[str] | None = None,
+        access: str | list[str] | None = None,
+        scope: str | list[str] | None = None,
+        scope_kind: str | list[str] | None = None,
+        enclosing_tag_id: int | None = None,
+        is_reference: bool | None = None,
+        cursor: str | None = None,
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+        include_source: bool = False,
+        source_context_lines: Annotated[int, Field(ge=0, le=100)] = 0,
+    ) -> dict[str, Any]:
+        """Search code tags; fields are ANDed and list values match any item."""
+        with domain_errors():
+            if include_source and limit > 20:
+                raise ResourceError(
+                    "include_source requires a search limit of at most 20"
+                )
+            result = manager.search_code_tags(
+                repository=repository, revision=revision, path=path,
+                path_prefix=path_prefix, tag_id=tag_id, name=name,
+                name_prefix=name_prefix, qualified_name=qualified_name,
+                qualified_name_prefix=qualified_name_prefix,
+                language=language, kind=kind, role=role, access=access,
+                scope=scope, scope_kind=scope_kind,
+                enclosing_tag_id=enclosing_tag_id, is_reference=is_reference,
+                cursor=cursor, limit=limit,
+            )
+            source = None
+            if include_source and result.results:
+                source = manager.read_tagged_code(
+                    [tag.tag_id for tag in result.results],
+                    context_lines=source_context_lines,
+                )
+            return {
+                "search": asdict(result),
+                "source": asdict(source) if source is not None else None,
+            }
+
+    @server.tool(title="Outline source file", annotations=READ_ONLY)
+    def outline_file(
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | None = None,
+        include_references: bool = False,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 1000,
+    ) -> dict[str, Any]:
+        """List source-ordered tags for one canonical file or worktree path."""
+        with domain_errors():
+            if worktree_path is not None and not Path(worktree_path).is_absolute():
+                raise ResourceError("MCP worktree paths must be absolute")
+            return asdict(manager.outline_code_file(
+                repository, revision, path, worktree_path=worktree_path,
+                include_references=include_references, limit=limit,
+            ))
+
+    @server.tool(title="Outline code scope", annotations=READ_ONLY)
+    def outline_scope(
+        tag_id: int,
+        include_references: bool = False,
+        limit: Annotated[int, Field(ge=1, le=5000)] = 1000,
+    ) -> dict[str, Any]:
+        """List the direct indexed children of one enclosing tag."""
+        with domain_errors():
+            return asdict(manager.outline_code_scope(
+                tag_id, include_references=include_references, limit=limit
+            ))
+
+    @server.tool(title="Inspect code tags", annotations=READ_ONLY)
+    def inspect_tags(
+        tag_ids: Annotated[list[int], Field(min_length=1, max_length=100)],
+    ) -> list[dict[str, Any]]:
+        """Return complete normalized metadata and occurrences for tag IDs."""
+        with domain_errors():
+            return [asdict(tag) for tag in manager.inspect_code_tags(tag_ids)]
+
+    @server.tool(title="Read tagged code", annotations=READ_ONLY)
+    def read_tagged_code(
+        tag_ids: Annotated[list[int], Field(min_length=1, max_length=100)],
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        context_lines: Annotated[int, Field(ge=0, le=100)] = 0,
+        line_numbers: bool = True,
+        max_lines: Annotated[int, Field(ge=1, le=20_000)] = 5000,
+        max_chars: Annotated[int, Field(ge=1, le=500_000)] = 200_000,
+    ) -> dict[str, Any]:
+        """Read bounded tag regions, coalescing overlap and shared blobs."""
+        with domain_errors():
+            return asdict(manager.read_tagged_code(
+                tag_ids, repository=repository, revision=revision, path=path,
+                context_lines=context_lines, numbered=line_numbers,
+                max_lines=max_lines, max_chars=max_chars,
+            ))
+
+    @server.tool(title="Read source file", annotations=READ_ONLY)
+    def read_code_file(
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | None = None,
+        line_start: Annotated[int, Field(ge=1)] = 1,
+        line_end: Annotated[int | None, Field(ge=1)] = None,
+        line_numbers: bool = True,
+        max_lines: Annotated[int, Field(ge=1, le=20_000)] = 5000,
+        max_chars: Annotated[int, Field(ge=1, le=500_000)] = 200_000,
+    ) -> dict[str, Any]:
+        """Read a bounded line range from a pinned revision's Git blob."""
+        with domain_errors():
+            if worktree_path is not None and not Path(worktree_path).is_absolute():
+                raise ResourceError("MCP worktree paths must be absolute")
+            return asdict(manager.read_code_file(
+                repository=repository, revision=revision, path=path,
+                worktree_path=worktree_path, line_start=line_start,
+                line_end=line_end, numbered=line_numbers,
+                max_lines=max_lines, max_chars=max_chars,
+            ))
+
+    @server.tool(title="Read enclosing code scope", annotations=READ_ONLY)
+    def read_enclosing_scope(
+        tag_ids: Annotated[list[int], Field(min_length=1, max_length=100)],
+        levels: Annotated[int, Field(ge=1, le=20)] = 1,
+        context_lines: Annotated[int, Field(ge=0, le=100)] = 0,
+        line_numbers: bool = True,
+        max_lines: Annotated[int, Field(ge=1, le=20_000)] = 5000,
+        max_chars: Annotated[int, Field(ge=1, le=500_000)] = 200_000,
+    ) -> dict[str, Any]:
+        """Zoom out from tags to enclosing indexed source scopes."""
+        with domain_errors():
+            return asdict(manager.read_enclosing_code_scope(
+                tag_ids, levels=levels, context_lines=context_lines,
+                numbered=line_numbers, max_lines=max_lines,
+                max_chars=max_chars,
+            ))
+
+    @server.tool(title="Diff tagged code", annotations=READ_ONLY)
+    def diff_tagged_code(
+        from_tag: int,
+        to_tag: int,
+        from_repository: str | None = None,
+        from_revision: str | None = None,
+        from_path: str | None = None,
+        to_repository: str | None = None,
+        to_revision: str | None = None,
+        to_path: str | None = None,
+        context_lines: Annotated[int, Field(ge=0, le=100)] = 3,
+        max_chars: Annotated[int, Field(ge=1, le=500_000)] = 200_000,
+    ) -> dict[str, Any]:
+        """Return a bounded unified diff between exactly two tagged regions."""
+        with domain_errors():
+            return asdict(manager.diff_tagged_code(
+                from_tag, to_tag, from_repository=from_repository,
+                from_revision=from_revision, from_path=from_path,
+                to_repository=to_repository, to_revision=to_revision,
+                to_path=to_path, context_lines=context_lines,
+                max_chars=max_chars,
+            ))
+
+    @server.tool(title="Describe code index", annotations=READ_ONLY)
+    def describe_code_index() -> dict[str, Any]:
+        """Return code-index coverage counts and language/kind facets."""
+        with domain_errors():
+            return asdict(manager.describe_code_index())
+
     @server.resource("paper-resource://catalog", mime_type="application/json")
     def catalog_resource() -> str:
         """The resource catalog and local availability as JSON."""
@@ -386,6 +563,30 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 asdict(worktree)
                 for worktree in manager.list_worktrees(repository_id)
             ])
+
+    @server.resource(
+        "paper-resource://code/tags/{tag_id}", mime_type="application/json"
+    )
+    def code_tag_resource(tag_id: int) -> str:
+        """Complete normalized metadata for one indexed code tag."""
+        with resource_errors():
+            return json_resource(asdict(manager.inspect_code_tags([tag_id])[0]))
+
+    @server.resource(
+        "paper-resource://code/tags/{tag_id}/source", mime_type="application/json"
+    )
+    def code_tag_source_resource(tag_id: int) -> str:
+        """The exact bounded source region represented by one code tag."""
+        with resource_errors():
+            return json_resource(asdict(manager.read_tagged_code([tag_id])))
+
+    @server.resource(
+        "paper-resource://code/tags/{tag_id}/scope", mime_type="application/json"
+    )
+    def code_tag_scope_resource(tag_id: int) -> str:
+        """The immediate enclosing indexed source scope for one code tag."""
+        with resource_errors():
+            return json_resource(asdict(manager.read_enclosing_code_scope([tag_id])))
 
     return server
 
