@@ -857,6 +857,24 @@ class ResourceManager:
                 max_lines=max_lines, max_chars=max_chars,
             )
 
+    def read_enclosing_code_scope(
+        self,
+        tag_ids: list[int] | tuple[int, ...],
+        *,
+        levels: int = 1,
+        context_lines: int = 0,
+        numbered: bool = True,
+        max_lines: int = 5000,
+        max_chars: int = 200_000,
+    ) -> code_navigation.CodeEnclosingSource:
+        """Read the enclosing indexed scopes for one or more tags."""
+        with self._database_lock:
+            return code_navigation.read_enclosing_source(
+                self._database(create=False), tag_ids, self._read_code_blob,
+                levels=levels, context_lines=context_lines,
+                numbered=numbered, max_lines=max_lines, max_chars=max_chars,
+            )
+
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> list[catalog_index.IndexStatus]:

@@ -1156,6 +1156,14 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertNotIn("dirty contents", pinned.source)
         self.assertIn("uncommitted changes", pinned.file.warning or "")
 
+        enclosing = resource_manager.read_enclosing_code_scope([state.tag_id])
+        self.assertEqual(enclosing.scopes[0].scope_tag_id, device.tag_id)
+        self.assertEqual(enclosing.scopes[0].resolution, "ctags")
+        self.assertIn("struct device", enclosing.source.regions[0].source)
+        outermost = resource_manager.read_enclosing_code_scope([function.tag_id])
+        self.assertIsNone(outermost.scopes[0].scope_tag_id)
+        self.assertEqual(outermost.source.regions, ())
+
     def test_populate_one_worktree(self) -> None:
         self.tool(
             "populate", "--root", str(self.resources),

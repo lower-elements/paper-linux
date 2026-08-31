@@ -152,6 +152,20 @@ class CodeFileSource:
     truncated: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CodeEnclosingScope:
+    requested_tag_id: int
+    scope_tag_id: int | None
+    resolution: str | None
+    message: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodeEnclosingSource:
+    scopes: tuple[CodeEnclosingScope, ...]
+    source: CodeSourceBatch
+
+
 def _values(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -683,3 +697,76 @@ def read_tagged_source(
             globally_truncated = True
             break
     return CodeSourceBatch(tuple(regions), globally_truncated)
+
+
+def _enclosing_tag(
+    connection: sqlite3.Connection, tag_id: int
+) -> tuple[int, str] | None:
+    row = connection.execute(
+        "SELECT analysis_id, line_start, line_end, enclosing_tag_id FROM ctags_tags WHERE id = ?",
+        (tag_id,),
+    ).fetchone()
+    if row is None:
+        raise ResourceError(f"unknown code tag ID: {tag_id}")
+    if row["enclosing_tag_id"] is not None:
+        return row["enclosing_tag_id"], "ctags"
+    child_end = row["line_end"] or row["line_start"]
+    fallback = connection.execute(
+        """
+        SELECT id
+        FROM ctags_tags
+        WHERE analysis_id = ? AND id <> ? AND is_reference = 0
+          AND line_end IS NOT NULL
+          AND line_start <= ? AND line_end >= ?
+        ORDER BY (line_end - line_start), line_start DESC, ordinal
+        LIMIT 1
+        """,
+        (row["analysis_id"], tag_id, row["line_start"], child_end),
+    ).fetchone()
+    return (fallback["id"], "containing-range") if fallback is not None else None
+
+
+def read_enclosing_source(
+    connection: sqlite3.Connection,
+    tag_ids: list[int] | tuple[int, ...],
+    read_blob: Callable[[str, bytes], bytes],
+    *,
+    levels: int = 1,
+    context_lines: int = 0,
+    numbered: bool = True,
+    max_lines: int = 5000,
+    max_chars: int = 200_000,
+) -> CodeEnclosingSource:
+    """Zoom out to enclosing tags without silently falling back to whole files."""
+    if levels < 1:
+        raise ResourceError("enclosing scope levels must be at least 1")
+    ids = tuple(dict.fromkeys(tag_ids))
+    inspect_tags(connection, ids)
+    resolutions: list[CodeEnclosingScope] = []
+    scope_ids: list[int] = []
+    for requested in ids:
+        current = requested
+        methods: list[str] = []
+        for _level in range(levels):
+            enclosing = _enclosing_tag(connection, current)
+            if enclosing is None:
+                break
+            current, method = enclosing
+            methods.append(method)
+        if not methods:
+            resolutions.append(CodeEnclosingScope(
+                requested, None, None,
+                "tag has no indexed enclosing scope",
+            ))
+            continue
+        scope_ids.append(current)
+        resolutions.append(CodeEnclosingScope(
+            requested, current, "+".join(methods),
+            None if len(methods) == levels else "outermost indexed scope reached",
+        ))
+    source = read_tagged_source(
+        connection, list(dict.fromkeys(scope_ids)), read_blob,
+        context_lines=context_lines, numbered=numbered,
+        max_lines=max_lines, max_chars=max_chars,
+    ) if scope_ids else CodeSourceBatch((), False)
+    return CodeEnclosingSource(tuple(resolutions), source)
