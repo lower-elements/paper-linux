@@ -579,6 +579,7 @@ class PaperResourcesTest(unittest.TestCase):
             self.assertGreater(stored.tags, 0)
             self.assertGreater(stored.roles, 0)
             self.assertGreater(stored.qualified_names, 0)
+            self.assertGreater(stored.enclosing_links, 0)
 
             analysis = connection.execute(
                 """
@@ -611,7 +612,6 @@ class PaperResourcesTest(unittest.TestCase):
             self.assertEqual(
                 [row["ordinal"] for row in tags], list(range(stored.tags))
             )
-            self.assertTrue(all(row["enclosing_tag_id"] is None for row in tags))
             self.assertFalse(any("::" in row["name"] for row in tags))
             self.assertEqual(
                 sum(row["qualified_name"] is not None for row in tags),
@@ -643,6 +643,13 @@ class PaperResourcesTest(unittest.TestCase):
 
             state = next(row for row in tags if row["name"] == "state")
             self.assertEqual(state["qualified_name"], "device::state")
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name FROM ctags_tags WHERE id = ?",
+                    (state["enclosing_tag_id"],),
+                ).fetchone()[0],
+                "device",
+            )
             self.assertEqual(state["scope"], "device")
             self.assertEqual(state["scope_kind"], "struct")
             self.assertEqual(state["typeref"], "typename:int")
@@ -726,6 +733,51 @@ class PaperResourcesTest(unittest.TestCase):
             )
             with connection:
                 connection.execute("DROP TRIGGER reject_ctags_tag_insert")
+
+            cpp_content = (
+                b"namespace outer {\n"
+                b"class widget {\n"
+                b"private:\n"
+                b"    int value;\n"
+                b"public:\n"
+                b"    void set(int next) { value = next; }\n"
+                b"};\n"
+                b"}\n"
+            )
+            cpp_oid = hashlib.sha1(
+                f"blob {len(cpp_content)}\0".encode("ascii") + cpp_content
+            ).digest()
+            cpp = ctags_index.store_blob_analysis(
+                connection,
+                session,
+                repository["id"],
+                cpp_oid,
+                "widget.cpp",
+                cpp_content,
+            )
+            cpp_tags = connection.execute(
+                """
+                SELECT child.name, child.qualified_name, parent.name AS parent
+                FROM ctags_tags AS child
+                LEFT JOIN ctags_tags AS parent
+                    ON parent.id = child.enclosing_tag_id
+                WHERE child.analysis_id = ? AND child.is_reference = 0
+                """,
+                (cpp.id,),
+            ).fetchall()
+            widget = next(row for row in cpp_tags if row["name"] == "widget")
+            value = next(row for row in cpp_tags if row["name"] == "value")
+            method = next(row for row in cpp_tags if row["name"] == "set")
+            self.assertEqual(widget["qualified_name"], "outer::widget")
+            self.assertEqual(widget["parent"], "outer")
+            self.assertEqual(value["qualified_name"], "outer::widget::value")
+            self.assertEqual(value["parent"], "widget")
+            self.assertEqual(method["qualified_name"], "outer::widget::set")
+            self.assertEqual(method["parent"], "widget")
+            self.assertEqual(
+                ctags_index.resolve_enclosing_tags(connection, cpp.id),
+                cpp.enclosing_links,
+            )
 
             empty_content = b"\x00\xff\x00"
             empty_oid = hashlib.sha1(

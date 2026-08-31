@@ -20,6 +20,7 @@ class StoredAnalysis:
     tags: int
     roles: int
     qualified_names: int
+    enclosing_links: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,110 @@ def _pairing_key(event: ctags.CtagsTag) -> tuple[object, ...]:
     )
 
 
+def resolve_enclosing_tags(
+    connection: sqlite3.Connection, analysis_id: int
+) -> int:
+    """Resolve reported scopes to enclosing tags where a best match exists."""
+    connection.execute(
+        "UPDATE ctags_tags SET enclosing_tag_id = NULL WHERE analysis_id = ?",
+        (analysis_id,),
+    )
+    rows = connection.execute(
+        """
+        SELECT
+            ctags_tags.id,
+            ctags_tags.name,
+            ctags_tags.qualified_name,
+            ctags_tags.line_start,
+            ctags_tags.line_end,
+            ctags_tags.scope,
+            ctags_tags.scope_kind,
+            ctags_kinds.name AS kind
+        FROM ctags_tags
+        JOIN ctags_kinds ON ctags_kinds.id = ctags_tags.kind_id
+        WHERE ctags_tags.analysis_id = ?
+        ORDER BY ctags_tags.ordinal
+        """,
+        (analysis_id,),
+    ).fetchall()
+    candidates_by_scope: dict[tuple[str, str], dict[int, sqlite3.Row]] = (
+        defaultdict(dict)
+    )
+    for row in rows:
+        candidates_by_scope[(row["kind"], row["name"])][row["id"]] = row
+        if row["qualified_name"] is not None:
+            candidates_by_scope[
+                (row["kind"], row["qualified_name"])
+            ][row["id"]] = row
+
+    links: list[tuple[int, int]] = []
+    for child in rows:
+        scope = child["scope"]
+        scope_kind = child["scope_kind"]
+        if scope is None or scope_kind is None:
+            continue
+        candidates = [
+            candidate
+            for candidate in candidates_by_scope.get(
+                (scope_kind, scope), {}
+            ).values()
+            if candidate["id"] != child["id"]
+        ]
+        if not candidates:
+            continue
+
+        qualified = [
+            candidate
+            for candidate in candidates
+            if candidate["qualified_name"] == scope
+        ]
+        if qualified:
+            candidates = qualified
+
+        containing = [
+            candidate
+            for candidate in candidates
+            if candidate["line_end"] is not None
+            and candidate["line_start"] <= child["line_start"] <= candidate["line_end"]
+        ]
+        if containing:
+            candidates = containing
+            shortest_span = min(
+                candidate["line_end"] - candidate["line_start"]
+                for candidate in candidates
+            )
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate["line_end"] - candidate["line_start"]
+                == shortest_span
+            ]
+
+        if len(candidates) > 1:
+            nearest_line = max(
+                (
+                    candidate["line_start"]
+                    for candidate in candidates
+                    if candidate["line_start"] <= child["line_start"]
+                ),
+                default=None,
+            )
+            if nearest_line is not None:
+                candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate["line_start"] == nearest_line
+                ]
+        if len(candidates) == 1:
+            links.append((candidates[0]["id"], child["id"]))
+
+    connection.executemany(
+        "UPDATE ctags_tags SET enclosing_tag_id = ? WHERE id = ?",
+        links,
+    )
+    return len(links)
+
+
 def store_blob_analysis(
     connection: sqlite3.Connection,
     session: ctags.CtagsSession,
@@ -165,6 +270,7 @@ def store_blob_analysis(
     tag_count = 0
     role_count = 0
     qualified_names = 0
+    enclosing_links = 0
     ordinary_tags: dict[tuple[object, ...], deque[int]] = defaultdict(deque)
     pending_qualified: dict[tuple[object, ...], deque[str]] = defaultdict(deque)
     try:
@@ -280,6 +386,7 @@ def store_blob_analysis(
                     raise ResourceError(
                         "Ctags emitted a qualified tag without an ordinary counterpart"
                     )
+                enclosing_links = resolve_enclosing_tags(connection, analysis_id)
                 connection.execute(
                     """
                     UPDATE ctags_analyses SET input_parser_id = ? WHERE id = ?
@@ -303,4 +410,5 @@ def store_blob_analysis(
         tags=tag_count,
         roles=role_count,
         qualified_names=qualified_names,
+        enclosing_links=enclosing_links,
     )
