@@ -551,6 +551,17 @@ class PaperResourcesTest(unittest.TestCase):
             )
             self.assertEqual(empty_completed.input_parser_id, c_parser.id)
             self.assertEqual(empty_completed.tags, 0)
+
+            inferred_c = list(
+                session.analyze("generated.c.in", b"int generated_value;\n")
+            )
+            inferred_completed = next(
+                event
+                for event in inferred_c
+                if isinstance(event, ctags.CtagsCompleted)
+            )
+            self.assertEqual(inferred_completed.input_parser_id, c_parser.id)
+            self.assertGreater(inferred_completed.tags, 0)
             self.assertEqual(
                 tuple(
                     connection.execute(

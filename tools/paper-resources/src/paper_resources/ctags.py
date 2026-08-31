@@ -17,7 +17,7 @@ from typing import Any, Iterator
 from .config import ResourceError
 
 
-CTAGS_PIPELINE_VERSION = 2
+CTAGS_PIPELINE_VERSION = 3
 CTAGS_RESPONSE_QUEUE_SIZE = 256
 CTAGS_OUTPUT_OPTIONS = (
     "--options=NONE",
@@ -612,6 +612,7 @@ class CtagsSession:
         profile: CtagsProfile | None = None
         profile_emitted = False
         request_parsers: dict[str, CtagsParser] = {}
+        tag_parsers: dict[int, CtagsParser] = {}
         request_kinds: dict[tuple[str, str], CtagsKind] = {}
         request_roles: dict[tuple[str, str, str], CtagsRole] = {}
         pending_kinds: dict[str, list[tuple[str, str | None, str | None]]] = {}
@@ -713,8 +714,6 @@ class CtagsSession:
                         yield current_profile
                     parser = self._ensure_parser(current_profile, language, version)
                     request_parsers[language] = parser
-                    if input_parser_id is None:
-                        input_parser_id = parser.id
                     yield parser
                     yield from resolve_pending(language)
                 continue
@@ -735,6 +734,7 @@ class CtagsSession:
                     kind = self._ensure_kind(parser, kind_name, None, None)
                     request_kinds[(language, kind_name)] = kind
                     yield kind
+                tag_parsers[parser.id] = parser
                 roles = _comma_values(record.get("roles"), "roles")
                 extras = _comma_values(record.get("extras"), "extras")
                 role_ids: list[int] = []
@@ -785,6 +785,8 @@ class CtagsSession:
                         request_parsers[expected_input_language] = input_parser
                         yield input_parser
                     input_parser_id = input_parser.id
+                elif len(tag_parsers) == 1:
+                    input_parser_id = next(iter(tag_parsers))
                 if pending_kinds or pending_roles:
                     raise CtagsError(
                         "Universal Ctags left unresolved catalog pseudo-tags"
