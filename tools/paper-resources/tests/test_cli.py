@@ -1164,6 +1164,17 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertIsNone(outermost.scopes[0].scope_tag_id)
         self.assertEqual(outermost.source.regions, ())
 
+        tag_diff = resource_manager.diff_tagged_code(
+            device.tag_id, function.tag_id,
+            from_repository="test-repository", from_revision="v1",
+            from_path="driver.c", to_repository="test-repository",
+            to_revision="v1", to_path="driver.c",
+        )
+        self.assertIn("--- test-repository@v1:driver.c:1", tag_diff.diff)
+        self.assertIn("+++ test-repository@v1:driver.c:2", tag_diff.diff)
+        self.assertIn("-struct device", tag_diff.diff)
+        self.assertIn("+static int driver_start", tag_diff.diff)
+
     def test_populate_one_worktree(self) -> None:
         self.tool(
             "populate", "--root", str(self.resources),

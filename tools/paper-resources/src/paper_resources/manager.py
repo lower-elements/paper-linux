@@ -875,6 +875,49 @@ class ResourceManager:
                 numbered=numbered, max_lines=max_lines, max_chars=max_chars,
             )
 
+    def diff_tagged_code(
+        self,
+        from_tag_id: int,
+        to_tag_id: int,
+        *,
+        from_repository: str | None = None,
+        from_revision: str | None = None,
+        from_path: str | None = None,
+        to_repository: str | None = None,
+        to_revision: str | None = None,
+        to_path: str | None = None,
+        context_lines: int = 3,
+        max_chars: int = 200_000,
+    ) -> code_navigation.CodeTagDiff:
+        """Diff exactly two source regions identified by code tags."""
+        for prefix, repository, revision, path in (
+            ("from", from_repository, from_revision, from_path),
+            ("to", to_repository, to_revision, to_path),
+        ):
+            if revision is not None and repository is None:
+                raise ResourceError(f"{prefix} repository is required with a revision")
+            if path is not None and (repository is None or revision is None):
+                raise ResourceError(
+                    f"{prefix} repository and revision are required with a path"
+                )
+        normalized_from = (
+            git_resources.validate_repository_path(from_path)
+            if from_path is not None else None
+        )
+        normalized_to = (
+            git_resources.validate_repository_path(to_path)
+            if to_path is not None else None
+        )
+        with self._database_lock:
+            return code_navigation.diff_tagged_source(
+                self._database(create=False), from_tag_id, to_tag_id,
+                self._read_code_blob,
+                from_repository=from_repository, from_revision=from_revision,
+                from_path=normalized_from, to_repository=to_repository,
+                to_revision=to_revision, to_path=normalized_to,
+                context_lines=context_lines, max_chars=max_chars,
+            )
+
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> list[catalog_index.IndexStatus]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import base64
+import difflib
 import json
 import sqlite3
 from typing import Any, Callable, Iterable
@@ -164,6 +165,16 @@ class CodeEnclosingScope:
 class CodeEnclosingSource:
     scopes: tuple[CodeEnclosingScope, ...]
     source: CodeSourceBatch
+
+
+@dataclass(frozen=True, slots=True)
+class CodeTagDiff:
+    from_tag_id: int
+    to_tag_id: int
+    from_file: CodeFile
+    to_file: CodeFile
+    diff: str
+    truncated: bool
 
 
 def _values(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -770,3 +781,90 @@ def read_enclosing_source(
         max_lines=max_lines, max_chars=max_chars,
     ) if scope_ids else CodeSourceBatch((), False)
     return CodeEnclosingSource(tuple(resolutions), source)
+
+
+def _select_occurrence(
+    tag: CodeTagInfo,
+    *,
+    repository: str | None,
+    revision: str | None,
+    path: str | None,
+) -> CodeOccurrence:
+    for occurrence in tag.occurrences:
+        if (
+            (repository is None or occurrence.repository == repository)
+            and (revision is None or occurrence.revision == revision)
+            and (path is None or occurrence.path == path)
+        ):
+            return occurrence
+    raise ResourceError(
+        f"code tag {tag.tag_id} has no occurrence matching the requested file context"
+    )
+
+
+def diff_tagged_source(
+    connection: sqlite3.Connection,
+    from_tag_id: int,
+    to_tag_id: int,
+    read_blob: Callable[[str, bytes], bytes],
+    *,
+    from_repository: str | None = None,
+    from_revision: str | None = None,
+    from_path: str | None = None,
+    to_repository: str | None = None,
+    to_revision: str | None = None,
+    to_path: str | None = None,
+    context_lines: int = 3,
+    max_chars: int = 200_000,
+) -> CodeTagDiff:
+    """Create a bounded unified diff between exactly two tagged regions."""
+    if context_lines < 0:
+        raise ResourceError("diff context lines must be at least 0")
+    if max_chars < 1:
+        raise ResourceError("diff output limit must be positive")
+    inspected = {
+        tag.tag_id: tag
+        for tag in inspect_tags(connection, [from_tag_id, to_tag_id])
+    }
+    from_tag = inspected[from_tag_id]
+    to_tag = inspected[to_tag_id]
+    from_occurrence = _select_occurrence(
+        from_tag, repository=from_repository, revision=from_revision, path=from_path
+    )
+    to_occurrence = _select_occurrence(
+        to_tag, repository=to_repository, revision=to_revision, path=to_path
+    )
+
+    def region(tag: CodeTagInfo, occurrence: CodeOccurrence) -> list[str]:
+        content = read_blob(
+            occurrence.repository, bytes.fromhex(occurrence.blob_oid)
+        ).decode("utf-8", errors="replace").splitlines(keepends=True)
+        return content[tag.line_start - 1:(tag.line_end or tag.line_start)]
+
+    from_label = (
+        f"{from_occurrence.repository}@{from_occurrence.revision}:"
+        f"{from_occurrence.path}:{from_tag.line_start}"
+    )
+    to_label = (
+        f"{to_occurrence.repository}@{to_occurrence.revision}:"
+        f"{to_occurrence.path}:{to_tag.line_start}"
+    )
+    diff = "".join(difflib.unified_diff(
+        region(from_tag, from_occurrence), region(to_tag, to_occurrence),
+        fromfile=from_label, tofile=to_label, n=context_lines,
+    ))
+    truncated = len(diff) > max_chars
+    if truncated:
+        diff = diff[:max_chars]
+    return CodeTagDiff(
+        from_tag_id, to_tag_id,
+        CodeFile(
+            from_occurrence.repository, from_occurrence.revision,
+            from_occurrence.path, from_occurrence.blob_oid,
+        ),
+        CodeFile(
+            to_occurrence.repository, to_occurrence.revision,
+            to_occurrence.path, to_occurrence.blob_oid,
+        ),
+        diff, truncated,
+    )
