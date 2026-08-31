@@ -797,21 +797,13 @@ class PaperResourcesTest(unittest.TestCase):
                     "SELECT typeof(metadata) FROM ctags_tags WHERE id = ?",
                     (state["id"],),
                 ).fetchone()[0],
-                "blob",
+                "null",
             )
-            metadata = json.loads(
+            self.assertIsNone(
                 connection.execute(
-                    "SELECT json(metadata) FROM ctags_tags WHERE id = ?",
+                    "SELECT metadata FROM ctags_tags WHERE id = ?",
                     (state["id"],),
                 ).fetchone()[0]
-            )
-            self.assertIn("pattern", metadata)
-            self.assertFalse(
-                {
-                    "line", "end", "signature", "typeref", "access", "scope",
-                    "scopeKind", "nth", "file", "roles", "reference",
-                }
-                & metadata.keys()
             )
 
             replacement = ctags_index.store_blob_analysis(

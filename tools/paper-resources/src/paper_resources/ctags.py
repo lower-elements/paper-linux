@@ -17,12 +17,13 @@ from typing import Any, Iterator
 from .config import ResourceError
 
 
-CTAGS_PIPELINE_VERSION = 1
+CTAGS_PIPELINE_VERSION = 2
 CTAGS_RESPONSE_QUEUE_SIZE = 256
 CTAGS_OUTPUT_OPTIONS = (
     "--options=NONE",
     "--fields=*",
     "--fields-all=*",
+    "--fields=-{pattern}",
     "--extras=+{pseudo}{qualified}{reference}",
     "--extras=-{inputFile}",
     "--pseudo-tags={TAG_OUTPUT_VERSION}{TAG_PARSER_VERSION}"
