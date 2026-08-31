@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from . import catalog_index
+from . import catalog_index, database
 from .config import (
     DEFAULT_EXTRACTOR_ENV,
     RESOURCE_DATABASE_ENV,
@@ -461,7 +461,11 @@ def main(arguments: list[str] | None = None) -> int:
         )
         print("\n".join(messages))
         return 0 if success else 1
-    except (ResourceError, catalog_index.CatalogIndexError) as error:
+    except (
+        ResourceError,
+        catalog_index.CatalogIndexError,
+        database.DatabaseError,
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     finally:

@@ -7,7 +7,7 @@ import sqlite3
 from threading import RLock
 from typing import Any, Literal
 
-from . import artifacts, catalog_index, git_resources
+from . import artifacts, catalog_index, database, git_resources
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
 
@@ -156,7 +156,7 @@ class ResourceManager:
 
     def _database(self, *, create: bool) -> sqlite3.Connection:
         if self._connection is None:
-            self._connection = catalog_index.open_database(
+            self._connection = database.open_database(
                 self.settings.database, create=create
             )
         return self._connection

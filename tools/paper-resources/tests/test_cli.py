@@ -13,7 +13,13 @@ from unittest.mock import patch
 import anyio
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 
-from paper_resources import catalog_index, cli, git_resources, manager as manager_module
+from paper_resources import (
+    catalog_index,
+    cli,
+    database,
+    git_resources,
+    manager as manager_module,
+)
 from paper_resources.config import ResourceSettings
 from paper_resources.manager import ResourceManager
 from paper_resources.mcp_server import create_server
@@ -783,8 +789,8 @@ class PaperResourcesTest(unittest.TestCase):
                 )
 
         with patch(
-            "paper_resources.catalog_index.open_database",
-            wraps=catalog_index.open_database,
+            "paper_resources.database.open_database",
+            wraps=database.open_database,
         ) as open_database:
             anyio.run(exercise_server)
         open_database.assert_called_once_with(settings.database, create=False)
@@ -796,8 +802,8 @@ class PaperResourcesTest(unittest.TestCase):
         self.addCleanup(manager.close)
 
         with patch(
-            "paper_resources.catalog_index.open_database",
-            wraps=catalog_index.open_database,
+            "paper_resources.database.open_database",
+            wraps=database.open_database,
         ) as open_database:
             manager.index_documents()
             manager.search_documents("power sequence")
@@ -828,8 +834,8 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertIn("test-document, PDF page 2", preserved.stdout)
 
     def test_generator_events_assign_ids_and_create_relationships(self) -> None:
-        database = self.base / "events.db"
-        connection = catalog_index.open_database(database, create=True)
+        database_path = self.base / "events.db"
+        connection = database.open_database(database_path, create=True)
         document = {
             "id": "event-document",
             "description": "event document",

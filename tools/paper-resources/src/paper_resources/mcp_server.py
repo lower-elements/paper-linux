@@ -14,7 +14,7 @@ from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import catalog_index
+from . import catalog_index, database
 from .config import ResourceError, ResourceSettings
 from .manager import (
     CatalogInfo, PatchInfo, ResourceInfo, ResourceKind, ResourceManager,
@@ -36,7 +36,11 @@ def domain_errors() -> Iterator[None]:
     """Turn application errors into concise, recoverable MCP tool errors."""
     try:
         yield
-    except (ResourceError, catalog_index.CatalogIndexError) as error:
+    except (
+        ResourceError,
+        catalog_index.CatalogIndexError,
+        database.DatabaseError,
+    ) as error:
         raise ToolError(str(error)) from error
 
 
@@ -45,7 +49,11 @@ def resource_errors() -> Iterator[None]:
     """Turn missing catalog/index entries into MCP resource lookup errors."""
     try:
         yield
-    except (ResourceError, catalog_index.CatalogIndexError) as error:
+    except (
+        ResourceError,
+        catalog_index.CatalogIndexError,
+        database.DatabaseError,
+    ) as error:
         raise ResourceNotFoundError(str(error)) from error
 
 
