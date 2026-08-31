@@ -481,11 +481,13 @@ class PaperResourcesTest(unittest.TestCase):
                 ("test-document", 0, "Power sequencing"),
             ).lastrowid
             chunk_id = connection.execute(
-                "SELECT id FROM chunks WHERE document_id = ? AND chunk_index = ?",
+                "SELECT id FROM document_chunks "
+                "WHERE document_id = ? AND chunk_index = ?",
                 ("test-document", 1),
             ).fetchone()[0]
             connection.execute(
-                "INSERT INTO section_chunks(document_id, section_id, chunk_id) VALUES (?, ?, ?)",
+                "INSERT INTO document_section_chunks"
+                "(document_id, section_id, chunk_id) VALUES (?, ?, ?)",
                 ("test-document", section_id, chunk_id),
             )
         section = json.loads(
@@ -518,7 +520,12 @@ class PaperResourcesTest(unittest.TestCase):
 
         with sqlite3.connect(self.resources / "resources.db") as connection:
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
-            self.assertEqual(connection.execute("SELECT count(*) FROM chunks_fts").fetchone()[0], 2)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM document_chunks_fts"
+                ).fetchone()[0],
+                2,
+            )
 
     def test_manifest_extractor_and_cli_override_precedence(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
@@ -583,13 +590,15 @@ class PaperResourcesTest(unittest.TestCase):
             ).lastrowid
             chunk_id = connection.execute(
                 """
-                SELECT id FROM chunks
+                SELECT id FROM document_chunks
                 WHERE document_id = 'test-document' AND chunk_index = 1
                 """
             ).fetchone()[0]
             connection.execute(
                 """
-                INSERT INTO section_chunks(document_id, section_id, chunk_id)
+                INSERT INTO document_section_chunks(
+                    document_id, section_id, chunk_id
+                )
                 VALUES ('test-document', ?, ?)
                 """,
                 (section_id, chunk_id),
@@ -875,10 +884,12 @@ class PaperResourcesTest(unittest.TestCase):
                 tuple(connection.execute(
                     """
                     SELECT document_sections.section_index, document_sections.name,
-                           chunks.chunk_index, chunks.content
-                    FROM section_chunks
-                    JOIN document_sections ON document_sections.id = section_chunks.section_id
-                    JOIN chunks ON chunks.id = section_chunks.chunk_id
+                           document_chunks.chunk_index, document_chunks.content
+                    FROM document_section_chunks
+                    JOIN document_sections
+                      ON document_sections.id = document_section_chunks.section_id
+                    JOIN document_chunks
+                      ON document_chunks.id = document_section_chunks.chunk_id
                     """
                 ).fetchall()[0]),
                 (0, "Introduction", 0, "Generated content"),
@@ -904,7 +915,9 @@ class PaperResourcesTest(unittest.TestCase):
                         connection, document["id"], broken_events()
                     )
             self.assertEqual(
-                connection.execute("SELECT content FROM chunks").fetchone()[0],
+                connection.execute(
+                    "SELECT content FROM document_chunks"
+                ).fetchone()[0],
                 "Generated content",
             )
             future_page = catalog_index.Page()

@@ -155,16 +155,16 @@ class SectionResult:
         return asdict(self)
 
 
-def file_sha256(path: Path) -> str:
+def file_sha256(path: Path) -> bytes:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
-    return digest.hexdigest()
+    return digest.digest()
 
 
-def text_sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+def text_sha256(value: str) -> bytes:
+    return hashlib.sha256(value.encode("utf-8")).digest()
 
 
 def normalize_text(value: str) -> str:
@@ -288,10 +288,11 @@ def validate_document_file(document: dict[str, Any], root: Path) -> Path:
     if not path.is_file():
         raise CatalogIndexError(f"{document['id']}: document is missing: {path}")
     actual = file_sha256(path)
-    expected = document["sha256"].lower()
+    expected = bytes.fromhex(document["sha256"])
     if actual != expected:
         raise CatalogIndexError(
-            f"{document['id']}: checksum mismatch (expected {expected}, got {actual})"
+            f"{document['id']}: checksum mismatch "
+            f"(expected {expected.hex()}, got {actual.hex()})"
         )
     return path
 
@@ -397,7 +398,7 @@ def insert_document_metadata(
             document_id,
             document.get("description", ""),
             document["path"],
-            document["sha256"].lower(),
+            bytes.fromhex(document["sha256"]),
             extractor.name,
             extractor.version,
         ),
@@ -448,7 +449,9 @@ def consume_extraction(
                 )
                 cursor = connection.execute(
                     """
-                    INSERT INTO chunks(document_id, chunk_index, content, content_sha256)
+                    INSERT INTO document_chunks(
+                        document_id, chunk_index, content, content_sha256
+                    )
                     VALUES (?, ?, ?, ?)
                     """,
                     (document_id, chunk_index, content, text_sha256(content)),
@@ -458,7 +461,9 @@ def consume_extraction(
                 chunk_id = cursor.lastrowid
                 connection.executemany(
                     """
-                    INSERT INTO chunk_pages(document_id, page_number, chunk_id)
+                    INSERT INTO document_page_chunks(
+                        document_id, page_number, chunk_id
+                    )
                     VALUES (?, ?, ?)
                     """,
                     [
@@ -468,7 +473,9 @@ def consume_extraction(
                 )
                 connection.executemany(
                     """
-                    INSERT INTO section_chunks(document_id, section_id, chunk_id)
+                    INSERT INTO document_section_chunks(
+                        document_id, section_id, chunk_id
+                    )
                     VALUES (?, ?, ?)
                     """,
                     [
@@ -511,7 +518,7 @@ def index_documents(
                 "SELECT * FROM documents WHERE id = ?", (document_id,)
             ).fetchone()
             fingerprint = (
-                document["sha256"].lower(),
+                bytes.fromhex(document["sha256"]),
                 extractor.name,
                 extractor.version,
             )
@@ -618,7 +625,7 @@ def index_status(
         if not path.is_file():
             statuses.append(IndexStatus(document_id, "missing", "document file is missing"))
             continue
-        if file_sha256(path) != document["sha256"].lower():
+        if file_sha256(path) != bytes.fromhex(document["sha256"]):
             statuses.append(IndexStatus(document_id, "changed", "document checksum differs"))
             continue
         existing = connection.execute(
@@ -628,7 +635,7 @@ def index_status(
             statuses.append(IndexStatus(document_id, "missing", "not indexed"))
             continue
         reasons: list[str] = []
-        if existing["sha256"] != document["sha256"].lower():
+        if existing["sha256"] != bytes.fromhex(document["sha256"]):
             reasons.append("sha256")
         if existing["extractor"] != extractor.name:
             reasons.append("extractor")
@@ -672,7 +679,7 @@ def search_database(
     limit: int,
 ) -> list[SearchResult]:
     expression = query if raw_fts else plain_fts_query(query)
-    conditions = ["chunks_fts MATCH ?"]
+    conditions = ["document_chunks_fts MATCH ?"]
     parameters: list[Any] = [expression]
     if document_id:
         conditions.append("documents.id = ?")
@@ -685,18 +692,18 @@ def search_database(
         parameters.append(tag)
     parameters.append(limit)
     sql = f"""
-        SELECT chunks.id AS chunk_id,
+        SELECT document_chunks.id AS chunk_id,
                documents.id AS resource_id,
                documents.description,
                documents.path,
-               chunks.chunk_index,
-               bm25(chunks_fts) AS score,
-               snippet(chunks_fts, 0, '[[', ']]', ' … ', 32) AS snippet
-        FROM chunks_fts
-        JOIN chunks ON chunks.id = chunks_fts.rowid
-        JOIN documents ON documents.id = chunks.document_id
+               document_chunks.chunk_index,
+               bm25(document_chunks_fts) AS score,
+               snippet(document_chunks_fts, 0, '[[', ']]', ' … ', 32) AS snippet
+        FROM document_chunks_fts
+        JOIN document_chunks ON document_chunks.id = document_chunks_fts.rowid
+        JOIN documents ON documents.id = document_chunks.document_id
         WHERE {' AND '.join(conditions)}
-        ORDER BY score, documents.id, chunks.chunk_index
+        ORDER BY score, documents.id, document_chunks.chunk_index
         LIMIT ?
     """
     try:
@@ -709,7 +716,7 @@ def search_database(
             item[0]
             for item in connection.execute(
                 """
-                SELECT page_number FROM chunk_pages
+                SELECT page_number FROM document_page_chunks
                 WHERE document_id = ? AND chunk_id = ?
                 ORDER BY page_number
                 """,
@@ -721,12 +728,12 @@ def search_database(
             for item in connection.execute(
                 """
                 SELECT document_sections.name
-                FROM section_chunks
+                FROM document_section_chunks
                 JOIN document_sections
-                  ON document_sections.document_id = section_chunks.document_id
-                 AND document_sections.id = section_chunks.section_id
-                WHERE section_chunks.document_id = ?
-                  AND section_chunks.chunk_id = ?
+                  ON document_sections.document_id = document_section_chunks.document_id
+                 AND document_sections.id = document_section_chunks.section_id
+                WHERE document_section_chunks.document_id = ?
+                  AND document_section_chunks.chunk_id = ?
                 ORDER BY document_sections.section_index
                 """,
                 (row["resource_id"], row["chunk_id"]),
@@ -769,13 +776,14 @@ def read_page(
         raise CatalogIndexError(f"{document_id}: no PDF page {page_number}")
     chunks = connection.execute(
         """
-        SELECT chunks.content
-        FROM chunk_pages
-        JOIN chunks
-          ON chunks.document_id = chunk_pages.document_id
-         AND chunks.id = chunk_pages.chunk_id
-        WHERE chunk_pages.document_id = ? AND chunk_pages.page_number = ?
-        ORDER BY chunks.chunk_index
+        SELECT document_chunks.content
+        FROM document_page_chunks
+        JOIN document_chunks
+          ON document_chunks.document_id = document_page_chunks.document_id
+         AND document_chunks.id = document_page_chunks.chunk_id
+        WHERE document_page_chunks.document_id = ?
+          AND document_page_chunks.page_number = ?
+        ORDER BY document_chunks.chunk_index
         """,
         (document_id, page_number),
     ).fetchall()
@@ -784,14 +792,15 @@ def read_page(
         for row in connection.execute(
             """
             SELECT DISTINCT document_sections.name, document_sections.section_index
-            FROM chunk_pages
-            JOIN section_chunks
-              ON section_chunks.document_id = chunk_pages.document_id
-             AND section_chunks.chunk_id = chunk_pages.chunk_id
+            FROM document_page_chunks
+            JOIN document_section_chunks
+              ON document_section_chunks.document_id = document_page_chunks.document_id
+             AND document_section_chunks.chunk_id = document_page_chunks.chunk_id
             JOIN document_sections
-              ON document_sections.document_id = section_chunks.document_id
-             AND document_sections.id = section_chunks.section_id
-            WHERE chunk_pages.document_id = ? AND chunk_pages.page_number = ?
+              ON document_sections.document_id = document_section_chunks.document_id
+             AND document_sections.id = document_section_chunks.section_id
+            WHERE document_page_chunks.document_id = ?
+              AND document_page_chunks.page_number = ?
             ORDER BY document_sections.section_index
             """,
             (document_id, page_number),
@@ -845,14 +854,14 @@ def read_section(
     placeholders = ",".join("?" for _ in section_ids)
     chunks = connection.execute(
         f"""
-        SELECT chunks.content
-        FROM section_chunks
-        JOIN chunks
-          ON chunks.document_id = section_chunks.document_id
-         AND chunks.id = section_chunks.chunk_id
-        WHERE section_chunks.document_id = ?
-          AND section_chunks.section_id IN ({placeholders})
-        ORDER BY chunks.chunk_index
+        SELECT document_chunks.content
+        FROM document_section_chunks
+        JOIN document_chunks
+          ON document_chunks.document_id = document_section_chunks.document_id
+         AND document_chunks.id = document_section_chunks.chunk_id
+        WHERE document_section_chunks.document_id = ?
+          AND document_section_chunks.section_id IN ({placeholders})
+        ORDER BY document_chunks.chunk_index
         """,
         (document_id, *section_ids),
     ).fetchall()
@@ -860,14 +869,14 @@ def read_section(
         row[0]
         for row in connection.execute(
             f"""
-            SELECT DISTINCT chunk_pages.page_number
-            FROM section_chunks
-            JOIN chunk_pages
-              ON chunk_pages.document_id = section_chunks.document_id
-             AND chunk_pages.chunk_id = section_chunks.chunk_id
-            WHERE section_chunks.document_id = ?
-              AND section_chunks.section_id IN ({placeholders})
-            ORDER BY chunk_pages.page_number
+            SELECT DISTINCT document_page_chunks.page_number
+            FROM document_section_chunks
+            JOIN document_page_chunks
+              ON document_page_chunks.document_id = document_section_chunks.document_id
+             AND document_page_chunks.chunk_id = document_section_chunks.chunk_id
+            WHERE document_section_chunks.document_id = ?
+              AND document_section_chunks.section_id IN ({placeholders})
+            ORDER BY document_page_chunks.page_number
             """,
             (document_id, *section_ids),
         )

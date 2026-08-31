@@ -132,7 +132,7 @@ class CatalogInfo:
 
 
 class ResourceManager:
-    """Manifest-backed resource and document-index operations."""
+    """Manifest-backed resource and index operations."""
 
     def __init__(self, settings: ResourceSettings, manifest: dict[str, Any]):
         self.settings = settings
@@ -162,7 +162,7 @@ class ResourceManager:
         return self._connection
 
     def close(self) -> None:
-        """Close the lazily opened document-index connection, if any."""
+        """Close the lazily opened resource-index connection, if any."""
         with self._database_lock:
             if self._connection is not None:
                 self._connection.close()

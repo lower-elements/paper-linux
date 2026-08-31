@@ -6,40 +6,40 @@ from pathlib import Path
 import sqlite3
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,
     description TEXT NOT NULL,
     path TEXT NOT NULL UNIQUE,
-    sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+    sha256 BLOB NOT NULL CHECK(length(sha256) = 32),
     extractor TEXT NOT NULL,
     extractor_version TEXT NOT NULL
-);
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE document_tags (
     document_id TEXT NOT NULL
         REFERENCES documents(id) ON DELETE CASCADE,
     tag TEXT NOT NULL,
     PRIMARY KEY (document_id, tag)
-) WITHOUT ROWID;
+) STRICT, WITHOUT ROWID;
 
 CREATE INDEX document_tags_by_tag
     ON document_tags(tag, document_id);
 
-CREATE TABLE chunks (
+CREATE TABLE document_chunks (
     id INTEGER PRIMARY KEY,
     document_id TEXT NOT NULL
         REFERENCES documents(id) ON DELETE CASCADE,
     chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
     content TEXT NOT NULL,
-    content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),
+    content_sha256 BLOB NOT NULL CHECK(length(content_sha256) = 32),
     UNIQUE (document_id, chunk_index),
     UNIQUE (document_id, id)
-);
+) STRICT;
 
 CREATE TABLE document_pages (
     document_id TEXT NOT NULL
@@ -47,9 +47,9 @@ CREATE TABLE document_pages (
     page_number INTEGER NOT NULL CHECK(page_number > 0),
     page_label TEXT,
     PRIMARY KEY (document_id, page_number)
-) WITHOUT ROWID;
+) STRICT, WITHOUT ROWID;
 
-CREATE TABLE chunk_pages (
+CREATE TABLE document_page_chunks (
     document_id TEXT NOT NULL,
     page_number INTEGER NOT NULL,
     chunk_id INTEGER NOT NULL,
@@ -58,12 +58,12 @@ CREATE TABLE chunk_pages (
         REFERENCES document_pages(document_id, page_number)
         ON DELETE CASCADE,
     FOREIGN KEY (document_id, chunk_id)
-        REFERENCES chunks(document_id, id)
+        REFERENCES document_chunks(document_id, id)
         ON DELETE CASCADE
-);
+) STRICT, WITHOUT ROWID;
 
-CREATE INDEX chunk_pages_by_chunk
-    ON chunk_pages(document_id, chunk_id);
+CREATE INDEX document_page_chunks_by_chunk
+    ON document_page_chunks(document_id, chunk_id);
 
 CREATE TABLE document_sections (
     id INTEGER PRIMARY KEY,
@@ -78,9 +78,9 @@ CREATE TABLE document_sections (
     FOREIGN KEY (document_id, parent_section_id)
         REFERENCES document_sections(document_id, id)
         ON DELETE CASCADE
-);
+) STRICT;
 
-CREATE TABLE section_chunks (
+CREATE TABLE document_section_chunks (
     document_id TEXT NOT NULL,
     section_id INTEGER NOT NULL,
     chunk_id INTEGER NOT NULL,
@@ -89,33 +89,33 @@ CREATE TABLE section_chunks (
         REFERENCES document_sections(document_id, id)
         ON DELETE CASCADE,
     FOREIGN KEY (document_id, chunk_id)
-        REFERENCES chunks(document_id, id)
+        REFERENCES document_chunks(document_id, id)
         ON DELETE CASCADE
-);
+) STRICT, WITHOUT ROWID;
 
-CREATE INDEX section_chunks_by_chunk
-    ON section_chunks(document_id, chunk_id);
+CREATE INDEX document_section_chunks_by_chunk
+    ON document_section_chunks(document_id, chunk_id);
 
-CREATE VIRTUAL TABLE chunks_fts USING fts5(
+CREATE VIRTUAL TABLE document_chunks_fts USING fts5(
     content,
-    content = 'chunks',
+    content = 'document_chunks',
     content_rowid = 'id',
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
-CREATE TRIGGER chunks_fts_insert AFTER INSERT ON chunks BEGIN
-    INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+CREATE TRIGGER document_chunks_fts_insert AFTER INSERT ON document_chunks BEGIN
+    INSERT INTO document_chunks_fts(rowid, content) VALUES (new.id, new.content);
 END;
 
-CREATE TRIGGER chunks_fts_delete AFTER DELETE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, content)
+CREATE TRIGGER document_chunks_fts_delete AFTER DELETE ON document_chunks BEGIN
+    INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content)
         VALUES ('delete', old.id, old.content);
 END;
 
-CREATE TRIGGER chunks_fts_update AFTER UPDATE OF content ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, content)
+CREATE TRIGGER document_chunks_fts_update AFTER UPDATE OF content ON document_chunks BEGIN
+    INSERT INTO document_chunks_fts(document_chunks_fts, rowid, content)
         VALUES ('delete', old.id, old.content);
-    INSERT INTO chunks_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO document_chunks_fts(rowid, content) VALUES (new.id, new.content);
 END;
 """
 
