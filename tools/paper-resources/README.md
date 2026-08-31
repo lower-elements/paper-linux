@@ -5,10 +5,11 @@ documents from a JSON manifest. It is developed inside Paper Linux but kept as
 a self-contained Python project so its source, tests, packaging metadata and
 dependency lock can be extracted together later.
 
-It requires Python 3.10 or newer and Git. It uses `python-dotenv` to load the
-repository-local `.env` configuration file, pypdf for its default PDF text
-extractor, and the official MCP Python SDK for its agent-facing server.
-Poppler's `pdftotext` command is optional.
+It requires Python 3.10 or newer, SQLite 3.45 or newer, Git, and Universal
+Ctags. It uses `python-dotenv` to load the repository-local `.env`
+configuration file, pypdf for its default PDF text extractor, and the official
+MCP Python SDK for its agent-facing server. Poppler's `pdftotext` command is
+optional.
 
 ## Running the tool
 
@@ -113,7 +114,29 @@ Both commands accept `--json`. The MCP server exposes the same operations as
 the read-only `compare_revisions` and `diff_revision_file` tools; comparison
 results are likewise paginated and may be narrowed by repository path.
 
-## Document index
+## Resource index
+
+With no resource IDs, `just resource index` updates both document text and the
+source revisions whose manifest `index` field is true. Supplying document IDs
+retains the targeted document-only behavior. Source indexing walks pinned Git
+trees without requiring worktrees and feeds blobs directly from one persistent
+`git cat-file --batch` process per repository into a persistent Universal
+Ctags process.
+
+Analyses are keyed by repository and Git blob identity, so unchanged files
+shared by paths or revisions are parsed once. The database records the sparse
+set of revision paths associated with analysed blobs. It also reports when a
+reused blob appears under a filename for which Ctags would select a different
+language. Re-running `index` reuses analyses made with the current Ctags
+program, output format, and configuration profile.
+
+Tags store commonly queried fields relationally, retain parser-specific data
+as SQLite JSONB, pair Ctags' qualified extra-tags with their ordinary rows,
+and resolve reported enclosing scopes on a best-effort basis. Replacing one
+blob analysis is transactional, including its catalog records, tags, roles,
+qualified names, and enclosing relationships.
+
+### Document text
 
 `just resource index` drives each document's extractor and stores its yielded
 chunks, pages, sections, and relationships in an SQLite FTS5 database. The

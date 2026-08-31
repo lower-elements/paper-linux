@@ -7,7 +7,7 @@ import sqlite3
 from threading import RLock
 from typing import Any, Literal
 
-from . import artifacts, catalog_index, database, git_resources
+from . import artifacts, catalog_index, ctags_index, database, git_resources
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
 
@@ -649,6 +649,14 @@ class ResourceManager:
                 self.settings.default_extractor,
                 extractor,
                 set(resource_ids or []),
+            )
+
+    def index_code(self) -> ctags_index.CodeIndexReport:
+        with self._database_lock:
+            return ctags_index.index_repositories(
+                self.repositories,
+                self.settings.root,
+                self._database(create=True),
             )
 
     def index_status(

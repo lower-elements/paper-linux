@@ -23,6 +23,102 @@ class GitBlob:
     path: str
 
 
+class GitBlobReader:
+    """Read many blobs through one persistent ``git cat-file --batch`` process."""
+
+    def __init__(self, repository_path: Path):
+        self.repository_path = repository_path
+        self._errors = tempfile.TemporaryFile()
+        try:
+            self._process = subprocess.Popen(
+                [
+                    "git", "--git-dir", str(repository_path),
+                    "cat-file", "--batch",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._errors,
+            )
+        except FileNotFoundError as error:
+            self._errors.close()
+            raise ResourceError(
+                "git is required to access repository resources"
+            ) from error
+        if self._process.stdin is None or self._process.stdout is None:
+            self._process.kill()
+            self._process.wait()
+            self._errors.close()
+            raise ResourceError("cannot open Git blob protocol streams")
+        self._closed = False
+
+    def __enter__(self) -> "GitBlobReader":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def _stderr(self) -> str:
+        self._errors.flush()
+        self._errors.seek(0)
+        return self._errors.read().decode("utf-8", errors="replace").strip()
+
+    def read(self, oid: bytes, expected_size: int) -> bytes:
+        if self._closed:
+            raise ResourceError("Git blob reader is closed")
+        oid_text = oid_to_hex(oid)
+        try:
+            self._process.stdin.write(oid_text.encode("ascii") + b"\n")
+            self._process.stdin.flush()
+            header = self._process.stdout.readline()
+        except BrokenPipeError as error:
+            detail = self._stderr() or "broken protocol pipe"
+            raise ResourceError(f"cannot request Git blob: {detail}") from error
+        if not header:
+            detail = self._stderr() or "Git returned no blob header"
+            raise ResourceError(detail)
+        fields = header.rstrip(b"\n").split()
+        if len(fields) == 2 and fields[1] == b"missing":
+            raise ResourceError(f"Git blob is missing: {oid_text}")
+        if len(fields) != 3:
+            raise ResourceError(f"Git returned an invalid blob header: {header!r}")
+        returned_oid, object_type, raw_size = fields
+        try:
+            size = int(raw_size)
+        except ValueError as error:
+            raise ResourceError(
+                f"Git returned an invalid blob size: {raw_size!r}"
+            ) from error
+        try:
+            returned_oid_text = returned_oid.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise ResourceError("Git returned a non-ASCII object ID") from error
+        if returned_oid_text != oid_text or object_type != b"blob":
+            raise ResourceError(f"Git returned the wrong object for blob {oid_text}")
+        if size != expected_size:
+            raise ResourceError(
+                f"Git returned {size} bytes for a {expected_size}-byte blob"
+            )
+        content = self._process.stdout.read(size)
+        terminator = self._process.stdout.read(1)
+        if len(content) != size or terminator != b"\n":
+            raise ResourceError(f"Git returned a truncated blob: {oid_text}")
+        return content
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._process.stdin.close()
+            returncode = self._process.wait()
+            if returncode:
+                detail = self._stderr() or f"exit status {returncode}"
+                raise ResourceError(f"git cat-file failed: {detail}")
+        finally:
+            self._process.stdout.close()
+            self._errors.close()
+
+
 def run_git(
     arguments: Iterable[str],
     *,

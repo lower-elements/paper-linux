@@ -7,10 +7,10 @@ import sqlite3
 
 
 MINIMUM_SQLITE_VERSION = (3, 45, 0)
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
 
 CREATE TABLE repositories (
     id TEXT PRIMARY KEY,
@@ -184,6 +184,27 @@ CREATE TABLE ctags_tag_roles (
 -- The primary key lists roles for a tag; this finds tags with a given role.
 CREATE INDEX ctags_tag_roles_by_role
     ON ctags_tag_roles(role_id, tag_id);
+
+-- A sparse index of revision paths whose blobs have Ctags analyses. Git
+-- remains authoritative for complete trees and blob contents.
+CREATE TABLE ctags_revision_paths (
+    repository_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    path TEXT NOT NULL CHECK(path <> ''),
+    blob_oid BLOB NOT NULL CHECK(length(blob_oid) IN (20, 32)),
+    mode INTEGER NOT NULL CHECK(mode >= 0),
+    PRIMARY KEY (repository_id, revision_id, path),
+    FOREIGN KEY (repository_id, revision_id)
+        REFERENCES repository_revisions(repository_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (repository_id, blob_oid)
+        REFERENCES ctags_analyses(repository_id, blob_oid) ON DELETE CASCADE
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX ctags_revision_paths_by_blob
+    ON ctags_revision_paths(repository_id, blob_oid, revision_id, path);
+
+CREATE INDEX ctags_revision_paths_by_path
+    ON ctags_revision_paths(repository_id, path, revision_id, blob_oid);
 
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,

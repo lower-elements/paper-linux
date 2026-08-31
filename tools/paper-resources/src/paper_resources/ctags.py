@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 import hashlib
 import json
+from pathlib import PurePosixPath
 import sqlite3
 import subprocess
 import tempfile
@@ -129,6 +131,16 @@ def discover_features(executable: str) -> set[str]:
     }
 
 
+def discover_language_maps(executable: str) -> list[tuple[str, tuple[str, ...]]]:
+    output = _run_text([executable, "--options=NONE", "--list-maps"])
+    mappings: list[tuple[str, tuple[str, ...]]] = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) > 1:
+            mappings.append((fields[0], tuple(fields[1:])))
+    return mappings
+
+
 def _required_text(record: dict[str, Any], field: str, context: str) -> str:
     value = record.get(field)
     if not isinstance(value, str) or not value:
@@ -200,10 +212,30 @@ class CtagsSession:
                 pass
             raise
         self._configuration_sha256 = configuration_sha256()
+        self._language_maps = discover_language_maps(executable)
         self._profile: CtagsProfile | None = None
         self._parsers: dict[str, CtagsParser] = {}
         self._kinds: dict[tuple[int, str], CtagsKind] = {}
         self._roles: dict[tuple[int, str], CtagsRole] = {}
+
+    def expected_language(self, filename: str) -> str | None:
+        basename = PurePosixPath(filename).name
+        for language, patterns in self._language_maps:
+            if any(fnmatchcase(basename, pattern) for pattern in patterns):
+                return language
+        return None
+
+    def ensure_profile(self) -> CtagsProfile:
+        """Resolve and persist the session profile without analysing a real blob."""
+        if self._profile is not None:
+            return self._profile
+        profile: CtagsProfile | None = None
+        for event in self.analyze("paper-resources.unknown", b""):
+            if isinstance(event, CtagsProfile):
+                profile = event
+        if profile is None:
+            raise CtagsError("Universal Ctags did not emit an output profile")
+        return profile
 
     def __enter__(self) -> "CtagsSession":
         return self

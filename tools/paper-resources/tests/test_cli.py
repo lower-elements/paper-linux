@@ -97,11 +97,18 @@ class PaperResourcesTest(unittest.TestCase):
         source.mkdir()
         git("init", "-b", "main", cwd=source)
         (source / "README").write_text("first\n", encoding="utf-8")
+        (source / "alias.c").write_text("first\n", encoding="utf-8")
+        (source / "driver.c").write_text(
+            "struct device { int state; };\n"
+            "static int driver_start(void) { return 0; }\n",
+            encoding="utf-8",
+        )
         (source / "obsolete.txt").write_text("move me\n", encoding="utf-8")
         (source / "duplicate.txt").write_text("move me\n", encoding="utf-8")
         (source / "empty.txt").touch()
         git(
-            "add", "README", "obsolete.txt", "duplicate.txt", "empty.txt",
+            "add", "README", "alias.c", "driver.c", "obsolete.txt",
+            "duplicate.txt", "empty.txt",
             cwd=source,
         )
         git(
@@ -860,6 +867,57 @@ class PaperResourcesTest(unittest.TestCase):
                     fields={"line": 10, "end": 9},
                 )
             )
+
+    def test_index_command_scans_selected_revision_blobs(self) -> None:
+        if shutil.which("ctags") is None:
+            self.skipTest("Universal Ctags is not installed")
+        self.tool("populate", "--root", str(self.resources))
+
+        indexed = self.tool("index", "--root", str(self.resources))
+        self.assertIn("ok         test-repository:v1", indexed.stdout)
+        self.assertIn("6 paths, 4 indexed, 0 reused", indexed.stdout)
+        self.assertIn("alias.c: reused README analysis", indexed.stdout)
+
+        with sqlite3.connect(self.resources / "resources.db") as connection:
+            connection.row_factory = sqlite3.Row
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM ctags_revision_paths"
+                ).fetchone()[0],
+                6,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM ctags_analyses"
+                ).fetchone()[0],
+                4,
+            )
+            self.assertEqual(
+                connection.execute(
+                    """
+                    SELECT count(*) FROM ctags_revision_paths
+                    WHERE revision_id = 'alternate'
+                    """
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM ctags_tags WHERE name = 'driver_start'"
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        current = json.loads(
+            self.tool(
+                "index", "--root", str(self.resources), "--json"
+            ).stdout
+        )
+        revision = current["code"]["revisions"][0]
+        self.assertEqual(revision["indexed"], 0)
+        self.assertEqual(revision["reused"], 4)
+        self.assertFalse(current["code"]["failed"])
 
     def test_populate_one_worktree(self) -> None:
         self.tool(

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass
 import json
+from pathlib import Path
 import sqlite3
 from typing import Any
 
-from . import ctags, repository_index
+from . import ctags, git_resources, repository_index
 from .config import ResourceError
 
 
@@ -21,6 +23,34 @@ class StoredAnalysis:
     roles: int
     qualified_names: int
     enclosing_links: int
+
+
+@dataclass(frozen=True, slots=True)
+class CodeRevisionOutcome:
+    repository_id: str
+    revision_id: str
+    status: str
+    paths: int
+    indexed: int
+    reused: int
+    unrecognized: int
+    failed: int
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CodeIndexReport:
+    revisions: tuple[CodeRevisionOutcome, ...]
+
+    @property
+    def failed(self) -> bool:
+        return any(revision.failed for revision in self.revisions)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "revisions": [asdict(revision) for revision in self.revisions],
+            "failed": self.failed,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,3 +442,215 @@ def store_blob_analysis(
         qualified_names=qualified_names,
         enclosing_links=enclosing_links,
     )
+
+
+def index_repositories(
+    repositories: list[dict[str, Any]],
+    root: Path,
+    connection: sqlite3.Connection,
+    *,
+    executable: str = "ctags",
+) -> CodeIndexReport:
+    """Index unique blobs reachable from manifest-selected revisions."""
+    repository_index.synchronize_catalog(connection, repositories)
+    with connection:
+        connection.execute(
+            """
+            DELETE FROM ctags_revision_paths
+            WHERE NOT EXISTS (
+                SELECT 1 FROM repository_revisions
+                WHERE repository_revisions.repository_id =
+                    ctags_revision_paths.repository_id
+                AND repository_revisions.id = ctags_revision_paths.revision_id
+                AND repository_revisions.index_enabled = 1
+            )
+            """
+        )
+
+    selected = [
+        (repository, revision)
+        for repository in repositories
+        for revision in repository.get("revisions", [])
+        if revision["index"]
+    ]
+    if not selected:
+        return CodeIndexReport(())
+
+    outcomes: list[CodeRevisionOutcome] = []
+    with ctags.CtagsSession(connection, executable) as session, ExitStack() as stack:
+        profile = session.ensure_profile()
+        readers: dict[str, git_resources.GitBlobReader] = {}
+        for repository, revision in selected:
+            repository_id = repository["id"]
+            revision_id = revision["id"]
+            paths = 0
+            indexed = 0
+            reused = 0
+            unrecognized = 0
+            failed = 0
+            unavailable = False
+            warnings: list[str] = []
+            counted_oids: set[bytes] = set()
+            seen_paths: set[str] = set()
+            path_rows: list[tuple[str, str, str, bytes, int]] = []
+            try:
+                for blob in repository_index.iter_revision_blobs(
+                    repository, revision, root
+                ):
+                    analysis = connection.execute(
+                        """
+                        SELECT
+                            ctags_analyses.profile_id,
+                            ctags_analyses.input_name,
+                            ctags_parsers.language
+                        FROM ctags_analyses
+                        LEFT JOIN ctags_parsers
+                            ON ctags_parsers.id = ctags_analyses.input_parser_id
+                        WHERE ctags_analyses.repository_id = ?
+                            AND ctags_analyses.blob_oid = ?
+                        """,
+                        (repository_id, blob.oid),
+                    ).fetchone()
+                    current = (
+                        analysis is not None
+                        and analysis["profile_id"] == profile.id
+                    )
+                    try:
+                        if not current:
+                            reader = readers.get(repository_id)
+                            if reader is None:
+                                reader = stack.enter_context(
+                                    git_resources.GitBlobReader(
+                                        root / repository["path"]
+                                    )
+                                )
+                                readers[repository_id] = reader
+                            content = reader.read(blob.oid, blob.size)
+                            stored = store_blob_analysis(
+                                connection,
+                                session,
+                                repository_id,
+                                blob.oid,
+                                blob.path,
+                                content,
+                            )
+                            actual_language = connection.execute(
+                                """
+                                SELECT language FROM ctags_parsers WHERE id = ?
+                                """,
+                                (stored.input_parser_id,),
+                            ).fetchone()
+                            actual_language = (
+                                actual_language[0]
+                                if actual_language is not None
+                                else None
+                            )
+                            input_name = blob.path
+                            if blob.oid not in counted_oids:
+                                indexed += 1
+                        else:
+                            actual_language = analysis["language"]
+                            input_name = analysis["input_name"]
+                            if blob.oid not in counted_oids:
+                                reused += 1
+
+                        if blob.oid not in counted_oids and actual_language is None:
+                            unrecognized += 1
+
+                        expected_language = session.expected_language(blob.path)
+                        if (
+                            input_name != blob.path
+                            and expected_language != actual_language
+                            and len(warnings) < 100
+                        ):
+                            warnings.append(
+                                f"{blob.path}: reused {input_name} analysis as "
+                                f"{actual_language or 'unrecognized'}, expected "
+                                f"{expected_language or 'unrecognized'}"
+                            )
+                        counted_oids.add(blob.oid)
+                        seen_paths.add(blob.path)
+                        path_rows.append(
+                            (
+                                repository_id,
+                                revision_id,
+                                blob.path,
+                                blob.oid,
+                                blob.mode,
+                            )
+                        )
+                        paths += 1
+                    except (ResourceError, OSError, sqlite3.Error) as error:
+                        failed += 1
+                        if len(warnings) < 100:
+                            warnings.append(f"{blob.path}: {error}")
+
+                with connection:
+                    connection.executemany(
+                        """
+                        INSERT INTO ctags_revision_paths(
+                            repository_id, revision_id, path, blob_oid, mode
+                        ) VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(repository_id, revision_id, path) DO UPDATE SET
+                            blob_oid = excluded.blob_oid,
+                            mode = excluded.mode
+                        """,
+                        path_rows,
+                    )
+                    if failed == 0:
+                        indexed_paths = {
+                            row[0]
+                            for row in connection.execute(
+                                """
+                                SELECT path FROM ctags_revision_paths
+                                WHERE repository_id = ? AND revision_id = ?
+                                """,
+                                (repository_id, revision_id),
+                            )
+                        }
+                        connection.executemany(
+                            """
+                            DELETE FROM ctags_revision_paths
+                            WHERE repository_id = ? AND revision_id = ? AND path = ?
+                            """,
+                            [
+                                (repository_id, revision_id, path)
+                                for path in sorted(indexed_paths - seen_paths)
+                            ],
+                        )
+            except ResourceError as error:
+                message = str(error)
+                if paths == 0 and (
+                    message.startswith("repository is not populated:")
+                    or message.startswith("revision is not populated:")
+                ):
+                    unavailable = True
+                else:
+                    failed += 1
+                warnings.append(message)
+            except (OSError, sqlite3.Error) as error:
+                failed += 1
+                warnings.append(str(error))
+
+            if unavailable:
+                status = "skipped"
+            elif failed == 0:
+                status = "ok"
+            elif paths:
+                status = "partial"
+            else:
+                status = "failed"
+            outcomes.append(
+                CodeRevisionOutcome(
+                    repository_id,
+                    revision_id,
+                    status,
+                    paths,
+                    indexed,
+                    reused,
+                    unrecognized,
+                    failed,
+                    tuple(warnings),
+                )
+            )
+    return CodeIndexReport(tuple(outcomes))

@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from . import catalog_index, database
+from . import catalog_index, ctags_index, database
 from .config import (
     DEFAULT_EXTRACTOR_ENV,
     RESOURCE_DATABASE_ENV,
@@ -69,6 +69,20 @@ def print_index_report(report: catalog_index.IndexReport) -> None:
     if failed:
         summary += f", {failed} failed"
     print(summary)
+
+
+def print_code_index_report(report: ctags_index.CodeIndexReport) -> None:
+    for revision in report.revisions:
+        identity = f"{revision.repository_id}:{revision.revision_id}"
+        detail = (
+            f"{revision.paths} paths, {revision.indexed} indexed, "
+            f"{revision.reused} reused, {revision.unrecognized} unrecognized"
+        )
+        if revision.failed:
+            detail += f", {revision.failed} failed"
+        print(f"{revision.status:10} {identity} ({detail})")
+        for warning in revision.warnings:
+            print(f"  warning: {warning}")
 
 
 def print_search_results(results: list[catalog_index.SearchResult]) -> None:
@@ -261,7 +275,9 @@ def parser() -> argparse.ArgumentParser:
     diff_parser.add_argument("to_revision", metavar="TO")
     diff_parser.add_argument("file", metavar="FILE")
 
-    index_parser = subparsers.add_parser("index", help="index document text for search")
+    index_parser = subparsers.add_parser(
+        "index", help="index documents and selected source revisions"
+    )
     index_parser.add_argument("--root", type=Path, help="override the configured resource directory")
     index_parser.add_argument("--extractor", choices=catalog_index.EXTRACTORS)
     index_parser.add_argument("--json", action="store_true", help="print JSON output")
@@ -391,11 +407,19 @@ def main(arguments: list[str] | None = None) -> int:
         if args.command in ("index", "index-status"):
             if args.command == "index":
                 report = manager.index_documents(args.resources, args.extractor)
+                code_report = (
+                    manager.index_code()
+                    if not args.resources
+                    else ctags_index.CodeIndexReport(())
+                )
                 if args.json:
-                    print(catalog_index.json_output(report.to_dict()))
+                    output = report.to_dict()
+                    output["code"] = code_report.to_dict()
+                    print(catalog_index.json_output(output))
                 else:
                     print_index_report(report)
-                return 1 if report.failed else 0
+                    print_code_index_report(code_report)
+                return 1 if report.failed or code_report.failed else 0
             statuses = manager.index_status(args.resources, args.extractor)
             if args.json:
                 print(catalog_index.json_output([status.to_dict() for status in statuses]))
