@@ -79,6 +79,46 @@ class CodeIndexDescription:
     kinds: tuple[tuple[str, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CodeFile:
+    repository: str
+    revision: str
+    path: str
+    blob_oid: str
+
+
+@dataclass(frozen=True, slots=True)
+class CodeOutlineItem:
+    tag_id: int
+    name: str
+    qualified_name: str | None
+    language: str
+    kind: str
+    line_start: int
+    line_end: int | None
+    signature: str | None
+    typeref: str | None
+    access: str | None
+    is_reference: bool
+    enclosing_tag_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodeFileOutline:
+    file: CodeFile
+    items: tuple[CodeOutlineItem, ...]
+    total: int
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodeScopeOutline:
+    scope: CodeTagInfo
+    children: tuple[CodeOutlineItem, ...]
+    total: int
+    truncated: bool
+
+
 def _values(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -370,3 +410,101 @@ def describe_index(connection: sqlite3.Connection) -> CodeIndexDescription:
         )
     )
     return CodeIndexDescription(**counts, languages=languages, kinds=kinds)
+
+
+def resolve_file(
+    connection: sqlite3.Connection, repository: str, revision: str, path: str
+) -> tuple[CodeFile, int]:
+    row = connection.execute(
+        """
+        SELECT rp.blob_oid, analysis.id AS analysis_id
+        FROM ctags_revision_paths AS rp
+        JOIN ctags_analyses AS analysis
+          ON analysis.repository_id = rp.repository_id
+         AND analysis.blob_oid = rp.blob_oid
+        WHERE rp.repository_id = ? AND rp.revision_id = ? AND rp.path = ?
+        """,
+        (repository, revision, path),
+    ).fetchone()
+    if row is None:
+        raise ResourceError(
+            f"file is not present in the code index: {repository}:{revision}:{path}"
+        )
+    return CodeFile(repository, revision, path, oid_to_hex(row["blob_oid"])), row["analysis_id"]
+
+
+def _outline_items(rows: Iterable[sqlite3.Row]) -> tuple[CodeOutlineItem, ...]:
+    return tuple(CodeOutlineItem(
+        tag_id=row["id"], name=row["name"], qualified_name=row["qualified_name"],
+        language=row["language"], kind=row["kind"],
+        line_start=row["line_start"], line_end=row["line_end"],
+        signature=row["signature"], typeref=row["typeref"], access=row["access"],
+        is_reference=bool(row["is_reference"]),
+        enclosing_tag_id=row["enclosing_tag_id"],
+    ) for row in rows)
+
+
+def _outline_query(
+    connection: sqlite3.Connection,
+    where: str,
+    parameters: tuple[Any, ...],
+    *,
+    include_references: bool,
+    limit: int,
+) -> tuple[tuple[CodeOutlineItem, ...], int, bool]:
+    if not 1 <= limit <= 5000:
+        raise ResourceError("outline limit must be between 1 and 5000")
+    reference_clause = "" if include_references else "AND tag.is_reference = 0"
+    rows = connection.execute(
+        f"""
+        SELECT tag.id, tag.name, tag.qualified_name, parser.language,
+               kind.name AS kind, tag.line_start, tag.line_end,
+               tag.signature, tag.typeref, tag.access, tag.is_reference,
+               tag.enclosing_tag_id,
+               count(*) OVER () AS full_count
+        FROM ctags_tags AS tag
+        JOIN ctags_parsers AS parser ON parser.id = tag.parser_id
+        JOIN ctags_kinds AS kind ON kind.id = tag.kind_id
+        WHERE {where} {reference_clause}
+        ORDER BY tag.line_start, coalesce(tag.line_end, tag.line_start) DESC,
+                 tag.ordinal
+        LIMIT ?
+        """,
+        (*parameters, limit + 1),
+    ).fetchall()
+    total = rows[0]["full_count"] if rows else 0
+    return _outline_items(rows[:limit]), total, len(rows) > limit
+
+
+def outline_file(
+    connection: sqlite3.Connection,
+    repository: str,
+    revision: str,
+    path: str,
+    *,
+    include_references: bool = False,
+    limit: int = 1000,
+) -> CodeFileOutline:
+    """Return a compact, source-ordered outline of one indexed file."""
+    file, analysis_id = resolve_file(connection, repository, revision, path)
+    items, total, truncated = _outline_query(
+        connection, "tag.analysis_id = ?", (analysis_id,),
+        include_references=include_references, limit=limit,
+    )
+    return CodeFileOutline(file, items, total, truncated)
+
+
+def outline_scope(
+    connection: sqlite3.Connection,
+    tag_id: int,
+    *,
+    include_references: bool = False,
+    limit: int = 1000,
+) -> CodeScopeOutline:
+    """Return the direct indexed children of one enclosing tag."""
+    scope = inspect_tags(connection, [tag_id])[0]
+    children, total, truncated = _outline_query(
+        connection, "tag.enclosing_tag_id = ?", (tag_id,),
+        include_references=include_references, limit=limit,
+    )
+    return CodeScopeOutline(scope, children, total, truncated)

@@ -1107,6 +1107,27 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertGreater(description.tags, 0)
         self.assertIn("C", dict(description.languages))
 
+        outline = resource_manager.outline_code_file(
+            "test-repository", "v1", "driver.c"
+        )
+        self.assertEqual(outline.file.path, "driver.c")
+        self.assertFalse(outline.truncated)
+        self.assertEqual(
+            {item.name for item in outline.items},
+            {"device", "state", "driver_start"},
+        )
+        self.assertTrue(all(not item.is_reference for item in outline.items))
+        state = next(item for item in outline.items if item.name == "state")
+        device = next(item for item in outline.items if item.name == "device")
+        self.assertEqual(state.enclosing_tag_id, device.tag_id)
+        scope = resource_manager.outline_code_scope(device.tag_id)
+        self.assertEqual(scope.scope.name, "device")
+        self.assertEqual([item.name for item in scope.children], ["state"])
+        with self.assertRaisesRegex(ResourceError, "invalid repository-relative"):
+            resource_manager.outline_code_file(
+                "test-repository", "v1", "../driver.c"
+            )
+
     def test_populate_one_worktree(self) -> None:
         self.tool(
             "populate", "--root", str(self.resources),

@@ -686,6 +686,39 @@ class ResourceManager:
         with self._database_lock:
             return code_navigation.describe_index(self._database(create=False))
 
+    def outline_code_file(
+        self,
+        repository: str,
+        revision: str,
+        path: str,
+        *,
+        include_references: bool = False,
+        limit: int = 1000,
+    ) -> code_navigation.CodeFileOutline:
+        """Return a compact source-ordered outline for one revision file."""
+        self._revision_manifest(repository, revision)
+        normalized_path = git_resources.validate_repository_path(path)
+        with self._database_lock:
+            return code_navigation.outline_file(
+                self._database(create=False), repository, revision,
+                normalized_path, include_references=include_references,
+                limit=limit,
+            )
+
+    def outline_code_scope(
+        self,
+        tag_id: int,
+        *,
+        include_references: bool = False,
+        limit: int = 1000,
+    ) -> code_navigation.CodeScopeOutline:
+        """Return direct indexed children of one tag scope."""
+        with self._database_lock:
+            return code_navigation.outline_scope(
+                self._database(create=False), tag_id,
+                include_references=include_references, limit=limit,
+            )
+
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> list[catalog_index.IndexStatus]:
