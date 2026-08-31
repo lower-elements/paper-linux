@@ -588,6 +588,17 @@ class PaperResourcesTest(unittest.TestCase):
                     emit({"_type": "ptag", "name": "JSON_OUTPUT_VERSION", "path": "1.0"})
                     emit({"_type": "ptag", "name": "TAG_OUTPUT_VERSION", "path": "2"})
                     emit({"_type": "ptag", "name": "TAG_PARSER_VERSION", "path": "test", "parserName": "C"})
+                    if command["filename"] == "bad.S":
+                        emit({"_type": "error", "message": "synthetic parser error"})
+                        output.flush()
+                        while remaining:
+                            chunk = source.read(min(65536, remaining))
+                            if not chunk:
+                                raise SystemExit("truncated input")
+                            remaining -= len(chunk)
+                        emit({"_type": "completed", "command": "generate-tags"})
+                        output.flush()
+                        continue
                     for index in range(2000):
                         emit({
                             "_type": "tag",
@@ -621,6 +632,12 @@ class PaperResourcesTest(unittest.TestCase):
             connection = database.open_database(Path(sys.argv[1]), create=True)
             try:
                 with ctags.CtagsSession(connection, sys.argv[2]) as session:
+                    try:
+                        list(session.analyze("bad.S", b"broken" * 100000))
+                    except ctags.CtagsError as error:
+                        assert "synthetic parser error" in str(error)
+                    else:
+                        raise AssertionError("ctags error request unexpectedly succeeded")
                     events = list(session.analyze("large.c", b"x" * (4 * 1024 * 1024)))
                     assert sum(isinstance(event, ctags.CtagsTag) for event in events) == 2000
             finally:

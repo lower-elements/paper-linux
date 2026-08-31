@@ -605,6 +605,7 @@ class CtagsSession:
         pending_roles: dict[str, list[tuple[str, str, str | None]]] = {}
         input_parser_id: int | None = None
         tag_count = 0
+        request_error: str | None = None
 
         def require_profile() -> CtagsProfile:
             nonlocal profile
@@ -638,10 +639,13 @@ class CtagsSession:
             record_type = record.get("_type")
             if record_type == "error":
                 message = record.get("message")
-                raise CtagsError(
+                request_error = (
                     f"Universal Ctags rejected {filename}: "
                     f"{message if isinstance(message, str) else 'unknown error'}"
                 )
+                continue
+            if request_error is not None and record_type != "completed":
+                continue
             if record_type == "ptag":
                 name = _required_text(record, "name", "pseudo-tag")
                 if name == "JSON_OUTPUT_VERSION":
@@ -747,6 +751,9 @@ class CtagsSession:
             if record_type == "completed":
                 if record.get("command") != "generate-tags":
                     raise CtagsError("Universal Ctags completed an unexpected command")
+                self._finish_request()
+                if request_error is not None:
+                    raise CtagsError(request_error)
                 current_profile = require_profile()
                 if not profile_emitted:
                     yield current_profile
@@ -754,7 +761,6 @@ class CtagsSession:
                     raise CtagsError(
                         "Universal Ctags left unresolved catalog pseudo-tags"
                     )
-                self._finish_request()
                 yield CtagsCompleted(current_profile.id, input_parser_id, tag_count)
                 return
             raise CtagsError(
