@@ -19,8 +19,9 @@ from paper_resources import (
     database,
     git_resources,
     manager as manager_module,
+    repository_index,
 )
-from paper_resources.config import ResourceSettings
+from paper_resources.config import ResourceError, ResourceSettings
 from paper_resources.manager import ResourceManager
 from paper_resources.mcp_server import create_server
 
@@ -95,7 +96,12 @@ class PaperResourcesTest(unittest.TestCase):
         git("init", "-b", "main", cwd=source)
         (source / "README").write_text("first\n", encoding="utf-8")
         (source / "obsolete.txt").write_text("move me\n", encoding="utf-8")
-        git("add", "README", "obsolete.txt", cwd=source)
+        (source / "duplicate.txt").write_text("move me\n", encoding="utf-8")
+        (source / "empty.txt").touch()
+        git(
+            "add", "README", "obsolete.txt", "duplicate.txt", "empty.txt",
+            cwd=source,
+        )
         git(
             "-c",
             "user.name=Test",
@@ -240,6 +246,139 @@ class PaperResourcesTest(unittest.TestCase):
         second = self.tool("populate")
         self.assertIn("ok       test-document", second.stdout)
         self.assertIn("ok       test-repository:v1:default", second.stdout)
+
+    def test_repository_catalog_synchronization(self) -> None:
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        repository = manifest["repositories"][0]
+        connection = database.open_database(self.base / "catalog.db", create=True)
+        self.addCleanup(connection.close)
+
+        summary = repository_index.synchronize_catalog(
+            connection, manifest["repositories"]
+        )
+        self.assertEqual(
+            summary, repository_index.RepositoryCatalogSummary(1, 2)
+        )
+        revision = connection.execute(
+            """
+            SELECT commit_oid, tree_oid, author, description
+            FROM repository_revisions
+            WHERE repository_id = ? AND id = ?
+            """,
+            (repository["id"], "v1"),
+        ).fetchone()
+        self.assertEqual(
+            revision["commit_oid"],
+            bytes.fromhex(repository["revisions"][0]["commit"]),
+        )
+        self.assertEqual(
+            revision["tree_oid"],
+            bytes.fromhex(repository["revisions"][0]["tree"]),
+        )
+        self.assertEqual(
+            (revision["author"], revision["description"]),
+            ("test", "test release"),
+        )
+
+        repository["revisions"][1]["description"] = "updated alternate"
+        repository["revisions"] = repository["revisions"][1:]
+        repository_index.synchronize_catalog(connection, manifest["repositories"])
+        rows = connection.execute(
+            """
+            SELECT id, description FROM repository_revisions
+            WHERE repository_id = ? ORDER BY id
+            """,
+            (repository["id"],),
+        ).fetchall()
+        self.assertEqual(
+            [(row["id"], row["description"]) for row in rows],
+            [("alternate", "updated alternate")],
+        )
+
+    def test_revision_blob_iteration_reading_and_lazy_registration(self) -> None:
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--repository", "test-repository",
+        )
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        repository = manifest["repositories"][0]
+        v1, alternate = repository["revisions"]
+
+        v1_blobs = list(
+            repository_index.iter_revision_blobs(repository, v1, self.resources)
+        )
+        alternate_blobs = list(
+            repository_index.iter_revision_blobs(
+                repository, alternate, self.resources
+            )
+        )
+        self.assertEqual(
+            [blob.path for blob in v1_blobs],
+            sorted(blob.path for blob in v1_blobs),
+        )
+        by_v1_path = {blob.path: blob for blob in v1_blobs}
+        by_alternate_path = {blob.path: blob for blob in alternate_blobs}
+        self.assertEqual(by_v1_path["empty.txt"].size, 0)
+        self.assertEqual(
+            by_v1_path["obsolete.txt"].oid,
+            by_v1_path["duplicate.txt"].oid,
+        )
+        self.assertEqual(
+            by_v1_path["obsolete.txt"].oid,
+            by_alternate_path["renamed.txt"].oid,
+        )
+        self.assertEqual(
+            repository_index.read_blob(
+                repository, self.resources, by_v1_path["empty.txt"].oid
+            ),
+            b"",
+        )
+        self.assertEqual(
+            repository_index.read_blob(
+                repository, self.resources, by_v1_path["obsolete.txt"].oid
+            ),
+            b"move me\n",
+        )
+
+        connection = database.open_database(self.base / "blobs.db", create=True)
+        self.addCleanup(connection.close)
+        repository_index.synchronize_catalog(connection, manifest["repositories"])
+        shared = by_v1_path["obsolete.txt"]
+        with connection:
+            self.assertTrue(
+                repository_index.register_blob(
+                    connection, repository["id"], shared.oid, shared.size
+                )
+            )
+            self.assertFalse(
+                repository_index.register_blob(
+                    connection,
+                    repository["id"],
+                    by_alternate_path["renamed.txt"].oid,
+                    by_alternate_path["renamed.txt"].size,
+                )
+            )
+        self.assertEqual(
+            connection.execute("SELECT count(*) FROM repository_blobs").fetchone()[0],
+            1,
+        )
+        with self.assertRaisesRegex(ResourceError, "blob size mismatch"):
+            repository_index.register_blob(
+                connection, repository["id"], shared.oid, shared.size + 1
+            )
+
+        bad_revision = dict(v1, tree="0" * 40)
+        with self.assertRaisesRegex(ResourceError, "tree mismatch"):
+            list(
+                repository_index.iter_revision_blobs(
+                    repository, bad_revision, self.resources
+                )
+            )
+
+        self.assertEqual(
+            git_resources.oid_to_hex(git_resources.oid_from_hex("ab" * 32)),
+            "ab" * 32,
+        )
 
     def test_populate_one_worktree(self) -> None:
         self.tool(

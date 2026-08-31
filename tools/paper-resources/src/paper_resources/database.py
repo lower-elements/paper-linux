@@ -6,10 +6,34 @@ from pathlib import Path
 import sqlite3
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
+
+CREATE TABLE repositories (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE repository_revisions (
+    repository_id TEXT NOT NULL
+        REFERENCES repositories(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    commit_oid BLOB NOT NULL CHECK(length(commit_oid) IN (20, 32)),
+    tree_oid BLOB NOT NULL CHECK(length(tree_oid) IN (20, 32)),
+    author TEXT,
+    description TEXT,
+    PRIMARY KEY (repository_id, id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE repository_blobs (
+    repository_id TEXT NOT NULL
+        REFERENCES repositories(id) ON DELETE CASCADE,
+    oid BLOB NOT NULL CHECK(length(oid) IN (20, 32)),
+    size INTEGER NOT NULL CHECK(size >= 0),
+    PRIMARY KEY (repository_id, oid)
+) STRICT, WITHOUT ROWID;
 
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,

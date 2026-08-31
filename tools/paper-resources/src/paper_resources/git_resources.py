@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
 import os
 import subprocess
 import tempfile
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 from .config import ResourceError
+
+
+@dataclass(frozen=True, slots=True)
+class GitBlob:
+    """One blob occurrence in a Git tree."""
+
+    oid: bytes
+    size: int
+    mode: int
+    path: str
 
 
 def run_git(
@@ -42,6 +53,146 @@ def run_git(
     if not capture:
         return ""
     return result.stdout.strip() if strip_output else result.stdout
+
+
+def run_git_bytes(arguments: Iterable[str], *, cwd: Path | None = None) -> bytes:
+    """Run Git and return unmodified binary output."""
+    command = ["git", *arguments]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as error:
+        raise ResourceError("git is required to access repository resources") from error
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.decode("utf-8", errors="replace").strip()
+        if not detail:
+            detail = f"exit status {error.returncode}"
+        raise ResourceError(f"{' '.join(command)}: {detail}") from error
+    return result.stdout
+
+
+def iter_git_nul_records(
+    arguments: Iterable[str], *, cwd: Path | None = None
+) -> Iterator[bytes]:
+    """Run Git and incrementally yield its NUL-terminated binary records."""
+    command = ["git", *arguments]
+    with tempfile.TemporaryFile() as errors:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=errors,
+            )
+        except FileNotFoundError as error:
+            raise ResourceError(
+                "git is required to access repository resources"
+            ) from error
+        if process.stdout is None:
+            process.kill()
+            process.wait()
+            raise ResourceError("cannot capture Git output")
+        buffer = bytearray()
+        completed = False
+        try:
+            while chunk := process.stdout.read(64 * 1024):
+                buffer.extend(chunk)
+                while (separator := buffer.find(0)) >= 0:
+                    yield bytes(buffer[:separator])
+                    del buffer[:separator + 1]
+            returncode = process.wait()
+            completed = True
+            if returncode:
+                errors.seek(0)
+                detail = errors.read().decode("utf-8", errors="replace").strip()
+                if not detail:
+                    detail = f"exit status {returncode}"
+                raise ResourceError(f"{' '.join(command)}: {detail}")
+            if buffer:
+                raise ResourceError("git returned output without a NUL terminator")
+        finally:
+            process.stdout.close()
+            if not completed and process.poll() is None:
+                process.terminate()
+                process.wait()
+
+
+def oid_from_hex(value: str) -> bytes:
+    """Convert a complete SHA-1 or SHA-256 Git object name to binary form."""
+    if len(value) not in (40, 64):
+        raise ResourceError(f"invalid Git object ID length: {value!r}")
+    try:
+        oid = bytes.fromhex(value)
+    except ValueError as error:
+        raise ResourceError(f"invalid Git object ID: {value!r}") from error
+    if len(oid) not in (20, 32):
+        raise ResourceError(f"invalid Git object ID: {value!r}")
+    return oid
+
+
+def oid_to_hex(value: bytes) -> str:
+    """Convert a binary SHA-1 or SHA-256 Git object name to canonical hex."""
+    if not isinstance(value, bytes) or len(value) not in (20, 32):
+        raise ResourceError("a Git object ID must be a 20- or 32-byte blob")
+    return value.hex()
+
+
+def iter_tree_blobs(repository_path: Path, tree_oid: str | bytes) -> Iterator[GitBlob]:
+    """Yield every blob occurrence in a tree in Git's deterministic path order."""
+    object_name = (
+        oid_to_hex(tree_oid)
+        if isinstance(tree_oid, bytes)
+        else oid_to_hex(oid_from_hex(tree_oid))
+    )
+    records = iter_git_nul_records(
+        [
+            "--git-dir", str(repository_path), "ls-tree", "-r", "-z", "-l",
+            "--full-tree", object_name,
+        ]
+    )
+    for record in records:
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            raw_mode, object_type, raw_oid, raw_size = metadata.split()
+        except ValueError as error:
+            raise ResourceError("git returned an invalid tree entry") from error
+        if object_type != b"blob":
+            continue
+        try:
+            path = raw_path.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ResourceError(
+                f"repository contains a non-UTF-8 path: {raw_path.hex()}"
+            ) from error
+        try:
+            mode = int(raw_mode, 8)
+            size = int(raw_size)
+            oid_text = raw_oid.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ResourceError(f"invalid Git tree metadata for {path}") from error
+        yield GitBlob(
+            oid=oid_from_hex(oid_text),
+            size=size,
+            mode=mode,
+            path=validate_repository_path(path),
+        )
+
+
+def read_blob(repository_path: Path, oid: str | bytes) -> bytes:
+    """Read one blob directly from a repository object database."""
+    object_name = (
+        oid_to_hex(oid)
+        if isinstance(oid, bytes)
+        else oid_to_hex(oid_from_hex(oid))
+    )
+    return run_git_bytes(
+        ["--git-dir", str(repository_path), "cat-file", "blob", object_name]
+    )
 
 
 def remote_url(repository_path: Path, name: str) -> str | None:
