@@ -285,10 +285,9 @@ def create_server(manager: ResourceManager) -> MCPServer:
                     [tag.tag_id for tag in result.results],
                     context_lines=source_context_lines,
                 )
-            return {
-                "search": asdict(result),
-                "source": asdict(source) if source is not None else None,
-            }
+            output = asdict(result)
+            output["source"] = asdict(source) if source is not None else None
+            return output
 
     @server.tool(title="Outline source file", annotations=READ_ONLY)
     def outline_file(
@@ -415,6 +414,70 @@ def create_server(manager: ResourceManager) -> MCPServer:
         """Return code-index coverage counts and language/kind facets."""
         with domain_errors():
             return asdict(manager.describe_code_index())
+
+    @server.tool(title="Find code references", annotations=READ_ONLY)
+    def find_references(
+        symbol: Annotated[str, Field(min_length=1)],
+        repository: str | list[str] | None = None,
+        revision: str | list[str] | None = None,
+        path: str | list[str] | None = None,
+        role: str | list[str] | None = None,
+        cursor: str | None = None,
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ) -> dict[str, Any]:
+        """Find best-effort parser-reported references to an exact symbol."""
+        with domain_errors():
+            return asdict(manager.find_code_references(
+                symbol, repository=repository, revision=revision, path=path,
+                role=role, cursor=cursor, limit=limit,
+            ))
+
+    @server.tool(title="Locate code at line", annotations=READ_ONLY)
+    def locate_code_at_line(
+        line: Annotated[int, Field(ge=1)],
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | None = None,
+        nearby_limit: Annotated[int, Field(ge=1, le=50)] = 5,
+    ) -> dict[str, Any]:
+        """Find containing tags, their enclosing chain, or nearby tags."""
+        with domain_errors():
+            if worktree_path is not None and not Path(worktree_path).is_absolute():
+                raise ResourceError("MCP worktree paths must be absolute")
+            return asdict(manager.locate_code_at_line(
+                repository=repository, revision=revision, path=path,
+                worktree_path=worktree_path, line=line,
+                nearby_limit=nearby_limit,
+            ))
+
+    @server.tool(title="Compare file outlines", annotations=READ_ONLY)
+    def compare_file_outlines(
+        repository: str,
+        from_revision: str,
+        to_revision: str,
+        path: Annotated[str, Field(min_length=1)],
+        to_path: str | None = None,
+    ) -> dict[str, Any]:
+        """Classify added, removed, unchanged, changed, and ambiguous definitions."""
+        with domain_errors():
+            return asdict(manager.compare_code_file_outlines(
+                repository, from_revision, to_revision, path,
+                to_path=to_path,
+            ))
+
+    @server.tool(title="Trace symbol history", annotations=READ_ONLY)
+    def trace_symbol_history(
+        repository: str,
+        symbol: Annotated[str, Field(min_length=1)],
+        path: str | None = None,
+        qualified: bool = False,
+    ) -> dict[str, Any]:
+        """Trace exact tag matches in manifest revision order, collapsing blob reuse."""
+        with domain_errors():
+            return asdict(manager.trace_code_symbol_history(
+                repository, symbol, path=path, qualified=qualified,
+            ))
 
     @server.resource("paper-resource://catalog", mime_type="application/json")
     def catalog_resource() -> str:

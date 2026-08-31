@@ -177,6 +177,46 @@ class CodeTagDiff:
     truncated: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CodeLineLocation:
+    file: CodeFile
+    line: int
+    containing: tuple[CodeOutlineItem, ...]
+    enclosing_chain: tuple[CodeOutlineItem, ...]
+    nearby: tuple[CodeOutlineItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CodeOutlineChange:
+    status: str
+    symbol: str
+    kind: str
+    from_tag_id: int | None
+    to_tag_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CodeOutlineComparison:
+    from_file: CodeFile
+    to_file: CodeFile
+    changes: tuple[CodeOutlineChange, ...]
+    status_counts: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class CodeHistoryStep:
+    revisions: tuple[str, ...]
+    matches: tuple[CodeTagSummary, ...]
+    ambiguous: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSymbolHistory:
+    repository: str
+    symbol: str
+    steps: tuple[CodeHistoryStep, ...]
+
+
 def _values(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -868,3 +908,202 @@ def diff_tagged_source(
         ),
         diff, truncated,
     )
+
+
+def find_references(
+    connection: sqlite3.Connection,
+    symbol: str,
+    **filters: Any,
+) -> CodeTagSearch:
+    """Best-effort Ctags reference lookup for a name or qualified name."""
+    if not symbol:
+        raise ResourceError("reference symbol must not be empty")
+    field = "qualified_name" if "::" in symbol else "name"
+    return search_tags(
+        connection, **{field: symbol, "is_reference": True, **filters}
+    )
+
+
+def _outline_rows_for_ids(
+    connection: sqlite3.Connection, tag_ids: Iterable[int]
+) -> tuple[CodeOutlineItem, ...]:
+    ids = tuple(tag_ids)
+    if not ids:
+        return ()
+    rows = connection.execute(
+        f"""
+        SELECT tag.id, tag.name, tag.qualified_name, parser.language,
+               kind.name AS kind, tag.line_start, tag.line_end,
+               tag.signature, tag.typeref, tag.access, tag.is_reference,
+               tag.enclosing_tag_id
+        FROM ctags_tags AS tag
+        JOIN ctags_parsers AS parser ON parser.id = tag.parser_id
+        JOIN ctags_kinds AS kind ON kind.id = tag.kind_id
+        WHERE tag.id IN ({', '.join('?' for _ in ids)})
+        """,
+        ids,
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    return _outline_items(by_id[tag_id] for tag_id in ids if tag_id in by_id)
+
+
+def locate_at_line(
+    connection: sqlite3.Connection,
+    repository: str,
+    revision: str,
+    path: str,
+    line: int,
+    *,
+    nearby_limit: int = 5,
+) -> CodeLineLocation:
+    """Locate containing tags and their scope chain at one source line."""
+    if line < 1:
+        raise ResourceError("source line must be at least 1")
+    if not 1 <= nearby_limit <= 50:
+        raise ResourceError("nearby tag limit must be between 1 and 50")
+    file, analysis_id = resolve_file(connection, repository, revision, path)
+    containing_ids = [
+        row["id"] for row in connection.execute(
+            """
+            SELECT id FROM ctags_tags
+            WHERE analysis_id = ? AND is_reference = 0
+              AND line_start <= ? AND coalesce(line_end, line_start) >= ?
+            ORDER BY (coalesce(line_end, line_start) - line_start), line_start DESC
+            """,
+            (analysis_id, line, line),
+        )
+    ]
+    chain_ids: list[int] = []
+    if containing_ids:
+        current = containing_ids[0]
+        seen = {current}
+        while True:
+            row = connection.execute(
+                "SELECT enclosing_tag_id FROM ctags_tags WHERE id = ?", (current,)
+            ).fetchone()
+            if row is None or row["enclosing_tag_id"] is None:
+                break
+            current = row["enclosing_tag_id"]
+            if current in seen:
+                break
+            seen.add(current)
+            chain_ids.append(current)
+    nearby_ids: list[int] = []
+    if not containing_ids:
+        nearby_ids = [
+            row["id"] for row in connection.execute(
+                """
+                SELECT id FROM ctags_tags
+                WHERE analysis_id = ? AND is_reference = 0
+                ORDER BY abs(line_start - ?), line_start, ordinal
+                LIMIT ?
+                """,
+                (analysis_id, line, nearby_limit),
+            )
+        ]
+    return CodeLineLocation(
+        file, line, _outline_rows_for_ids(connection, containing_ids),
+        _outline_rows_for_ids(connection, chain_ids),
+        _outline_rows_for_ids(connection, nearby_ids),
+    )
+
+
+def compare_outlines(
+    connection: sqlite3.Connection,
+    from_repository: str,
+    from_revision: str,
+    from_path: str,
+    to_repository: str,
+    to_revision: str,
+    to_path: str,
+    read_blob: Callable[[str, bytes], bytes],
+) -> CodeOutlineComparison:
+    """Compare definitions in two files without producing a whole-file diff."""
+    before = outline_file(
+        connection, from_repository, from_revision, from_path, limit=5000
+    )
+    after = outline_file(
+        connection, to_repository, to_revision, to_path, limit=5000
+    )
+    if before.truncated or after.truncated:
+        raise ResourceError("file outline is too large to compare")
+
+    def grouped(items: tuple[CodeOutlineItem, ...]) -> dict[tuple[str, str], list[CodeOutlineItem]]:
+        result: dict[tuple[str, str], list[CodeOutlineItem]] = {}
+        for item in items:
+            result.setdefault((item.qualified_name or item.name, item.kind), []).append(item)
+        return result
+
+    before_by_key = grouped(before.items)
+    after_by_key = grouped(after.items)
+    before_lines = _source_lines(read_blob(
+        from_repository, bytes.fromhex(before.file.blob_oid)
+    ))
+    after_lines = _source_lines(read_blob(
+        to_repository, bytes.fromhex(after.file.blob_oid)
+    ))
+
+    def body(lines: list[str], item: CodeOutlineItem) -> tuple[str, ...]:
+        return tuple(lines[item.line_start - 1:(item.line_end or item.line_start)])
+
+    changes: list[CodeOutlineChange] = []
+    for symbol, kind in sorted(before_by_key.keys() | after_by_key.keys()):
+        old = before_by_key.get((symbol, kind), [])
+        new = after_by_key.get((symbol, kind), [])
+        if len(old) > 1 or len(new) > 1:
+            status = "ambiguous"
+        elif not old:
+            status = "added"
+        elif not new:
+            status = "removed"
+        elif body(before_lines, old[0]) == body(after_lines, new[0]):
+            status = "unchanged"
+        else:
+            status = "changed"
+        changes.append(CodeOutlineChange(
+            status, symbol, kind,
+            old[0].tag_id if len(old) == 1 else None,
+            new[0].tag_id if len(new) == 1 else None,
+        ))
+    counts: dict[str, int] = {}
+    for change in changes:
+        counts[change.status] = counts.get(change.status, 0) + 1
+    return CodeOutlineComparison(before.file, after.file, tuple(changes), counts)
+
+
+def trace_history(
+    connection: sqlite3.Connection,
+    repository: str,
+    revisions: list[str] | tuple[str, ...],
+    symbol: str,
+    *,
+    path: str | None = None,
+    qualified: bool = False,
+) -> CodeSymbolHistory:
+    """Trace exact Ctags matches in manifest revision order, collapsing reuse."""
+    if not symbol:
+        raise ResourceError("history symbol must not be empty")
+    steps: list[CodeHistoryStep] = []
+    for revision in revisions:
+        result = search_tags(
+            connection, repository=repository, revision=revision, path=path,
+            qualified_name=symbol if qualified else None,
+            name=None if qualified else symbol, limit=200,
+        )
+        matches = result.results
+        if result.truncated:
+            raise ResourceError(
+                f"too many matches to trace {symbol!r} in {repository}:{revision}"
+            )
+        identity = tuple(tag.tag_id for tag in matches)
+        if steps and tuple(tag.tag_id for tag in steps[-1].matches) == identity:
+            previous = steps[-1]
+            steps[-1] = CodeHistoryStep(
+                (*previous.revisions, revision), previous.matches,
+                previous.ambiguous,
+            )
+        else:
+            steps.append(CodeHistoryStep(
+                (revision,), matches, len(matches) > 1,
+            ))
+    return CodeSymbolHistory(repository, symbol, tuple(steps))

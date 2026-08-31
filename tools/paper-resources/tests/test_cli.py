@@ -101,7 +101,8 @@ class PaperResourcesTest(unittest.TestCase):
         (source / "alias.c").write_text("first\n", encoding="utf-8")
         (source / "driver.c").write_text(
             "struct device { int state; };\n"
-            "static int driver_start(void) { return 0; }\n",
+            "static int driver_start(void) { return 0; }\n"
+            "#include <linux/types.h>\n",
             encoding="utf-8",
         )
         (source / "obsolete.txt").write_text("move me\n", encoding="utf-8")
@@ -1175,6 +1176,27 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertIn("-struct device", tag_diff.diff)
         self.assertIn("+static int driver_start", tag_diff.diff)
 
+        references = resource_manager.find_code_references(
+            "linux/types.h", repository="test-repository", revision="v1"
+        )
+        self.assertEqual(len(references.results), 1)
+        self.assertTrue(references.results[0].is_reference)
+        location = resource_manager.locate_code_at_line(
+            repository="test-repository", revision="v1", path="driver.c",
+            line=1,
+        )
+        self.assertEqual(location.file.path, "driver.c")
+        self.assertIn("device", {item.name for item in location.containing})
+        comparison = resource_manager.compare_code_file_outlines(
+            "test-repository", "v1", "v1", "driver.c"
+        )
+        self.assertEqual(comparison.status_counts, {"unchanged": 3})
+        history = resource_manager.trace_code_symbol_history(
+            "test-repository", "driver_start", path="driver.c"
+        )
+        self.assertEqual(history.steps[0].revisions, ("v1",))
+        self.assertEqual(history.steps[0].matches[0].name, "driver_start")
+
         cli_tags = json.loads(self.tool(
             "tags", "--root", str(self.resources), "--repository", "test-repository",
             "--revision", "v1", "--path", "driver.c", "--name", "driver_start",
@@ -1204,6 +1226,24 @@ class PaperResourcesTest(unittest.TestCase):
             "tag-facets", "--root", str(self.resources), "--json"
         ).stdout)
         self.assertGreater(facets["tags"], 0)
+        self.assertIn("linux/types.h", self.tool(
+            "references", "--root", str(self.resources),
+            "--repository", "test-repository", "--revision", "v1",
+            "linux/types.h",
+        ).stdout)
+        self.assertIn("Containing tags", self.tool(
+            "locate", "--root", str(self.resources),
+            "test-repository", "v1", "driver.c", "1",
+        ).stdout)
+        outline_diff = json.loads(self.tool(
+            "outline-diff", "--root", str(self.resources), "--json",
+            "test-repository", "v1", "v1", "driver.c",
+        ).stdout)
+        self.assertEqual(outline_diff["status_counts"], {"unchanged": 3})
+        self.assertIn("driver_start", self.tool(
+            "history", "--root", str(self.resources), "--path", "driver.c",
+            "test-repository", "driver_start",
+        ).stdout)
 
     def test_populate_one_worktree(self) -> None:
         self.tool(
@@ -1605,6 +1645,10 @@ class PaperResourcesTest(unittest.TestCase):
                     "read_enclosing_scope",
                     "diff_tagged_code",
                     "describe_code_index",
+                    "find_references",
+                    "locate_code_at_line",
+                    "compare_file_outlines",
+                    "trace_symbol_history",
                 },
             )
             self.assertNotIn("populate_resources", names)
@@ -1700,7 +1744,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "name": "driver_start",
                 },
             )
-            code_result = code_search.structured_content["search"]["results"][0]
+            code_result = code_search.structured_content["results"][0]
             function_tag = code_result["tag_id"]
             self.assertEqual(code_result["name"], "driver_start")
             state_search = await server.call_tool(
@@ -1712,7 +1756,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "name": "state",
                 },
             )
-            state_tag = state_search.structured_content["search"]["results"][0]["tag_id"]
+            state_tag = state_search.structured_content["results"][0]["tag_id"]
             outline = await server.call_tool(
                 "outline_file",
                 {
@@ -1738,6 +1782,42 @@ class PaperResourcesTest(unittest.TestCase):
             self.assertIsNotNone(enclosing.structured_content["scopes"][0]["scope_tag_id"])
             description = await server.call_tool("describe_code_index", {})
             self.assertGreater(description.structured_content["tags"], 0)
+            references = await server.call_tool(
+                "find_references",
+                {
+                    "symbol": "linux/types.h",
+                    "repository": "test-repository",
+                    "revision": "v1",
+                },
+            )
+            self.assertEqual(references.structured_content["results"][0]["name"], "linux/types.h")
+            location = await server.call_tool(
+                "locate_code_at_line",
+                {
+                    "repository": "test-repository", "revision": "v1",
+                    "path": "driver.c", "line": 1,
+                },
+            )
+            self.assertTrue(location.structured_content["containing"])
+            outline_comparison = await server.call_tool(
+                "compare_file_outlines",
+                {
+                    "repository": "test-repository", "from_revision": "v1",
+                    "to_revision": "v1", "path": "driver.c",
+                },
+            )
+            self.assertEqual(
+                outline_comparison.structured_content["status_counts"],
+                {"unchanged": 3},
+            )
+            history = await server.call_tool(
+                "trace_symbol_history",
+                {
+                    "repository": "test-repository", "symbol": "driver_start",
+                    "path": "driver.c",
+                },
+            )
+            self.assertEqual(history.structured_content["steps"][0]["revisions"], ["v1"])
 
             with self.assertRaisesRegex(ToolError, "unknown resource ID"):
                 await server.call_tool(

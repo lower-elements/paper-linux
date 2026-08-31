@@ -918,6 +918,91 @@ class ResourceManager:
                 context_lines=context_lines, max_chars=max_chars,
             )
 
+    def find_code_references(
+        self, symbol: str, **filters: Any
+    ) -> code_navigation.CodeTagSearch:
+        """Find best-effort parser-reported references to a code symbol."""
+        with self._database_lock:
+            return code_navigation.find_references(
+                self._database(create=False), symbol, **filters
+            )
+
+    def locate_code_at_line(
+        self,
+        *,
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | Path | None = None,
+        line: int,
+        nearby_limit: int = 5,
+    ) -> code_navigation.CodeLineLocation:
+        """Find indexed tags containing or nearest one source line."""
+        repository, revision, path, warning = self._resolve_code_file_selector(
+            repository, revision, path, worktree_path
+        )
+        with self._database_lock:
+            result = code_navigation.locate_at_line(
+                self._database(create=False), repository, revision, path, line,
+                nearby_limit=nearby_limit,
+            )
+            if warning is None:
+                return result
+            file = code_navigation.CodeFile(
+                result.file.repository, result.file.revision, result.file.path,
+                result.file.blob_oid, warning,
+            )
+            return code_navigation.CodeLineLocation(
+                file, result.line, result.containing,
+                result.enclosing_chain, result.nearby,
+            )
+
+    def compare_code_file_outlines(
+        self,
+        repository: str,
+        from_revision: str,
+        to_revision: str,
+        path: str,
+        *,
+        to_path: str | None = None,
+    ) -> code_navigation.CodeOutlineComparison:
+        """Compare definition outlines of two pinned revision files."""
+        self._revision_manifest(repository, from_revision)
+        self._revision_manifest(repository, to_revision)
+        from_path = git_resources.validate_repository_path(path)
+        normalized_to = git_resources.validate_repository_path(to_path or path)
+        with self._database_lock:
+            return code_navigation.compare_outlines(
+                self._database(create=False), repository, from_revision,
+                from_path, repository, to_revision, normalized_to,
+                self._read_code_blob,
+            )
+
+    def trace_code_symbol_history(
+        self,
+        repository: str,
+        symbol: str,
+        *,
+        path: str | None = None,
+        qualified: bool = False,
+    ) -> code_navigation.CodeSymbolHistory:
+        """Trace a symbol through indexed revisions in manifest order."""
+        repository_manifest = self.repositories_by_id.get(repository)
+        if repository_manifest is None:
+            raise ResourceError(f"unknown repository ID: {repository}")
+        normalized_path = (
+            git_resources.validate_repository_path(path) if path is not None else None
+        )
+        revisions = [
+            revision["id"] for revision in repository_manifest.get("revisions", [])
+            if revision.get("index", True)
+        ]
+        with self._database_lock:
+            return code_navigation.trace_history(
+                self._database(create=False), repository, revisions, symbol,
+                path=normalized_path, qualified=qualified,
+            )
+
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> list[catalog_index.IndexStatus]:

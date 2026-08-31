@@ -483,6 +483,52 @@ def parser() -> argparse.ArgumentParser:
     facets_parser.add_argument("--root", type=Path)
     facets_parser.add_argument("--json", action="store_true")
 
+    references_parser = subparsers.add_parser(
+        "references", help="find best-effort parser-reported symbol references"
+    )
+    references_parser.add_argument("--root", type=Path)
+    references_parser.add_argument("--repository")
+    references_parser.add_argument("--revision")
+    references_parser.add_argument("--path")
+    references_parser.add_argument("--role", action="append")
+    references_parser.add_argument("--cursor")
+    references_parser.add_argument("--limit", type=positive_integer, default=50)
+    references_parser.add_argument("--json", action="store_true")
+    references_parser.add_argument("symbol")
+
+    locate_parser = subparsers.add_parser(
+        "locate", help="locate indexed tags at one source line"
+    )
+    locate_parser.add_argument("--root", type=Path)
+    locate_parser.add_argument("--worktree", type=Path, metavar="PATH")
+    locate_parser.add_argument("--nearby", type=positive_integer, default=5)
+    locate_parser.add_argument("--json", action="store_true")
+    locate_parser.add_argument(
+        "coordinates", nargs="+",
+        help="REPOSITORY REVISION FILE LINE, or LINE with --worktree",
+    )
+
+    outline_diff_parser = subparsers.add_parser(
+        "outline-diff", help="compare definitions in two revision files"
+    )
+    outline_diff_parser.add_argument("--root", type=Path)
+    outline_diff_parser.add_argument("--to-path")
+    outline_diff_parser.add_argument("--json", action="store_true")
+    outline_diff_parser.add_argument("repository")
+    outline_diff_parser.add_argument("from_revision", metavar="FROM")
+    outline_diff_parser.add_argument("to_revision", metavar="TO")
+    outline_diff_parser.add_argument("file", metavar="FILE")
+
+    history_parser = subparsers.add_parser(
+        "history", help="trace a code symbol through indexed revisions"
+    )
+    history_parser.add_argument("--root", type=Path)
+    history_parser.add_argument("--path")
+    history_parser.add_argument("--qualified", action="store_true")
+    history_parser.add_argument("--json", action="store_true")
+    history_parser.add_argument("repository")
+    history_parser.add_argument("symbol")
+
     for command, help_text in (("populate", "fetch and prepare resources"), ("check", "check an existing resource directory")):
         subparser = subparsers.add_parser(command, help=help_text)
         subparser.add_argument("--root", type=Path, help="override the configured resource directory")
@@ -746,6 +792,87 @@ def main(arguments: list[str] | None = None) -> int:
                 print(f"{result.blobs} blobs, {result.analyses} analyses, {result.tags} tags")
                 print("Languages: " + ", ".join(f"{name} ({total})" for name, total in result.languages))
                 print("Kinds: " + ", ".join(f"{name} ({total})" for name, total in result.kinds))
+            return 0
+
+        if args.command == "references":
+            result = manager.find_code_references(
+                args.symbol, repository=args.repository, revision=args.revision,
+                path=args.path, role=args.role, cursor=args.cursor,
+                limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_code_tag_search(result)
+            return 0
+
+        if args.command == "locate":
+            if args.worktree is not None and len(args.coordinates) == 1:
+                repository = revision = file = None
+                line = positive_integer(args.coordinates[0])
+            elif args.worktree is None and len(args.coordinates) == 4:
+                repository, revision, file, line_text = args.coordinates
+                line = positive_integer(line_text)
+            else:
+                raise ResourceError(
+                    "locate expects REPOSITORY REVISION FILE LINE, or --worktree PATH LINE"
+                )
+            result = manager.locate_code_at_line(
+                repository=repository, revision=revision,
+                path=file, worktree_path=args.worktree, line=line,
+                nearby_limit=args.nearby,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"{result.file.repository}@{result.file.revision}:{result.file.path}:{result.line}")
+                items = result.containing or result.nearby
+                heading = "Containing" if result.containing else "Nearby"
+                print(f"{heading} tags:")
+                for item in items:
+                    print(f"  [{item.tag_id}] {item.kind} {item.qualified_name or item.name} at line {item.line_start}")
+                if result.enclosing_chain:
+                    print("Enclosing chain: " + " -> ".join(
+                        item.qualified_name or item.name
+                        for item in result.enclosing_chain
+                    ))
+            return 0
+
+        if args.command == "outline-diff":
+            result = manager.compare_code_file_outlines(
+                args.repository, args.from_revision, args.to_revision,
+                args.file, to_path=args.to_path,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                counts = ", ".join(
+                    f"{status} {total}"
+                    for status, total in sorted(result.status_counts.items())
+                )
+                print(counts)
+                for change in result.changes:
+                    print(f"{change.status}\t{change.kind}\t{change.symbol}")
+            return 0
+
+        if args.command == "history":
+            result = manager.trace_code_symbol_history(
+                args.repository, args.symbol, path=args.path,
+                qualified=args.qualified,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                for step in result.steps:
+                    revisions = ", ".join(step.revisions)
+                    if not step.matches:
+                        print(f"{revisions}: no indexed match")
+                    else:
+                        tags = ", ".join(
+                            f"[{tag.tag_id}] {tag.qualified_name or tag.name}"
+                            for tag in step.matches
+                        )
+                        print(f"{revisions}: {tags}" + (" (ambiguous)" if step.ambiguous else ""))
             return 0
 
         if args.command == "populate":
