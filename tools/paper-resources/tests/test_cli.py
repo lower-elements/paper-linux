@@ -1175,6 +1175,36 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertIn("-struct device", tag_diff.diff)
         self.assertIn("+static int driver_start", tag_diff.diff)
 
+        cli_tags = json.loads(self.tool(
+            "tags", "--root", str(self.resources), "--repository", "test-repository",
+            "--revision", "v1", "--path", "driver.c", "--name", "driver_start",
+            "--json",
+        ).stdout)
+        self.assertEqual(cli_tags["results"][0]["tag_id"], function.tag_id)
+        cli_outline = json.loads(self.tool(
+            "outline", "--root", str(self.resources), "--json",
+            "test-repository", "v1", "driver.c",
+        ).stdout)
+        self.assertEqual(cli_outline["file"]["path"], "driver.c")
+        self.assertIn("driver_start", self.tool(
+            "tag-source", "--root", str(self.resources), str(function.tag_id)
+        ).stdout)
+        self.assertIn("struct device", self.tool(
+            "tag-scope", "--root", str(self.resources), str(state.tag_id)
+        ).stdout)
+        self.assertIn("driver_start", self.tool(
+            "file-source", "--root", str(self.resources), "--lines", "2:2",
+            "test-repository", "v1", "driver.c",
+        ).stdout)
+        self.assertIn("-struct device", self.tool(
+            "tag-diff", "--root", str(self.resources),
+            str(device.tag_id), str(function.tag_id),
+        ).stdout)
+        facets = json.loads(self.tool(
+            "tag-facets", "--root", str(self.resources), "--json"
+        ).stdout)
+        self.assertGreater(facets["tags"], 0)
+
     def test_populate_one_worktree(self) -> None:
         self.tool(
             "populate", "--root", str(self.resources),

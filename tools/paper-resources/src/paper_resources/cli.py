@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from . import catalog_index, ctags_index, database
+from . import catalog_index, code_navigation, ctags_index, database
 from .config import (
     DEFAULT_EXTRACTOR_ENV,
     RESOURCE_DATABASE_ENV,
@@ -37,6 +37,18 @@ def nonnegative_integer(value: str) -> int:
     if result < 0:
         raise argparse.ArgumentTypeError("must be at least 0")
     return result
+
+
+def line_range(value: str) -> tuple[int, int | None]:
+    try:
+        start_text, separator, end_text = value.partition(":")
+        start = positive_integer(start_text)
+        end = positive_integer(end_text) if separator and end_text else None
+    except argparse.ArgumentTypeError as error:
+        raise argparse.ArgumentTypeError("must be START or START:END") from error
+    if end is not None and end < start:
+        raise argparse.ArgumentTypeError("end must not precede start")
+    return start, end
 
 
 def print_catalog(manifest: dict[str, Any]) -> None:
@@ -212,6 +224,53 @@ def print_extraction(result: dict[str, Any]) -> None:
         print(chunk["content"])
 
 
+def print_code_tag_search(result: code_navigation.CodeTagSearch) -> None:
+    if not result.results:
+        print("no matching code tags")
+        return
+    for tag in result.results:
+        identity = tag.qualified_name or tag.name
+        end = f"-{tag.line_end}" if tag.line_end and tag.line_end != tag.line_start else ""
+        category = "reference" if tag.is_reference else "definition"
+        print(
+            f"[{tag.tag_id}] {identity} ({tag.language} {tag.kind}, {category}, "
+            f"line {tag.line_start}{end})"
+        )
+        for occurrence in tag.occurrences:
+            print(f"  {occurrence.repository}@{occurrence.revision}:{occurrence.path}")
+    if result.truncated:
+        print(f"More results: --cursor {result.next_cursor}")
+
+
+def print_code_outline(result: code_navigation.CodeFileOutline) -> None:
+    print(f"{result.file.repository}@{result.file.revision}:{result.file.path}")
+    if result.file.warning:
+        print(f"Warning: {result.file.warning}")
+    for item in result.items:
+        end = f"-{item.line_end}" if item.line_end and item.line_end != item.line_start else ""
+        name = item.qualified_name or item.name
+        signature = item.signature or ""
+        print(f"{item.line_start}{end}\t[{item.tag_id}]\t{item.kind}\t{name}{signature}")
+    if result.truncated:
+        print(f"Showing {len(result.items)} of {result.total} tags")
+
+
+def print_code_source(result: code_navigation.CodeSourceBatch) -> None:
+    for index, region in enumerate(result.regions):
+        if index:
+            print()
+        tag_ids = ", ".join(str(tag.tag_id) for tag in region.tags)
+        print(
+            f"{region.file.repository}@{region.file.revision}:{region.file.path} "
+            f"lines {region.line_start}-{region.line_end} [tags {tag_ids}]"
+        )
+        print(region.source)
+        if region.truncated:
+            print("[region truncated]")
+    if result.truncated:
+        print("[output truncated]")
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--manifest", type=Path, default=Path("external-resources.json"))
@@ -324,6 +383,105 @@ def parser() -> argparse.ArgumentParser:
     section_parser.add_argument("--json", action="store_true", help="print JSON output")
     section_parser.add_argument("resource", metavar="ID", help="document ID")
     section_parser.add_argument("section_index", type=nonnegative_integer, metavar="SECTION")
+
+    tags_parser = subparsers.add_parser("tags", help="search indexed code tags")
+    tags_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    for option in (
+        "repository", "revision", "path", "name", "qualified-name",
+        "language", "kind", "role", "access", "scope", "scope-kind",
+    ):
+        tags_parser.add_argument(f"--{option}", action="append")
+    tags_parser.add_argument("--path-prefix")
+    tags_parser.add_argument("--name-prefix")
+    tags_parser.add_argument("--qualified-name-prefix")
+    tags_parser.add_argument("--tag-id", action="append", type=positive_integer)
+    reference = tags_parser.add_mutually_exclusive_group()
+    reference.add_argument("--reference", dest="is_reference", action="store_true")
+    reference.add_argument("--definition", dest="is_reference", action="store_false")
+    tags_parser.set_defaults(is_reference=None)
+    tags_parser.add_argument("--cursor")
+    tags_parser.add_argument("--limit", type=positive_integer, default=50)
+    tags_parser.add_argument("--json", action="store_true")
+
+    outline_parser = subparsers.add_parser("outline", help="outline one indexed source file")
+    outline_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    outline_parser.add_argument("--worktree", type=Path, metavar="PATH")
+    outline_parser.add_argument("--references", action="store_true")
+    outline_parser.add_argument("--limit", type=positive_integer, default=1000)
+    outline_parser.add_argument("--json", action="store_true")
+    outline_parser.add_argument("repository", nargs="?")
+    outline_parser.add_argument("revision", nargs="?")
+    outline_parser.add_argument("file", nargs="?")
+
+    outline_scope_parser = subparsers.add_parser(
+        "outline-scope", help="outline direct children of one code tag"
+    )
+    outline_scope_parser.add_argument("--root", type=Path)
+    outline_scope_parser.add_argument("--references", action="store_true")
+    outline_scope_parser.add_argument("--limit", type=positive_integer, default=1000)
+    outline_scope_parser.add_argument("--json", action="store_true")
+    outline_scope_parser.add_argument("tag_id", type=positive_integer, metavar="TAG_ID")
+
+    tag_parser = subparsers.add_parser("tag", help="inspect indexed code tags")
+    tag_parser.add_argument("--root", type=Path)
+    tag_parser.add_argument("--json", action="store_true")
+    tag_parser.add_argument("tag_ids", nargs="+", type=positive_integer, metavar="TAG_ID")
+
+    tag_source_parser = subparsers.add_parser(
+        "tag-source", help="read and coalesce source for indexed code tags"
+    )
+    tag_source_parser.add_argument("--root", type=Path)
+    tag_source_parser.add_argument("--repository")
+    tag_source_parser.add_argument("--revision")
+    tag_source_parser.add_argument("--path")
+    tag_source_parser.add_argument("--context", type=nonnegative_integer, default=0)
+    tag_source_parser.add_argument("--no-line-numbers", action="store_true")
+    tag_source_parser.add_argument("--max-lines", type=positive_integer, default=5000)
+    tag_source_parser.add_argument("--max-chars", type=positive_integer, default=200_000)
+    tag_source_parser.add_argument("--json", action="store_true")
+    tag_source_parser.add_argument("tag_ids", nargs="+", type=positive_integer, metavar="TAG_ID")
+
+    tag_scope_parser = subparsers.add_parser(
+        "tag-scope", help="read enclosing source scopes for indexed tags"
+    )
+    tag_scope_parser.add_argument("--root", type=Path)
+    tag_scope_parser.add_argument("--levels", type=positive_integer, default=1)
+    tag_scope_parser.add_argument("--context", type=nonnegative_integer, default=0)
+    tag_scope_parser.add_argument("--no-line-numbers", action="store_true")
+    tag_scope_parser.add_argument("--max-lines", type=positive_integer, default=5000)
+    tag_scope_parser.add_argument("--max-chars", type=positive_integer, default=200_000)
+    tag_scope_parser.add_argument("--json", action="store_true")
+    tag_scope_parser.add_argument("tag_ids", nargs="+", type=positive_integer, metavar="TAG_ID")
+
+    file_source_parser = subparsers.add_parser(
+        "file-source", help="read a bounded indexed source file region"
+    )
+    file_source_parser.add_argument("--root", type=Path)
+    file_source_parser.add_argument("--worktree", type=Path, metavar="PATH")
+    file_source_parser.add_argument("--lines", type=line_range, default=(1, None))
+    file_source_parser.add_argument("--no-line-numbers", action="store_true")
+    file_source_parser.add_argument("--max-lines", type=positive_integer, default=5000)
+    file_source_parser.add_argument("--max-chars", type=positive_integer, default=200_000)
+    file_source_parser.add_argument("--json", action="store_true")
+    file_source_parser.add_argument("repository", nargs="?")
+    file_source_parser.add_argument("revision", nargs="?")
+    file_source_parser.add_argument("file", nargs="?")
+
+    tag_diff_parser = subparsers.add_parser(
+        "tag-diff", help="diff exactly two indexed code tag regions"
+    )
+    tag_diff_parser.add_argument("--root", type=Path)
+    tag_diff_parser.add_argument("--context", type=nonnegative_integer, default=3)
+    tag_diff_parser.add_argument("--max-chars", type=positive_integer, default=200_000)
+    tag_diff_parser.add_argument("--json", action="store_true")
+    tag_diff_parser.add_argument("from_tag", type=positive_integer, metavar="FROM_TAG")
+    tag_diff_parser.add_argument("to_tag", type=positive_integer, metavar="TO_TAG")
+
+    facets_parser = subparsers.add_parser(
+        "tag-facets", help="describe indexed code coverage and facets"
+    )
+    facets_parser.add_argument("--root", type=Path)
+    facets_parser.add_argument("--json", action="store_true")
 
     for command, help_text in (("populate", "fetch and prepare resources"), ("check", "check an existing resource directory")):
         subparser = subparsers.add_parser(command, help=help_text)
@@ -466,6 +624,128 @@ def main(arguments: list[str] | None = None) -> int:
                 print(catalog_index.json_output(section.to_dict()))
             else:
                 print_section_result(section)
+            return 0
+
+        if args.command == "tags":
+            result = manager.search_code_tags(
+                repository=args.repository, revision=args.revision, path=args.path,
+                path_prefix=args.path_prefix, tag_id=args.tag_id, name=args.name,
+                name_prefix=args.name_prefix, qualified_name=args.qualified_name,
+                qualified_name_prefix=args.qualified_name_prefix,
+                language=args.language, kind=args.kind, role=args.role,
+                access=args.access, scope=args.scope, scope_kind=args.scope_kind,
+                is_reference=args.is_reference, cursor=args.cursor, limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_code_tag_search(result)
+            return 0
+
+        if args.command == "outline":
+            result = manager.outline_code_file(
+                args.repository, args.revision, args.file,
+                worktree_path=args.worktree,
+                include_references=args.references, limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_code_outline(result)
+            return 0
+
+        if args.command == "outline-scope":
+            result = manager.outline_code_scope(
+                args.tag_id, include_references=args.references, limit=args.limit
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"[{result.scope.tag_id}] {result.scope.qualified_name or result.scope.name}")
+                for item in result.children:
+                    print(f"{item.line_start}\t[{item.tag_id}]\t{item.kind}\t{item.qualified_name or item.name}")
+            return 0
+
+        if args.command == "tag":
+            result = manager.inspect_code_tags(args.tag_ids)
+            if args.json:
+                print(catalog_index.json_output([asdict(item) for item in result]))
+            else:
+                for index, item in enumerate(result):
+                    if index:
+                        print()
+                    print(catalog_index.json_output(asdict(item)))
+            return 0
+
+        if args.command == "tag-source":
+            result = manager.read_tagged_code(
+                args.tag_ids, repository=args.repository, revision=args.revision,
+                path=args.path, context_lines=args.context,
+                numbered=not args.no_line_numbers, max_lines=args.max_lines,
+                max_chars=args.max_chars,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_code_source(result)
+            return 0
+
+        if args.command == "tag-scope":
+            result = manager.read_enclosing_code_scope(
+                args.tag_ids, levels=args.levels, context_lines=args.context,
+                numbered=not args.no_line_numbers, max_lines=args.max_lines,
+                max_chars=args.max_chars,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                for scope in result.scopes:
+                    target = scope.scope_tag_id if scope.scope_tag_id is not None else "none"
+                    print(f"tag {scope.requested_tag_id} -> scope {target}" + (f" ({scope.message})" if scope.message else ""))
+                print_code_source(result.source)
+            return 0
+
+        if args.command == "file-source":
+            start, end = args.lines
+            result = manager.read_code_file(
+                repository=args.repository, revision=args.revision, path=args.file,
+                worktree_path=args.worktree, line_start=start, line_end=end,
+                numbered=not args.no_line_numbers, max_lines=args.max_lines,
+                max_chars=args.max_chars,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"{result.file.repository}@{result.file.revision}:{result.file.path} lines {result.line_start}-{result.line_end}")
+                if result.file.warning:
+                    print(f"Warning: {result.file.warning}")
+                print(result.source)
+                if result.truncated:
+                    print("[output truncated]")
+            return 0
+
+        if args.command == "tag-diff":
+            result = manager.diff_tagged_code(
+                args.from_tag, args.to_tag, context_lines=args.context,
+                max_chars=args.max_chars,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            elif result.diff:
+                print(result.diff, end="" if result.diff.endswith("\n") else "\n")
+            else:
+                print("no changes")
+            return 0
+
+        if args.command == "tag-facets":
+            result = manager.describe_code_index()
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"{result.repositories} repositories, {result.revisions} revisions, {result.paths} paths")
+                print(f"{result.blobs} blobs, {result.analyses} analyses, {result.tags} tags")
+                print("Languages: " + ", ".join(f"{name} ({total})" for name, total in result.languages))
+                print("Kinds: " + ", ".join(f"{name} ({total})" for name, total in result.kinds))
             return 0
 
         if args.command == "populate":
