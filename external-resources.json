@@ -161,6 +161,7 @@
           "tags": ["mainline", "stable"],
           "commit": "63e0e67b17dc233f93f709610971bbfadc97f75e",
           "tree": "2a0d457b3094a590911ecea266a404d5e0107d29",
+          "derived_from": "2.6.26",
           "source": {"remote": "stable", "ref": "refs/tags/v2.6.26.8"},
           "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26.8"}]
         },
@@ -201,12 +202,24 @@
           "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26-rt-lab126"}]
         },
         {
+          "id": "2.6.28",
+          "description": "Mainline Linux 2.6.28 release",
+          "author": "mainline",
+          "tags": ["mainline"],
+          "commit": "4a6908a3a050aacc9c3a2f36b276b46c0629ad91",
+          "tree": "8aa7b05bd09bcd36eaca256bdcc41fc57b942425",
+          "derived_from": "2.6.26",
+          "source": {"remote": "origin", "ref": "refs/tags/v2.6.28"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.28"}]
+        },
+        {
           "id": "2.6.28-imx",
           "description": "NXP/Freescale i.MX vendor branch based on Linux 2.6.28",
           "author": "freescale",
           "tags": ["imx", "freescale", "vendor"],
           "commit": "eee5a08306df7d9b1f23f463c9e9439e04293b57",
           "tree": "68b959676944d055ad9e0da0d6a4ae720f9ce674",
+          "derived_from": "2.6.28",
           "source": {"remote": "nxp", "ref": "refs/heads/imx_2.6.28"},
           "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.28-imx"}]
         },
@@ -217,6 +230,7 @@
           "tags": ["mainline", "imx35"],
           "commit": "74fca6a42863ffacaf7ba6f1936a9f228950f657",
           "tree": "5caecfdd9edab50789483eb96009e9faf5f1b241",
+          "derived_from": "2.6.28",
           "source": {"remote": "origin", "ref": "refs/tags/v2.6.31"},
           "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.31"}]
         },
@@ -227,6 +241,7 @@
           "tags": ["imx", "freescale", "vendor"],
           "commit": "9cc12efe87d12994491892fd8e68e651687e8ed3",
           "tree": "c890ea113308b299a613bc81ab6044701e3095d0",
+          "derived_from": "2.6.31",
           "source": {"remote": "nxp", "ref": "refs/heads/imx_2.6.31_caf"},
           "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.31-imx"}]
         },
