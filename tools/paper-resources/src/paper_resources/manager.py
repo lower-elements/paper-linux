@@ -7,7 +7,10 @@ import sqlite3
 from threading import RLock
 from typing import Any, Literal
 
-from . import artifacts, catalog_index, ctags_index, database, git_resources
+from . import (
+    artifacts, catalog_index, code_navigation, ctags_index, database,
+    git_resources,
+)
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
 
@@ -658,6 +661,30 @@ class ResourceManager:
                 self.settings.root,
                 self._database(create=True),
             )
+
+    def search_code_tags(self, **filters: Any) -> code_navigation.CodeTagSearch:
+        """Search normalized Ctags data and return matching source occurrences."""
+        blob_oid = filters.get("blob_oid")
+        if isinstance(blob_oid, str):
+            filters["blob_oid"] = git_resources.oid_from_hex(blob_oid)
+        with self._database_lock:
+            return code_navigation.search_tags(
+                self._database(create=False), **filters
+            )
+
+    def inspect_code_tags(
+        self, tag_ids: list[int] | tuple[int, ...]
+    ) -> tuple[code_navigation.CodeTagInfo, ...]:
+        """Return complete index records for opaque code-tag IDs."""
+        with self._database_lock:
+            return code_navigation.inspect_tags(
+                self._database(create=False), tag_ids
+            )
+
+    def describe_code_index(self) -> code_navigation.CodeIndexDescription:
+        """Return index coverage and common language/kind facets."""
+        with self._database_lock:
+            return code_navigation.describe_index(self._database(create=False))
 
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None

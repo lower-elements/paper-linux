@@ -15,7 +15,7 @@ import anyio
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 
 from paper_resources import (
-    catalog_index,
+    catalog_index, code_navigation,
     cli,
     ctags,
     ctags_index,
@@ -1053,6 +1053,59 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(revision["indexed"], 0)
         self.assertEqual(revision["reused"], 4)
         self.assertFalse(current["code"]["failed"])
+
+    def test_structured_code_tag_queries_and_inspection(self) -> None:
+        if shutil.which("ctags") is None:
+            self.skipTest("Universal Ctags is not installed")
+        self.tool("populate", "--root", str(self.resources))
+        self.tool("index", "--root", str(self.resources))
+        settings = ResourceSettings.load(self.manifest, self.resources)
+        resource_manager = ResourceManager.load(settings)
+        self.addCleanup(resource_manager.close)
+
+        result = resource_manager.search_code_tags(
+            repository="test-repository",
+            revision="v1",
+            path="driver.c",
+            name="driver_start",
+            language=["C", "C++"],
+            kind="function",
+            is_reference=False,
+            limit=1,
+        )
+        self.assertEqual(len(result.results), 1)
+        self.assertFalse(result.truncated)
+        tag = result.results[0]
+        self.assertEqual(tag.name, "driver_start")
+        self.assertEqual(tag.occurrences[0].path, "driver.c")
+        self.assertEqual(tag.occurrences[0].repository, "test-repository")
+
+        inspected = resource_manager.inspect_code_tags([tag.tag_id])[0]
+        self.assertEqual(inspected.kind, "function")
+        self.assertIsNotNone(inspected.signature)
+        self.assertEqual(inspected.occurrences, tag.occurrences)
+
+        first_page = resource_manager.search_code_tags(
+            repository="test-repository", revision="v1", limit=1
+        )
+        self.assertTrue(first_page.truncated)
+        self.assertIsNotNone(first_page.next_cursor)
+        second_page = resource_manager.search_code_tags(
+            repository="test-repository", revision="v1", limit=1,
+            cursor=first_page.next_cursor,
+        )
+        self.assertNotEqual(
+            first_page.results[0].tag_id, second_page.results[0].tag_id
+        )
+        with self.assertRaisesRegex(ResourceError, "invalid code-tag search cursor"):
+            resource_manager.search_code_tags(cursor="not-a-cursor")
+        with self.assertRaisesRegex(ResourceError, "unknown code tag"):
+            resource_manager.inspect_code_tags([2**62])
+
+        description = resource_manager.describe_code_index()
+        self.assertEqual(description.repositories, 1)
+        self.assertGreater(description.tags, 0)
+        self.assertIn("C", dict(description.languages))
 
     def test_populate_one_worktree(self) -> None:
         self.tool(
