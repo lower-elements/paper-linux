@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -553,6 +554,92 @@ class PaperResourcesTest(unittest.TestCase):
             next(event.id for event in second if isinstance(event, ctags.CtagsProfile)),
             profile.id,
         )
+
+    def test_ctags_session_handles_bidirectional_pipe_backpressure(self) -> None:
+        fake_ctags = self.base / "ctags-backpressure"
+        fake_ctags.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import json
+                import sys
+
+                if "--list-features" in sys.argv:
+                    print("interactive\\njson\\nsandbox")
+                    raise SystemExit
+                if "--list-maps" in sys.argv:
+                    print("C *.c")
+                    raise SystemExit
+
+                source = sys.stdin.buffer
+                output = sys.stdout
+
+                def emit(record):
+                    output.write(json.dumps(record, separators=(",", ":")) + "\\n")
+
+                emit({"_type": "program", "name": "Universal Ctags", "version": "test"})
+                output.flush()
+                while command_line := source.readline():
+                    command = json.loads(command_line)
+                    remaining = command["size"]
+                    initial = source.read(min(4096, remaining))
+                    remaining -= len(initial)
+
+                    emit({"_type": "ptag", "name": "JSON_OUTPUT_VERSION", "path": "1.0"})
+                    emit({"_type": "ptag", "name": "TAG_OUTPUT_VERSION", "path": "2"})
+                    emit({"_type": "ptag", "name": "TAG_PARSER_VERSION", "path": "test", "parserName": "C"})
+                    for index in range(2000):
+                        emit({
+                            "_type": "tag",
+                            "name": f"tag_{index}",
+                            "path": command["filename"],
+                            "language": "C",
+                            "kind": "function",
+                            "line": index + 1,
+                        })
+                    output.flush()
+
+                    while remaining:
+                        chunk = source.read(min(65536, remaining))
+                        if not chunk:
+                            raise SystemExit("truncated input")
+                        remaining -= len(chunk)
+                    emit({"_type": "completed", "command": "generate-tags"})
+                    output.flush()
+                """
+            ),
+            encoding="utf-8",
+        )
+        fake_ctags.chmod(0o755)
+
+        child = textwrap.dedent(
+            """\
+            import sys
+            from pathlib import Path
+            from paper_resources import ctags, database
+
+            connection = database.open_database(Path(sys.argv[1]), create=True)
+            try:
+                with ctags.CtagsSession(connection, sys.argv[2]) as session:
+                    events = list(session.analyze("large.c", b"x" * (4 * 1024 * 1024)))
+                    assert sum(isinstance(event, ctags.CtagsTag) for event in events) == 2000
+            finally:
+                connection.close()
+            """
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                child,
+                str(self.base / "ctags-backpressure.db"),
+                str(fake_ctags),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_ctags_blob_analysis_storage_normalizes_and_replaces_tags(self) -> None:
         if shutil.which("ctags") is None:

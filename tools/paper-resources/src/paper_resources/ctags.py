@@ -7,15 +7,18 @@ from fnmatch import fnmatchcase
 import hashlib
 import json
 from pathlib import PurePosixPath
+import queue
 import sqlite3
 import subprocess
 import tempfile
+import threading
 from typing import Any, Iterator
 
 from .config import ResourceError
 
 
 CTAGS_PIPELINE_VERSION = 1
+CTAGS_RESPONSE_QUEUE_SIZE = 256
 CTAGS_OUTPUT_OPTIONS = (
     "--options=NONE",
     "--fields=*",
@@ -190,6 +193,31 @@ class CtagsSession:
             self._process.wait()
             self._errors.close()
             raise CtagsError("cannot open Universal Ctags protocol streams")
+        self._records: queue.Queue[bytes | None] = queue.Queue(
+            maxsize=CTAGS_RESPONSE_QUEUE_SIZE
+        )
+        self._reader_stopping = threading.Event()
+
+        def read_output() -> None:
+            while line := self._process.stdout.readline():
+                while not self._reader_stopping.is_set():
+                    try:
+                        self._records.put(line, timeout=0.1)
+                        break
+                    except queue.Full:
+                        pass
+                # During shutdown, discard records but continue draining the
+                # OS pipe so ctags can observe EOF and terminate.
+            if not self._reader_stopping.is_set():
+                self._records.put(None)
+
+        self._reader = threading.Thread(
+            target=read_output, name="ctags-output", daemon=True
+        )
+        self._reader.start()
+        self._request_writer: threading.Thread | None = None
+        self._request_done: threading.Event | None = None
+        self._request_errors: list[BaseException] | None = None
         self._closed = False
         try:
             startup = self._read_record()
@@ -249,8 +277,8 @@ class CtagsSession:
         return self._errors.read().decode("utf-8", errors="replace").strip()
 
     def _read_record(self) -> dict[str, Any]:
-        line = self._process.stdout.readline()
-        if not line:
+        line = self._records.get()
+        if line is None:
             returncode = self._process.wait()
             detail = self._stderr() or f"exit status {returncode}"
             raise CtagsError(f"Universal Ctags stopped unexpectedly: {detail}")
@@ -267,12 +295,14 @@ class CtagsSession:
         while True:
             record = self._read_record()
             if record.get("_type") == "completed":
+                self._finish_request()
                 return
 
     def close(self) -> None:
         if getattr(self, "_closed", True):
             return
         self._closed = True
+        self._reader_stopping.set()
         try:
             self._process.stdin.close()
             try:
@@ -284,8 +314,63 @@ class CtagsSession:
                 detail = self._stderr() or f"exit status {returncode}"
                 raise CtagsError(f"Universal Ctags exited unsuccessfully: {detail}")
         finally:
+            self._reader.join(timeout=5)
             self._process.stdout.close()
             self._errors.close()
+
+    def _submit_request(self, command: bytes, content: bytes) -> None:
+        if self._request_writer is not None:
+            raise CtagsError("another Universal Ctags request is still active")
+        done = threading.Event()
+        errors: list[BaseException] = []
+
+        def write_request() -> None:
+            try:
+                self._process.stdin.write(command + b"\n")
+                self._process.stdin.write(content)
+                self._process.stdin.flush()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                done.set()
+
+        writer = threading.Thread(target=write_request, name="ctags-input")
+        self._request_writer = writer
+        self._request_done = done
+        self._request_errors = errors
+        writer.start()
+
+    def _finish_request(self) -> None:
+        writer = self._request_writer
+        done = self._request_done
+        errors = self._request_errors
+        if writer is None or done is None or errors is None:
+            raise CtagsError("Universal Ctags request state is missing")
+
+        # A completed response normally means ctags consumed all input. Keep
+        # servicing stdout until the writer confirms that fact rather than
+        # joining it while ctags may still be blocked on its output pipe.
+        while not done.is_set():
+            try:
+                line = self._records.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if line is None:
+                break
+            raise CtagsError(
+                "Universal Ctags emitted output after completing a request"
+            )
+
+        writer.join()
+        self._request_writer = None
+        self._request_done = None
+        self._request_errors = None
+        if errors:
+            error = errors[0]
+            detail = self._stderr() or "broken protocol pipe"
+            raise CtagsError(
+                f"cannot submit blob to Universal Ctags: {detail}"
+            ) from error
 
     def _clear_catalog_cache(self) -> None:
         self._profile = None
@@ -507,15 +592,7 @@ class CtagsSession:
             {"command": "generate-tags", "filename": filename, "size": len(content)},
             separators=(",", ":"),
         ).encode("utf-8")
-        try:
-            self._process.stdin.write(command + b"\n")
-            self._process.stdin.write(content)
-            self._process.stdin.flush()
-        except BrokenPipeError as error:
-            detail = self._stderr() or "broken protocol pipe"
-            raise CtagsError(
-                f"cannot submit blob to Universal Ctags: {detail}"
-            ) from error
+        self._submit_request(command, content)
 
         output_version: str | None = None
         json_output_version: str | None = None
@@ -677,6 +754,7 @@ class CtagsSession:
                     raise CtagsError(
                         "Universal Ctags left unresolved catalog pseudo-tags"
                     )
+                self._finish_request()
                 yield CtagsCompleted(current_profile.id, input_parser_id, tag_count)
                 return
             raise CtagsError(
