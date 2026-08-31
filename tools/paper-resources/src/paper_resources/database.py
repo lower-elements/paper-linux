@@ -6,10 +6,10 @@ from pathlib import Path
 import sqlite3
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 
 CREATE TABLE repositories (
     id TEXT PRIMARY KEY,
@@ -35,6 +35,55 @@ CREATE TABLE repository_blobs (
     size INTEGER NOT NULL CHECK(size >= 0),
     PRIMARY KEY (repository_id, oid)
 ) STRICT, WITHOUT ROWID;
+
+CREATE TABLE ctags_profiles (
+    id INTEGER PRIMARY KEY,
+    program_name TEXT NOT NULL,
+    program_version TEXT NOT NULL,
+    output_version TEXT NOT NULL,
+    json_output_version TEXT NOT NULL,
+    configuration_sha256 BLOB NOT NULL
+        CHECK(length(configuration_sha256) = 32),
+    UNIQUE (
+        program_name,
+        program_version,
+        output_version,
+        json_output_version,
+        configuration_sha256
+    )
+) STRICT;
+
+CREATE TABLE ctags_parsers (
+    id INTEGER PRIMARY KEY,
+    profile_id INTEGER NOT NULL
+        REFERENCES ctags_profiles(id) ON DELETE CASCADE,
+    language TEXT NOT NULL CHECK(language <> ''),
+    -- Subparsers can emit tags without first emitting catalog pseudo-tags.
+    parser_version TEXT,
+    UNIQUE (profile_id, language),
+    UNIQUE (id, profile_id)
+) STRICT;
+
+CREATE TABLE ctags_kinds (
+    id INTEGER PRIMARY KEY,
+    parser_id INTEGER NOT NULL
+        REFERENCES ctags_parsers(id) ON DELETE CASCADE,
+    name TEXT NOT NULL CHECK(name <> ''),
+    letter TEXT CHECK(letter IS NULL OR length(letter) = 1),
+    description TEXT,
+    UNIQUE (parser_id, name),
+    UNIQUE (id, parser_id)
+) STRICT;
+
+CREATE TABLE ctags_roles (
+    id INTEGER PRIMARY KEY,
+    kind_id INTEGER NOT NULL
+        REFERENCES ctags_kinds(id) ON DELETE CASCADE,
+    name TEXT NOT NULL CHECK(name <> ''),
+    description TEXT,
+    UNIQUE (kind_id, name),
+    UNIQUE (id, kind_id)
+) STRICT;
 
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,

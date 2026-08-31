@@ -16,6 +16,7 @@ from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from paper_resources import (
     catalog_index,
     cli,
+    ctags,
     database,
     git_resources,
     manager as manager_module,
@@ -381,6 +382,168 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(
             git_resources.oid_to_hex(git_resources.oid_from_hex("ab" * 32)),
             "ab" * 32,
+        )
+
+    def test_ctags_session_lazily_catalogs_blob_languages(self) -> None:
+        if shutil.which("ctags") is None:
+            self.skipTest("Universal Ctags is not installed")
+        connection = database.open_database(self.base / "ctags.db", create=True)
+        self.addCleanup(connection.close)
+
+        sources = [
+            (
+                "driver.c",
+                b"#include <linux/types.h>\n"
+                b"struct device { int state; };\n"
+                b"static int driver_start(void) { return 0; }\n",
+            ),
+            ("device.h", b"struct header_type { int field; };\n"),
+            ("start.S", b".globl _start\n_start:\n\tnop\n"),
+            ("layout.lds", b"SECTIONS { .text : { *(.text) } }\n"),
+            ("Makefile", b"all:\n\t@echo ready\n"),
+            ("unrecognized.paper-resource", b"\x00\xff\x00"),
+        ]
+
+        with ctags.CtagsSession(connection) as session:
+            analyses = [
+                list(session.analyze(name, content)) for name, content in sources
+            ]
+            c_events = analyses[0]
+            profile = next(
+                event for event in c_events if isinstance(event, ctags.CtagsProfile)
+            )
+            c_parser = next(
+                event
+                for event in c_events
+                if isinstance(event, ctags.CtagsParser) and event.language == "C"
+            )
+            c_tags = [
+                event for event in c_events if isinstance(event, ctags.CtagsTag)
+            ]
+            self.assertTrue(any(tag.name == "driver_start" for tag in c_tags))
+            self.assertTrue(
+                any(
+                    tag.name.endswith("::state") and "qualified" in tag.extras
+                    for tag in c_tags
+                )
+            )
+            self.assertTrue(
+                any(
+                    tag.name == "driver_start" and tag.fields.get("file") is True
+                    for tag in c_tags
+                )
+            )
+            header_reference = next(
+                tag for tag in c_tags if tag.name == "linux/types.h"
+            )
+            self.assertIn("reference", header_reference.extras)
+            self.assertEqual(header_reference.roles, ("system",))
+            self.assertEqual(len(header_reference.role_ids), 1)
+            self.assertFalse(
+                any("inputFile" in tag.extras for tag in c_tags)
+            )
+            self.assertTrue(
+                all(
+                    not {
+                        "_type", "name", "path", "language", "kind", "roles", "extras"
+                    }
+                    & tag.fields.keys()
+                    for tag in c_tags
+                )
+            )
+
+            assembly_events = analyses[2]
+            provisional_parser = next(
+                event
+                for event in assembly_events
+                if isinstance(event, ctags.CtagsParser)
+                and event.language == "LdScript"
+            )
+            self.assertIsNone(provisional_parser.version)
+            provisional_kind = next(
+                event
+                for event in assembly_events
+                if isinstance(event, ctags.CtagsKind)
+                and event.language == "LdScript"
+                and event.name == "symbol"
+            )
+            self.assertIsNone(provisional_kind.letter)
+
+            linker_events = analyses[3]
+            enriched_parser = next(
+                event
+                for event in linker_events
+                if isinstance(event, ctags.CtagsParser)
+                and event.language == "LdScript"
+            )
+            self.assertEqual(enriched_parser.id, provisional_parser.id)
+            self.assertIsNotNone(enriched_parser.version)
+            enriched_kind = next(
+                event
+                for event in linker_events
+                if isinstance(event, ctags.CtagsKind)
+                and event.language == "LdScript"
+                and event.name == "symbol"
+            )
+            self.assertEqual(enriched_kind.id, provisional_kind.id)
+            self.assertIsNotNone(enriched_kind.letter)
+
+            completed = [
+                next(
+                    event
+                    for event in reversed(events)
+                    if isinstance(event, ctags.CtagsCompleted)
+                )
+                for events in analyses
+            ]
+            self.assertTrue(all(item.profile_id == profile.id for item in completed))
+            self.assertEqual(completed[0].input_parser_id, c_parser.id)
+            self.assertEqual(completed[-1].input_parser_id, None)
+            self.assertEqual(completed[-1].tags, 0)
+
+            counts = tuple(
+                connection.execute(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM ctags_profiles),
+                        (SELECT count(*) FROM ctags_parsers),
+                        (SELECT count(*) FROM ctags_kinds),
+                        (SELECT count(*) FROM ctags_roles)
+                    """
+                ).fetchone()
+            )
+            self.assertEqual(counts[0], 1)
+            self.assertGreaterEqual(counts[1], 3)
+            self.assertGreater(counts[2], counts[1])
+            self.assertGreater(counts[3], 0)
+
+            repeated = list(session.analyze(*sources[0]))
+            repeated_parser = next(
+                event
+                for event in repeated
+                if isinstance(event, ctags.CtagsParser) and event.language == "C"
+            )
+            self.assertEqual(repeated_parser.id, c_parser.id)
+            self.assertEqual(
+                tuple(
+                    connection.execute(
+                        """
+                        SELECT
+                            (SELECT count(*) FROM ctags_profiles),
+                            (SELECT count(*) FROM ctags_parsers),
+                            (SELECT count(*) FROM ctags_kinds),
+                            (SELECT count(*) FROM ctags_roles)
+                        """
+                    ).fetchone()
+                ),
+                counts,
+            )
+
+        with ctags.CtagsSession(connection) as second_session:
+            second = list(second_session.analyze(*sources[0]))
+        self.assertEqual(
+            next(event.id for event in second if isinstance(event, ctags.CtagsProfile)),
+            profile.id,
         )
 
     def test_populate_one_worktree(self) -> None:
