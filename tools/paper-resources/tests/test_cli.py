@@ -578,7 +578,7 @@ class PaperResourcesTest(unittest.TestCase):
             )
             self.assertGreater(stored.tags, 0)
             self.assertGreater(stored.roles, 0)
-            self.assertGreater(stored.ignored_qualified_tags, 0)
+            self.assertGreater(stored.qualified_names, 0)
 
             analysis = connection.execute(
                 """
@@ -611,9 +611,12 @@ class PaperResourcesTest(unittest.TestCase):
             self.assertEqual(
                 [row["ordinal"] for row in tags], list(range(stored.tags))
             )
-            self.assertTrue(all(row["qualified_name"] is None for row in tags))
             self.assertTrue(all(row["enclosing_tag_id"] is None for row in tags))
             self.assertFalse(any("::" in row["name"] for row in tags))
+            self.assertEqual(
+                sum(row["qualified_name"] is not None for row in tags),
+                stored.qualified_names,
+            )
 
             function = next(row for row in tags if row["name"] == "driver_start")
             self.assertEqual(function["language"], "C")
@@ -639,6 +642,7 @@ class PaperResourcesTest(unittest.TestCase):
             self.assertEqual([row["name"] for row in roles], ["system"])
 
             state = next(row for row in tags if row["name"] == "state")
+            self.assertEqual(state["qualified_name"], "device::state")
             self.assertEqual(state["scope"], "device")
             self.assertEqual(state["scope_kind"], "struct")
             self.assertEqual(state["typeref"], "typename:int")

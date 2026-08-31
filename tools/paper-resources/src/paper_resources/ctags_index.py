@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from dataclasses import dataclass
 import json
 import sqlite3
@@ -18,7 +19,7 @@ class StoredAnalysis:
     input_parser_id: int | None
     tags: int
     roles: int
-    ignored_qualified_tags: int
+    qualified_names: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +120,29 @@ def normalize_tag(event: ctags.CtagsTag) -> NormalizedTag:
     )
 
 
+def _pairing_key(event: ctags.CtagsTag) -> tuple[object, ...]:
+    """Identify ordinary and qualified records describing the same tag."""
+    try:
+        fields = json.dumps(
+            event.fields,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise ResourceError(
+            f"Ctags emitted non-JSON fields for {event.name!r}: {error}"
+        ) from error
+    return (
+        event.parser_id,
+        event.kind_id,
+        event.roles,
+        tuple(extra for extra in event.extras if extra != "qualified"),
+        fields,
+    )
+
+
 def store_blob_analysis(
     connection: sqlite3.Connection,
     session: ctags.CtagsSession,
@@ -140,7 +164,9 @@ def store_blob_analysis(
     completed: ctags.CtagsCompleted | None = None
     tag_count = 0
     role_count = 0
-    ignored_qualified_tags = 0
+    qualified_names = 0
+    ordinary_tags: dict[tuple[object, ...], deque[int]] = defaultdict(deque)
+    pending_qualified: dict[tuple[object, ...], deque[str]] = defaultdict(deque)
     try:
         for event in events:
             if isinstance(event, ctags.CtagsProfile):
@@ -172,10 +198,25 @@ def store_blob_analysis(
             if isinstance(event, ctags.CtagsTag):
                 if analysis_id is None or profile_id is None:
                     raise ResourceError("Ctags emitted a tag before its profile")
+                pairing_key = _pairing_key(event)
                 if "qualified" in event.extras:
-                    ignored_qualified_tags += 1
+                    candidates = ordinary_tags[pairing_key]
+                    if candidates:
+                        tag_id = candidates.popleft()
+                        connection.execute(
+                            "UPDATE ctags_tags SET qualified_name = ? WHERE id = ?",
+                            (event.name, tag_id),
+                        )
+                        qualified_names += 1
+                    else:
+                        pending_qualified[pairing_key].append(event.name)
                     continue
                 tag = normalize_tag(event)
+                qualified_name: str | None = None
+                candidates = pending_qualified[pairing_key]
+                if candidates:
+                    qualified_name = candidates.popleft()
+                    qualified_names += 1
                 row = connection.execute(
                     """
                     INSERT INTO ctags_tags(
@@ -185,7 +226,7 @@ def store_blob_analysis(
                         is_file_restricted, is_reference, enclosing_tag_id,
                         metadata
                     ) VALUES (
-                        ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                         NULL, jsonb(?)
                     )
                     RETURNING id
@@ -197,6 +238,7 @@ def store_blob_analysis(
                         event.kind_id,
                         tag_count,
                         tag.name,
+                        qualified_name,
                         tag.line_start,
                         tag.line_end,
                         tag.signature,
@@ -213,6 +255,8 @@ def store_blob_analysis(
                 if row is None:
                     raise ResourceError("SQLite did not return a Ctags tag ID")
                 tag_id = int(row[0])
+                if qualified_name is None:
+                    ordinary_tags[pairing_key].append(tag_id)
                 connection.executemany(
                     """
                     INSERT INTO ctags_tag_roles(tag_id, kind_id, role_id)
@@ -232,6 +276,10 @@ def store_blob_analysis(
                     raise ResourceError("Ctags completed a blob before its profile")
                 if event.profile_id != profile_id:
                     raise ResourceError("Ctags changed profiles while analysing a blob")
+                if any(pending_qualified.values()):
+                    raise ResourceError(
+                        "Ctags emitted a qualified tag without an ordinary counterpart"
+                    )
                 connection.execute(
                     """
                     UPDATE ctags_analyses SET input_parser_id = ? WHERE id = ?
@@ -254,5 +302,5 @@ def store_blob_analysis(
         input_parser_id=completed.input_parser_id,
         tags=tag_count,
         roles=role_count,
-        ignored_qualified_tags=ignored_qualified_tags,
+        qualified_names=qualified_names,
     )
