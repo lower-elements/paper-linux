@@ -136,6 +136,65 @@ and resolve reported enclosing scopes on a best-effort basis. Replacing one
 blob analysis is transactional, including its catalog records, tags, roles,
 qualified names, and enclosing relationships.
 
+### Code navigation
+
+Code is normally identified by a human-readable repository, revision, and
+repository-relative path. File operations resolve that identity to the
+indexed blob internally, so callers never need a separate OID lookup:
+
+```sh
+just resource outline linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c
+just resource file-source --lines 120:220 \
+    linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c
+```
+
+`outline` returns compact, source-ordered definitions before any source is
+read. Its opaque database-local tag IDs can then drive detailed inspection,
+batch source reads, scope navigation, and focused diffs:
+
+```sh
+just resource tags --repository linux --revision 2.6.26-rt-lab126 \
+    --name mxcfb_probe --definition
+just resource tag 1234
+just resource tag-source 1234 1260 1271
+just resource outline-scope 1234
+just resource tag-scope --levels 1 1260
+just resource tag-diff 1234 9182
+```
+
+Tag search fields are ANDed; repeating a field matches any supplied value.
+Exact names, qualified names, languages, kinds, roles, access, scopes, paths,
+and revision context are supported, along with explicit prefix filters.
+Results use an opaque cursor and bounded `--limit`. Definitions are the
+default in file outlines; `--references` includes parser-reported references.
+Tag IDs are intentionally not stable across a database rebuild.
+
+Source requests read pinned Git blobs, not checkout contents. A configured
+worktree file can be used as a convenient alias with `--worktree PATH` for
+`outline`, `file-source`, and `locate`; the tool maps it back to its manifest
+revision and warns if the checkout is dirty. Batch tag reads load each blob
+once, merge overlapping or adjacent regions, retain the exact bounds of every
+requested tag, and enforce line and character budgets.
+
+The higher-level archaeology commands remain summary-oriented:
+
+```sh
+just resource references --repository linux memcpy
+just resource locate linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c 240
+just resource outline-diff linux 2.6.26-imx35-pdk \
+    2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c
+just resource history --path drivers/video/mxc/mxcfb.c linux mxcfb_probe
+just resource tag-facets
+```
+
+`references` is best-effort Ctags output, not a compiler-accurate call graph.
+`locate` returns containing tags and their enclosing chain, or nearby tags
+when no indexed range contains the line. `outline-diff` classifies symbols as
+added, removed, unchanged, changed, or ambiguous without returning a file
+diff. `history` follows manifest revision order and collapses consecutive
+revisions which reuse the same indexed tags. All code-navigation commands
+accept `--json`.
+
 ### Document text
 
 `just resource index` drives each document's extractor and stores its yielded
@@ -252,10 +311,16 @@ uv run --project tools/paper-resources paper-resources-mcp \
 An MCP host should launch that command with the Paper Linux repository as its
 working directory. `just resource-mcp` is an equivalent convenience command.
 The server exposes typed tools to inspect documents, repositories, revisions,
-patches, and worktrees; compare revision path summaries; diff one file; search
-indexed text; read physical PDF pages; inspect index status; and update
-document indexes. It also exposes corresponding JSON resources. Resource
-templates use the following URI forms:
+patches, and worktrees; navigate indexed code; compare revision summaries;
+search indexed text; read physical PDF pages; inspect index status; and update
+document indexes. Code-navigation tools are named for the operation they
+perform: `search_code_tags`, `outline_file`, `outline_scope`, `inspect_tags`,
+`read_tagged_code`, `read_code_file`, `read_enclosing_scope`,
+`diff_tagged_code`, `describe_code_index`, `find_references`,
+`locate_code_at_line`, `compare_file_outlines`, and `trace_symbol_history`.
+`search_code_tags` can include source for at most 20 results to avoid an extra
+round trip when a query is already precise. It also exposes corresponding
+JSON resources. Resource templates use the following URI forms:
 
 ```text
 paper-resource://documents/{document_id}
@@ -268,6 +333,9 @@ paper-resource://revisions/{repository_id}/{revision_id}
 paper-resource://worktrees/{repository_id}
 paper-resource://worktrees/{repository_id}/{revision_id}
 paper-resource://worktrees/{repository_id}/{revision_id}/{worktree_id}
+paper-resource://code/tags/{tag_id}
+paper-resource://code/tags/{tag_id}/source
+paper-resource://code/tags/{tag_id}/scope
 ```
 
 Resource population is deliberately not exposed over MCP; continue to use
