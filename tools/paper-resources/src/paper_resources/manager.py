@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import sqlite3
 from threading import RLock
 from typing import Any, Literal
 
 from . import (
     artifacts, catalog_index, code_navigation, ctags_index, database,
-    git_resources,
+    git_resources, repository_index,
 )
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
@@ -688,21 +689,32 @@ class ResourceManager:
 
     def outline_code_file(
         self,
-        repository: str,
-        revision: str,
-        path: str,
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
         *,
+        worktree_path: str | Path | None = None,
         include_references: bool = False,
         limit: int = 1000,
     ) -> code_navigation.CodeFileOutline:
         """Return a compact source-ordered outline for one revision file."""
-        self._revision_manifest(repository, revision)
-        normalized_path = git_resources.validate_repository_path(path)
+        repository, revision, path, warning = self._resolve_code_file_selector(
+            repository, revision, path, worktree_path
+        )
         with self._database_lock:
-            return code_navigation.outline_file(
+            outline = code_navigation.outline_file(
                 self._database(create=False), repository, revision,
-                normalized_path, include_references=include_references,
+                path, include_references=include_references,
                 limit=limit,
+            )
+            if warning is None:
+                return outline
+            file = code_navigation.CodeFile(
+                outline.file.repository, outline.file.revision,
+                outline.file.path, outline.file.blob_oid, warning,
+            )
+            return code_navigation.CodeFileOutline(
+                file, outline.items, outline.total, outline.truncated
             )
 
     def outline_code_scope(
@@ -717,6 +729,132 @@ class ResourceManager:
             return code_navigation.outline_scope(
                 self._database(create=False), tag_id,
                 include_references=include_references, limit=limit,
+            )
+
+    def _resolve_code_file_selector(
+        self,
+        repository: str | None,
+        revision: str | None,
+        path: str | None,
+        worktree_path: str | Path | None,
+    ) -> tuple[str, str, str, str | None]:
+        canonical = (repository, revision, path)
+        if worktree_path is not None:
+            if any(value is not None for value in canonical):
+                raise ResourceError(
+                    "select a code file by repository/revision/path or worktree path, not both"
+                )
+            requested = Path(worktree_path).resolve()
+            matches: list[tuple[int, dict[str, Any], dict[str, Any], dict[str, Any], Path]] = []
+            for repository_manifest in self.repositories:
+                for revision_manifest in repository_manifest.get("revisions", []):
+                    for worktree in revision_manifest.get("worktrees", []):
+                        root = (self.settings.root / worktree["path"]).resolve()
+                        try:
+                            relative = requested.relative_to(root)
+                        except ValueError:
+                            continue
+                        if relative == Path("."):
+                            raise ResourceError("worktree path must identify a file")
+                        matches.append((
+                            len(root.parts), repository_manifest, revision_manifest,
+                            worktree, relative,
+                        ))
+            if not matches:
+                raise ResourceError(
+                    f"path is not inside a configured resource worktree: {requested}"
+                )
+            _length, repository_manifest, revision_manifest, worktree, relative = max(
+                matches, key=lambda item: item[0]
+            )
+            info = self._worktree_info_v2(
+                repository_manifest, revision_manifest, worktree
+            )
+            if not info.available:
+                raise ResourceError(
+                    f"worktree is not available: {repository_manifest['id']}:"
+                    f"{revision_manifest['id']}:{worktree['id']} ({info.status})"
+                )
+            warning = (
+                "worktree has uncommitted changes; source was read from the pinned Git blob"
+                if info.dirty else None
+            )
+            return (
+                repository_manifest["id"], revision_manifest["id"],
+                git_resources.validate_repository_path(relative.as_posix()), warning,
+            )
+        if any(value is None for value in canonical):
+            raise ResourceError(
+                "repository, revision, and path are required unless worktree_path is used"
+            )
+        assert repository is not None and revision is not None and path is not None
+        self._revision_manifest(repository, revision)
+        return repository, revision, git_resources.validate_repository_path(path), None
+
+    def _read_code_blob(self, repository: str, oid: bytes) -> bytes:
+        manifest = self.repositories_by_id.get(repository)
+        if manifest is None:
+            raise ResourceError(f"unknown repository ID: {repository}")
+        return repository_index.read_blob(manifest, self.settings.root, oid)
+
+    def read_code_file(
+        self,
+        *,
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | Path | None = None,
+        line_start: int = 1,
+        line_end: int | None = None,
+        numbered: bool = True,
+        max_lines: int = 5000,
+        max_chars: int = 200_000,
+    ) -> code_navigation.CodeFileSource:
+        """Read a bounded region from a pinned revision file's Git blob."""
+        repository, revision, path, warning = self._resolve_code_file_selector(
+            repository, revision, path, worktree_path
+        )
+        with self._database_lock:
+            return code_navigation.read_file_source(
+                self._database(create=False), repository, revision, path,
+                self._read_code_blob, line_start=line_start, line_end=line_end,
+                numbered=numbered, max_lines=max_lines, max_chars=max_chars,
+                warning=warning,
+            )
+
+    def read_tagged_code(
+        self,
+        tag_ids: list[int] | tuple[int, ...],
+        *,
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        context_lines: int = 0,
+        numbered: bool = True,
+        max_lines: int = 5000,
+        max_chars: int = 200_000,
+    ) -> code_navigation.CodeSourceBatch:
+        """Read and coalesce source regions identified by opaque tag IDs."""
+        if revision is not None and repository is None:
+            raise ResourceError("repository is required when filtering by revision")
+        if path is not None and (repository is None or revision is None):
+            raise ResourceError(
+                "repository and revision are required when filtering by path"
+            )
+        if repository is not None:
+            if revision is not None:
+                self._revision_manifest(repository, revision)
+            elif repository not in self.repositories_by_id:
+                raise ResourceError(f"unknown repository ID: {repository}")
+        normalized_path = (
+            git_resources.validate_repository_path(path) if path is not None else None
+        )
+        with self._database_lock:
+            return code_navigation.read_tagged_source(
+                self._database(create=False), tag_ids, self._read_code_blob,
+                repository=repository, revision=revision, path=normalized_path,
+                context_lines=context_lines, numbered=numbered,
+                max_lines=max_lines, max_chars=max_chars,
             )
 
     def index_status(

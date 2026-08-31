@@ -1128,6 +1128,34 @@ class PaperResourcesTest(unittest.TestCase):
                 "test-repository", "v1", "../driver.c"
             )
 
+        function = next(item for item in outline.items if item.name == "driver_start")
+        batch = resource_manager.read_tagged_code(
+            [device.tag_id, state.tag_id, function.tag_id],
+            repository="test-repository", revision="v1", path="driver.c",
+        )
+        self.assertEqual(len(batch.regions), 1)
+        self.assertEqual(
+            {bounds.tag_id for bounds in batch.regions[0].tags},
+            {device.tag_id, state.tag_id, function.tag_id},
+        )
+        self.assertIn("1 | struct device", batch.regions[0].source)
+        self.assertIn("2 | static int driver_start", batch.regions[0].source)
+
+        file_source = resource_manager.read_code_file(
+            repository="test-repository", revision="v1", path="driver.c",
+            line_start=2, line_end=2,
+        )
+        self.assertEqual(file_source.line_start, 2)
+        self.assertIn("driver_start", file_source.source)
+        self.assertNotIn("struct device", file_source.source)
+
+        worktree_file = self.resources / "worktrees/test-v1/driver.c"
+        worktree_file.write_text("dirty contents\n", encoding="utf-8")
+        pinned = resource_manager.read_code_file(worktree_path=worktree_file)
+        self.assertIn("struct device", pinned.source)
+        self.assertNotIn("dirty contents", pinned.source)
+        self.assertIn("uncommitted changes", pinned.file.warning or "")
+
     def test_populate_one_worktree(self) -> None:
         self.tool(
             "populate", "--root", str(self.resources),

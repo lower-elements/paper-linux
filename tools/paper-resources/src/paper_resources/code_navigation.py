@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import base64
 import json
 import sqlite3
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .config import ResourceError
 from .git_resources import oid_to_hex
@@ -85,6 +85,7 @@ class CodeFile:
     revision: str
     path: str
     blob_oid: str
+    warning: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,38 @@ class CodeScopeOutline:
     scope: CodeTagInfo
     children: tuple[CodeOutlineItem, ...]
     total: int
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodeTagBounds:
+    tag_id: int
+    line_start: int
+    line_end: int
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSourceRegion:
+    file: CodeFile
+    line_start: int
+    line_end: int
+    tags: tuple[CodeTagBounds, ...]
+    source: str
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSourceBatch:
+    regions: tuple[CodeSourceRegion, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CodeFileSource:
+    file: CodeFile
+    line_start: int
+    line_end: int
+    source: str
     truncated: bool
 
 
@@ -508,3 +541,145 @@ def outline_scope(
         include_references=include_references, limit=limit,
     )
     return CodeScopeOutline(scope, children, total, truncated)
+
+
+def _source_lines(content: bytes) -> list[str]:
+    return content.decode("utf-8", errors="replace").splitlines()
+
+
+def _format_lines(lines: list[str], first_line: int, numbered: bool) -> str:
+    if not numbered:
+        return "\n".join(lines)
+    width = max(1, len(str(first_line + len(lines) - 1)))
+    return "\n".join(
+        f"{number:>{width}} | {line}"
+        for number, line in enumerate(lines, first_line)
+    )
+
+
+def read_file_source(
+    connection: sqlite3.Connection,
+    repository: str,
+    revision: str,
+    path: str,
+    read_blob: Callable[[str, bytes], bytes],
+    *,
+    line_start: int = 1,
+    line_end: int | None = None,
+    numbered: bool = True,
+    max_lines: int = 5000,
+    max_chars: int = 200_000,
+    warning: str | None = None,
+) -> CodeFileSource:
+    """Read a bounded line range from the indexed Git blob for one file."""
+    if line_start < 1:
+        raise ResourceError("source line start must be at least 1")
+    if line_end is not None and line_end < line_start:
+        raise ResourceError("source line end must not precede its start")
+    if max_lines < 1 or max_chars < 1:
+        raise ResourceError("source output limits must be positive")
+    file, _analysis_id = resolve_file(connection, repository, revision, path)
+    file = CodeFile(file.repository, file.revision, file.path, file.blob_oid, warning)
+    lines = _source_lines(read_blob(repository, bytes.fromhex(file.blob_oid)))
+    if line_start > len(lines):
+        raise ResourceError(
+            f"source line {line_start} is beyond the end of {repository}:{revision}:{path}"
+        )
+    requested_end = len(lines) if line_end is None else min(line_end, len(lines))
+    actual_end = min(requested_end, line_start + max_lines - 1)
+    selected = lines[line_start - 1:actual_end]
+    source = _format_lines(selected, line_start, numbered)
+    char_truncated = len(source) > max_chars
+    if char_truncated:
+        source = source[:max_chars]
+    truncated = actual_end < requested_end or char_truncated
+    return CodeFileSource(file, line_start, actual_end, source, truncated)
+
+
+def read_tagged_source(
+    connection: sqlite3.Connection,
+    tag_ids: list[int] | tuple[int, ...],
+    read_blob: Callable[[str, bytes], bytes],
+    *,
+    repository: str | None = None,
+    revision: str | None = None,
+    path: str | None = None,
+    context_lines: int = 0,
+    numbered: bool = True,
+    max_lines: int = 5000,
+    max_chars: int = 200_000,
+) -> CodeSourceBatch:
+    """Read tag regions, merging overlap and reading each Git blob once."""
+    if context_lines < 0:
+        raise ResourceError("source context lines must be at least 0")
+    if max_lines < 1 or max_chars < 1:
+        raise ResourceError("source output limits must be positive")
+    tags = inspect_tags(connection, tag_ids)
+    grouped: dict[tuple[str, str], list[tuple[CodeTagInfo, CodeOccurrence]]] = {}
+    for tag in tags:
+        matching = tuple(
+            occurrence for occurrence in tag.occurrences
+            if (repository is None or occurrence.repository == repository)
+            and (revision is None or occurrence.revision == revision)
+            and (path is None or occurrence.path == path)
+        )
+        if not matching:
+            raise ResourceError(
+                f"code tag {tag.tag_id} has no occurrence matching the requested file context"
+            )
+        occurrence = matching[0]
+        grouped.setdefault(
+            (occurrence.repository, occurrence.blob_oid), []
+        ).append((tag, occurrence))
+
+    regions: list[CodeSourceRegion] = []
+    remaining_lines = max_lines
+    remaining_chars = max_chars
+    globally_truncated = False
+    for (repository_name, blob_oid), items in grouped.items():
+        lines = _source_lines(read_blob(repository_name, bytes.fromhex(blob_oid)))
+        candidates = sorted(((
+            max(1, tag.line_start - context_lines),
+            min(len(lines), (tag.line_end or tag.line_start) + context_lines),
+            tag,
+            occurrence,
+        ) for tag, occurrence in items), key=lambda item: (item[0], item[1], item[2].tag_id))
+        merged: list[tuple[int, int, list[tuple[CodeTagInfo, CodeOccurrence]]]] = []
+        for start, end, tag, occurrence in candidates:
+            if merged and start <= merged[-1][1] + 1:
+                previous_start, previous_end, previous_tags = merged[-1]
+                merged[-1] = (
+                    previous_start, max(previous_end, end),
+                    [*previous_tags, (tag, occurrence)],
+                )
+            else:
+                merged.append((start, end, [(tag, occurrence)]))
+        for start, requested_end, region_tags in merged:
+            if remaining_lines <= 0 or remaining_chars <= 0:
+                globally_truncated = True
+                break
+            end = min(requested_end, start + remaining_lines - 1)
+            source = _format_lines(lines[start - 1:end], start, numbered)
+            char_truncated = len(source) > remaining_chars
+            if char_truncated:
+                source = source[:remaining_chars]
+            truncated = end < requested_end or char_truncated
+            occurrence = region_tags[0][1]
+            regions.append(CodeSourceRegion(
+                file=CodeFile(
+                    occurrence.repository, occurrence.revision,
+                    occurrence.path, occurrence.blob_oid,
+                ),
+                line_start=start, line_end=end,
+                tags=tuple(CodeTagBounds(
+                    tag.tag_id, tag.line_start, tag.line_end or tag.line_start
+                ) for tag, _occurrence in region_tags),
+                source=source, truncated=truncated,
+            ))
+            remaining_lines -= max(0, end - start + 1)
+            remaining_chars -= len(source)
+            globally_truncated |= truncated
+        if remaining_lines <= 0 or remaining_chars <= 0:
+            globally_truncated = True
+            break
+    return CodeSourceBatch(tuple(regions), globally_truncated)
