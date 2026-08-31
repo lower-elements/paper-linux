@@ -25,6 +25,8 @@ just resource revisions linux
 just resource revision linux 2.6.26-rt-lab126
 just resource worktrees linux 2.6.26-rt-lab126
 just resource worktree linux 2.6.26-rt-lab126 default
+just resource compare linux 2.6.26 2.6.26-imx35-pdk
+just resource diff linux 2.6.26 2.6.26-imx35-pdk drivers/video/Kconfig
 just resource index
 just resource index-status
 just resource search "display update waveform"
@@ -76,6 +78,40 @@ revision selector prepares the revision and its exact ancestry without making
 a checkout; a worktree selector creates the requested checkout, while full or
 repository population creates every declared worktree. Existing compatible
 object stores are reused.
+
+### Comparing revisions
+
+`compare` lists changed repository paths and their Git status without returning
+file contents. It defaults to 200 entries so a kernel-wide comparison cannot
+accidentally flood a terminal or agent context; use `--offset` and `--limit` to
+page through the result, or `--path` to restrict it to one file or directory:
+
+```sh
+just resource compare linux 2.6.26 2.6.26-imx35-pdk
+just resource compare --path drivers/video --limit 50 \
+    linux 2.6.26-imx35-pdk 2.6.26-rt-lab126
+just resource compare --offset 200 --limit 200 \
+    linux 2.6.26 2.6.26-imx35-pdk
+```
+
+The result includes the total number of changed paths and status counts for the
+complete filtered comparison even when only one page is returned. Rename
+detection is deliberately disabled: renames appear as a deletion and addition,
+which keeps summaries tree-only and avoids fetching file blobs merely to
+calculate similarity.
+
+`diff` requires exactly one normalized repository-relative file path and
+returns its unified diff. It rejects directories, missing paths, absolute
+paths, and parent traversal, preventing an unrestricted multi-file diff:
+
+```sh
+just resource diff linux 2.6.26-imx35-pdk 2.6.26-rt-lab126 \
+    drivers/video/mxc/mxcfb_eink.c
+```
+
+Both commands accept `--json`. The MCP server exposes the same operations as
+the read-only `compare_revisions` and `diff_revision_file` tools; comparison
+results are likewise paginated and may be narrowed by repository path.
 
 ## Document index
 
@@ -193,9 +229,10 @@ uv run --project tools/paper-resources paper-resources-mcp \
 An MCP host should launch that command with the Paper Linux repository as its
 working directory. `just resource-mcp` is an equivalent convenience command.
 The server exposes typed tools to inspect documents, repositories, revisions,
-patches, and worktrees; search indexed text; read physical PDF pages; inspect
-index status; and update document indexes. It also exposes corresponding JSON
-resources. Resource templates use the following URI forms:
+patches, and worktrees; compare revision path summaries; diff one file; search
+indexed text; read physical PDF pages; inspect index status; and update
+document indexes. It also exposes corresponding JSON resources. Resource
+templates use the following URI forms:
 
 ```text
 paper-resource://documents/{document_id}

@@ -18,7 +18,7 @@ from . import catalog_index
 from .config import ResourceError, ResourceSettings
 from .manager import (
     CatalogInfo, PatchInfo, ResourceInfo, ResourceKind, ResourceManager,
-    RevisionInfo, WorktreeInfo,
+    RevisionComparison, RevisionFileDiff, RevisionInfo, WorktreeInfo,
 )
 
 
@@ -118,6 +118,39 @@ def create_server(manager: ResourceManager) -> MCPServer:
         """Return pinned identity, provenance, and worktrees for one revision."""
         with domain_errors():
             return manager.get_revision(repository_id, revision_id)
+
+    @server.tool(title="Compare source revisions", annotations=READ_ONLY)
+    def compare_revisions(
+        repository_id: str,
+        from_revision_id: str,
+        to_revision_id: str,
+        path: str | None = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> RevisionComparison:
+        """List changed paths and statuses without returning file contents."""
+        with domain_errors():
+            return manager.compare_revisions(
+                repository_id,
+                from_revision_id,
+                to_revision_id,
+                path=path,
+                offset=offset,
+                limit=limit,
+            )
+
+    @server.tool(title="Diff one revision file", annotations=READ_ONLY)
+    def diff_revision_file(
+        repository_id: str,
+        from_revision_id: str,
+        to_revision_id: str,
+        path: Annotated[str, Field(min_length=1)],
+    ) -> RevisionFileDiff:
+        """Return a unified diff for exactly one repository-relative file path."""
+        with domain_errors():
+            return manager.diff_revision_file(
+                repository_id, from_revision_id, to_revision_id, path
+            )
 
     @server.tool(title="List patch artifacts", annotations=READ_ONLY)
     def list_patches(tag: str | None = None) -> list[PatchInfo]:

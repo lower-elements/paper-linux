@@ -88,7 +88,8 @@ class PaperResourcesTest(unittest.TestCase):
         source.mkdir()
         git("init", "-b", "main", cwd=source)
         (source / "README").write_text("first\n", encoding="utf-8")
-        git("add", "README", cwd=source)
+        (source / "obsolete.txt").write_text("move me\n", encoding="utf-8")
+        git("add", "README", "obsolete.txt", cwd=source)
         git(
             "-c",
             "user.name=Test",
@@ -105,6 +106,27 @@ class PaperResourcesTest(unittest.TestCase):
         git("branch", "alternate", cwd=source)
         commit = git("rev-parse", "v1^{commit}", cwd=source)
         tree = git("rev-parse", "v1^{tree}", cwd=source)
+        git("switch", "alternate", cwd=source)
+        (source / "README").write_text("second\n", encoding="utf-8")
+        git("mv", "obsolete.txt", "renamed.txt", cwd=source)
+        (source / "drivers").mkdir()
+        (source / "drivers/new.c").write_text("int new_driver;\n", encoding="utf-8")
+        git("add", "README", "drivers/new.c", cwd=source)
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "-m",
+            "alternate",
+            cwd=source,
+        )
+        alternate_commit = git("rev-parse", "HEAD^{commit}", cwd=source)
+        alternate_tree = git("rev-parse", "HEAD^{tree}", cwd=source)
+        git("switch", "main", cwd=source)
 
         document = self.base / "source-document.pdf"
         write_test_pdf(
@@ -150,8 +172,8 @@ class PaperResourcesTest(unittest.TestCase):
                             "description": "test alternate release",
                             "author": "test",
                             "tags": ["test"],
-                            "commit": commit,
-                            "tree": tree,
+                            "commit": alternate_commit,
+                            "tree": alternate_tree,
                             "source": {"remote": "origin", "ref": "refs/heads/alternate"},
                             "worktrees": [
                                 {"id": "default", "path": "worktrees/test-alternate"}
@@ -224,6 +246,65 @@ class PaperResourcesTest(unittest.TestCase):
             "check", "--root", str(self.resources),
             "--worktree", "test-repository", "v1", "default",
         )
+
+    def test_compare_revisions_and_diff_one_file(self) -> None:
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--revision", "test-repository", "alternate",
+        )
+        comparison = json.loads(
+            self.tool(
+                "compare", "--root", str(self.resources), "--limit", "2", "--json",
+                "test-repository", "v1", "alternate",
+            ).stdout
+        )
+        self.assertEqual(comparison["total"], 4)
+        self.assertEqual(comparison["status_counts"], {"A": 2, "D": 1, "M": 1})
+        self.assertEqual(len(comparison["changes"]), 2)
+
+        readme = json.loads(
+            self.tool(
+                "compare", "--root", str(self.resources), "--path", "README", "--json",
+                "test-repository", "v1", "alternate",
+            ).stdout
+        )
+        self.assertEqual(
+            readme["changes"], [{"status": "M", "path": "README"}]
+        )
+
+        final_page = json.loads(
+            self.tool(
+                "compare", "--root", str(self.resources), "--offset", "3", "--limit", "2", "--json",
+                "test-repository", "v1", "alternate",
+            ).stdout
+        )
+        self.assertEqual(len(final_page["changes"]), 1)
+
+        file_diff = self.tool(
+            "diff", "--root", str(self.resources),
+            "test-repository", "v1", "alternate", "README",
+        ).stdout
+        self.assertIn("-first", file_diff)
+        self.assertIn("+second", file_diff)
+
+        directory = self.tool(
+            "diff", "--root", str(self.resources),
+            "test-repository", "v1", "alternate", "drivers",
+            expected=2,
+        )
+        self.assertIn("path is not a file", directory.stderr)
+        missing = self.tool(
+            "diff", "--root", str(self.resources),
+            "test-repository", "v1", "alternate", "missing.c",
+            expected=2,
+        )
+        self.assertIn("file does not exist", missing.stderr)
+        traversal = self.tool(
+            "compare", "--root", str(self.resources), "--path", "../outside",
+            "test-repository", "v1", "alternate",
+            expected=2,
+        )
+        self.assertIn("invalid repository-relative path", traversal.stderr)
 
     def test_patch_constructs_pinned_revision_deterministically(self) -> None:
         patch_path = self.base / "change.patch"
@@ -482,6 +563,10 @@ class PaperResourcesTest(unittest.TestCase):
 
     def test_mcp_tools_and_resources(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--revision", "test-repository", "alternate",
+        )
         self.tool("index", "--root", str(self.resources))
         with sqlite3.connect(self.resources / "resources.db") as connection:
             section_id = connection.execute(
@@ -525,6 +610,8 @@ class PaperResourcesTest(unittest.TestCase):
                     "get_repository",
                     "list_revisions",
                     "get_revision",
+                    "compare_revisions",
+                    "diff_revision_file",
                     "list_patches",
                     "get_patch",
                     "list_worktrees",
@@ -535,6 +622,9 @@ class PaperResourcesTest(unittest.TestCase):
             tools_by_name = {tool.name: tool for tool in tools}
             self.assertTrue(
                 tools_by_name["search_documents"].annotations.read_only_hint
+            )
+            self.assertTrue(
+                tools_by_name["compare_revisions"].annotations.read_only_hint
             )
             self.assertFalse(
                 tools_by_name["index_documents"].annotations.read_only_hint
@@ -583,6 +673,31 @@ class PaperResourcesTest(unittest.TestCase):
                 "get_resource", {"resource_id": "test-document"}
             )
             self.assertTrue(detail.structured_content["available"])
+
+            comparison = await server.call_tool(
+                "compare_revisions",
+                {
+                    "repository_id": "test-repository",
+                    "from_revision_id": "v1",
+                    "to_revision_id": "alternate",
+                    "path": "README",
+                },
+            )
+            self.assertEqual(comparison.structured_content["total"], 1)
+            self.assertEqual(
+                comparison.structured_content["changes"],
+                [{"status": "M", "path": "README"}],
+            )
+            file_diff = await server.call_tool(
+                "diff_revision_file",
+                {
+                    "repository_id": "test-repository",
+                    "from_revision_id": "v1",
+                    "to_revision_id": "alternate",
+                    "path": "README",
+                },
+            )
+            self.assertIn("+second", file_diff.structured_content["diff"])
 
             with self.assertRaisesRegex(ToolError, "unknown resource ID"):
                 await server.call_tool(

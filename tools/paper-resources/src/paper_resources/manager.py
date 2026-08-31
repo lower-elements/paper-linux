@@ -64,6 +64,34 @@ class RevisionInfo:
 
 
 @dataclass(frozen=True)
+class RevisionPathChange:
+    status: str
+    path: str
+
+
+@dataclass(frozen=True)
+class RevisionComparison:
+    repository_id: str
+    from_revision_id: str
+    to_revision_id: str
+    path: str | None
+    total: int
+    offset: int
+    limit: int
+    status_counts: dict[str, int]
+    changes: list[RevisionPathChange]
+
+
+@dataclass(frozen=True)
+class RevisionFileDiff:
+    repository_id: str
+    from_revision_id: str
+    to_revision_id: str
+    path: str
+    diff: str
+
+
+@dataclass(frozen=True)
 class PatchInfo:
     id: str
     description: str
@@ -303,6 +331,99 @@ class ResourceManager:
     def get_revision(self, repository_id: str, revision_id: str) -> RevisionInfo:
         repository, revision = self._revision_manifest(repository_id, revision_id)
         return self._revision_info(repository, revision)
+
+    def _revision_pair(
+        self, repository_id: str, from_revision_id: str, to_revision_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], Path]:
+        repository, from_revision = self._revision_manifest(
+            repository_id, from_revision_id
+        )
+        _repository, to_revision = self._revision_manifest(
+            repository_id, to_revision_id
+        )
+        repository_path = self.settings.root / repository["path"]
+        if not (repository_path / "HEAD").is_file():
+            raise ResourceError(f"repository is not populated: {repository_id}")
+        for revision in (from_revision, to_revision):
+            commit = git_resources.git_object(
+                repository_path, f"{revision['commit']}^{{commit}}"
+            )
+            if commit is None:
+                raise ResourceError(
+                    f"revision is not populated: {repository_id}:{revision['id']}"
+                )
+            git_resources.verify_revision_objects(
+                repository_path, repository_id, revision, commit
+            )
+        return repository, from_revision, to_revision, repository_path
+
+    def compare_revisions(
+        self,
+        repository_id: str,
+        from_revision_id: str,
+        to_revision_id: str,
+        *,
+        path: str | None = None,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> RevisionComparison:
+        if offset < 0:
+            raise ResourceError("comparison offset must be at least 0")
+        if limit < 1:
+            raise ResourceError("comparison limit must be at least 1")
+        _repository, from_revision, to_revision, repository_path = (
+            self._revision_pair(repository_id, from_revision_id, to_revision_id)
+        )
+        normalized_path = (
+            git_resources.validate_repository_path(path) if path is not None else None
+        )
+        raw_changes = git_resources.compare_revision_paths(
+            repository_path,
+            from_revision["commit"],
+            to_revision["commit"],
+            normalized_path,
+        )
+        status_counts: dict[str, int] = {}
+        for status, _changed_path in raw_changes:
+            status_counts[status] = status_counts.get(status, 0) + 1
+        return RevisionComparison(
+            repository_id=repository_id,
+            from_revision_id=from_revision_id,
+            to_revision_id=to_revision_id,
+            path=normalized_path,
+            total=len(raw_changes),
+            offset=offset,
+            limit=limit,
+            status_counts=status_counts,
+            changes=[
+                RevisionPathChange(status=status, path=changed_path)
+                for status, changed_path in raw_changes[offset:offset + limit]
+            ],
+        )
+
+    def diff_revision_file(
+        self,
+        repository_id: str,
+        from_revision_id: str,
+        to_revision_id: str,
+        path: str,
+    ) -> RevisionFileDiff:
+        _repository, from_revision, to_revision, repository_path = (
+            self._revision_pair(repository_id, from_revision_id, to_revision_id)
+        )
+        normalized_path = git_resources.validate_repository_path(path)
+        return RevisionFileDiff(
+            repository_id=repository_id,
+            from_revision_id=from_revision_id,
+            to_revision_id=to_revision_id,
+            path=normalized_path,
+            diff=git_resources.revision_file_diff(
+                repository_path,
+                from_revision["commit"],
+                to_revision["commit"],
+                normalized_path,
+            ),
+        )
 
     def list_worktrees(
         self, repository_id: str | None = None, revision_id: str | None = None

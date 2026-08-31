@@ -134,6 +134,37 @@ def print_metadata(items: list[Any], *, json_output: bool) -> None:
             print(f"Reason: {reference['reason']}")
 
 
+def print_revision_comparison(result: Any) -> None:
+    print(
+        f"{result.repository_id}:{result.from_revision_id}..{result.to_revision_id}"
+    )
+    if result.path is not None:
+        print(f"Path: {result.path}")
+    counts = ", ".join(
+        f"{status} {count}" for status, count in sorted(result.status_counts.items())
+    )
+    print(f"Changed paths: {result.total}" + (f" ({counts})" if counts else ""))
+    if not result.changes:
+        if result.total:
+            print("No paths in this page")
+        return
+    first = result.offset + 1
+    last = result.offset + len(result.changes)
+    print(f"Showing: {first}-{last} of {result.total}")
+    for change in result.changes:
+        print(f"{change.status}\t{change.path}")
+
+
+def print_revision_file_diff(result: Any) -> None:
+    if not result.diff:
+        print(
+            f"no changes: {result.repository_id}:{result.from_revision_id}.."
+            f"{result.to_revision_id} {result.path}"
+        )
+        return
+    print(result.diff, end="" if result.diff.endswith("\n") else "\n")
+
+
 def print_extraction(result: dict[str, Any]) -> None:
     pages_by_chunk: dict[int, list[int]] = {}
     for relation in result["chunk_pages"]:
@@ -205,6 +236,28 @@ def parser() -> argparse.ArgumentParser:
     worktree_parser.add_argument("revision")
     worktree_parser.add_argument("worktree")
     worktree_parser.add_argument("--json", action="store_true")
+
+    compare_parser = subparsers.add_parser(
+        "compare", help="list changed paths between two source revisions"
+    )
+    compare_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    compare_parser.add_argument("--path", help="restrict changes to one repository path")
+    compare_parser.add_argument("--offset", type=nonnegative_integer, default=0)
+    compare_parser.add_argument("--limit", type=positive_integer, default=200)
+    compare_parser.add_argument("--json", action="store_true", help="print JSON output")
+    compare_parser.add_argument("repository")
+    compare_parser.add_argument("from_revision", metavar="FROM")
+    compare_parser.add_argument("to_revision", metavar="TO")
+
+    diff_parser = subparsers.add_parser(
+        "diff", help="show a unified diff for one file between two source revisions"
+    )
+    diff_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    diff_parser.add_argument("--json", action="store_true", help="print JSON output")
+    diff_parser.add_argument("repository")
+    diff_parser.add_argument("from_revision", metavar="FROM")
+    diff_parser.add_argument("to_revision", metavar="TO")
+    diff_parser.add_argument("file", metavar="FILE")
 
     index_parser = subparsers.add_parser("index", help="index document text for search")
     index_parser.add_argument("--root", type=Path, help="override the configured resource directory")
@@ -309,6 +362,29 @@ def main(arguments: list[str] | None = None) -> int:
             else:
                 items = [manager.get_worktree(args.repository, args.revision, args.worktree)]
             print_metadata(items, json_output=args.json)
+            return 0
+        if args.command == "compare":
+            comparison = manager.compare_revisions(
+                args.repository,
+                args.from_revision,
+                args.to_revision,
+                path=args.path,
+                offset=args.offset,
+                limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(comparison)))
+            else:
+                print_revision_comparison(comparison)
+            return 0
+        if args.command == "diff":
+            file_diff = manager.diff_revision_file(
+                args.repository, args.from_revision, args.to_revision, args.file
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(file_diff)))
+            else:
+                print_revision_file_diff(file_diff)
             return 0
         if args.command in ("index", "index-status"):
             if args.command == "index":

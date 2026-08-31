@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import PurePosixPath
 import os
 import subprocess
 import tempfile
@@ -16,6 +17,7 @@ def run_git(
     *,
     cwd: Path | None = None,
     capture: bool = False,
+    strip_output: bool = True,
     environment: Mapping[str, str] | None = None,
 ) -> str:
     command = ["git", *arguments]
@@ -37,7 +39,9 @@ def run_git(
     except subprocess.CalledProcessError as error:
         detail = error.stderr.strip() if error.stderr else f"exit status {error.returncode}"
         raise ResourceError(f"{' '.join(command)}: {detail}") from error
-    return result.stdout.strip() if capture else ""
+    if not capture:
+        return ""
+    return result.stdout.strip() if strip_output else result.stdout
 
 
 def remote_url(repository_path: Path, name: str) -> str | None:
@@ -249,6 +253,80 @@ def revision_dependencies(
             selected.add(parent)
             pending.append(parent)
     return selected
+
+
+def validate_repository_path(path: str) -> str:
+    if not path or "\0" in path:
+        raise ResourceError("repository path must not be empty")
+    parsed = PurePosixPath(path)
+    normalized = str(parsed)
+    if parsed.is_absolute() or ".." in parsed.parts or normalized in ("", "."):
+        raise ResourceError(f"invalid repository-relative path: {path}")
+    if normalized != path:
+        raise ResourceError(
+            f"repository path must be normalized as {normalized}: {path}"
+        )
+    return normalized
+
+
+def literal_pathspec(path: str) -> str:
+    return f":(top,literal){validate_repository_path(path)}"
+
+
+def compare_revision_paths(
+    repository_path: Path,
+    from_commit: str,
+    to_commit: str,
+    path: str | None = None,
+) -> list[tuple[str, str]]:
+    arguments = [
+        "--git-dir", str(repository_path), "diff", "--name-status", "-z",
+        "--no-renames", from_commit, to_commit,
+    ]
+    if path is not None:
+        arguments.extend(["--", literal_pathspec(path)])
+    output = run_git(arguments, capture=True, strip_output=False)
+    if not output:
+        return []
+    fields = output.split("\0")
+    if fields[-1] == "":
+        fields.pop()
+    if len(fields) % 2:
+        raise ResourceError("git returned an invalid changed-path summary")
+    return [(fields[index], fields[index + 1]) for index in range(0, len(fields), 2)]
+
+
+def revision_file_diff(
+    repository_path: Path,
+    from_commit: str,
+    to_commit: str,
+    path: str,
+) -> str:
+    normalized = validate_repository_path(path)
+    object_types: list[str | None] = []
+    for commit in (from_commit, to_commit):
+        entry = run_git(
+            [
+                "--git-dir", str(repository_path), "ls-tree", "-z", commit,
+                "--", literal_pathspec(normalized),
+            ],
+            capture=True,
+            strip_output=False,
+        )
+        object_types.append(entry.split(" ", 2)[1] if entry else None)
+    if object_types == [None, None]:
+        raise ResourceError(f"file does not exist in either revision: {normalized}")
+    if any(item not in (None, "blob") for item in object_types):
+        raise ResourceError(f"path is not a file in both revisions where it exists: {normalized}")
+    return run_git(
+        [
+            "--git-dir", str(repository_path), "diff", "--no-color",
+            "--no-ext-diff", "--no-textconv", "--no-renames",
+            from_commit, to_commit, "--", literal_pathspec(normalized),
+        ],
+        capture=True,
+        strip_output=False,
+    )
 
 
 def worktree_status(
