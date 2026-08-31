@@ -617,6 +617,11 @@ class PaperResourcesTest(unittest.TestCase):
                         emit({"_type": "completed", "command": "generate-tags"})
                         output.flush()
                         continue
+                    emit({
+                        "_type": "error",
+                        "message": "synthetic parser notice",
+                        "notice": True,
+                    })
                     for index in range(2000):
                         emit({
                             "_type": "tag",
@@ -657,6 +662,11 @@ class PaperResourcesTest(unittest.TestCase):
                     else:
                         raise AssertionError("ctags error request unexpectedly succeeded")
                     events = list(session.analyze("large.c", b"x" * (4 * 1024 * 1024)))
+                    assert any(
+                        isinstance(event, ctags.CtagsNotice)
+                        and event.message == "synthetic parser notice"
+                        for event in events
+                    )
                     assert sum(isinstance(event, ctags.CtagsTag) for event in events) == 2000
             finally:
                 connection.close()

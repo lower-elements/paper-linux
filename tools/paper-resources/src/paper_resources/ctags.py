@@ -86,6 +86,11 @@ class CtagsTag:
 
 
 @dataclass(frozen=True, slots=True)
+class CtagsNotice:
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
 class CtagsCompleted:
     profile_id: int
     input_parser_id: int | None
@@ -93,7 +98,13 @@ class CtagsCompleted:
 
 
 CtagsEvent = (
-    CtagsProfile | CtagsParser | CtagsKind | CtagsRole | CtagsTag | CtagsCompleted
+    CtagsProfile
+    | CtagsParser
+    | CtagsKind
+    | CtagsRole
+    | CtagsTag
+    | CtagsNotice
+    | CtagsCompleted
 )
 
 
@@ -640,9 +651,15 @@ class CtagsSession:
             record_type = record.get("_type")
             if record_type == "error":
                 message = record.get("message")
+                message = message if isinstance(message, str) else "unknown error"
+                notice = record.get("notice", False)
+                if not isinstance(notice, bool):
+                    raise CtagsError("Universal Ctags emitted an invalid notice flag")
+                if notice:
+                    yield CtagsNotice(message)
+                    continue
                 request_error = (
-                    f"Universal Ctags rejected {filename}: "
-                    f"{message if isinstance(message, str) else 'unknown error'}"
+                    f"Universal Ctags rejected {filename}: {message}"
                 )
                 continue
             if request_error is not None and record_type != "completed":

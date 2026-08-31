@@ -23,6 +23,7 @@ class StoredAnalysis:
     roles: int
     qualified_names: int
     enclosing_links: int
+    notices: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,8 +304,13 @@ def store_blob_analysis(
     enclosing_links = 0
     ordinary_tags: dict[tuple[object, ...], deque[int]] = defaultdict(deque)
     pending_qualified: dict[tuple[object, ...], deque[str]] = defaultdict(deque)
+    notices: list[str] = []
     try:
         for event in events:
+            if isinstance(event, ctags.CtagsNotice):
+                notices.append(event.message)
+                continue
+
             if isinstance(event, ctags.CtagsProfile):
                 if profile_id is not None:
                     raise ResourceError("Ctags emitted more than one profile per blob")
@@ -441,6 +447,7 @@ def store_blob_analysis(
         roles=role_count,
         qualified_names=qualified_names,
         enclosing_links=enclosing_links,
+        notices=tuple(notices),
     )
 
 
@@ -548,6 +555,9 @@ def index_repositories(
                             input_name = blob.path
                             if blob.oid not in counted_oids:
                                 indexed += 1
+                            for notice in stored.notices:
+                                if len(warnings) < 100:
+                                    warnings.append(f"{blob.path}: {notice}")
                         else:
                             actual_language = analysis["language"]
                             input_name = analysis["input_name"]
