@@ -6,10 +6,11 @@ from pathlib import Path
 import sqlite3
 
 
-SCHEMA_VERSION = 6
+MINIMUM_SQLITE_VERSION = (3, 45, 0)
+SCHEMA_VERSION = 7
 
 SCHEMA = """
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;
 
 CREATE TABLE repositories (
     id TEXT PRIMARY KEY,
@@ -36,6 +37,8 @@ CREATE TABLE repository_blobs (
     PRIMARY KEY (repository_id, oid)
 ) STRICT, WITHOUT ROWID;
 
+-- A profile describes every Ctags input and output setting which can affect
+-- the interpretation of a blob analysis.
 CREATE TABLE ctags_profiles (
     id INTEGER PRIMARY KEY,
     program_name TEXT NOT NULL,
@@ -53,6 +56,8 @@ CREATE TABLE ctags_profiles (
     )
 ) STRICT;
 
+-- A profile may contain several parsers because guest parsers and subparsers
+-- can emit tags in languages other than the input language.
 CREATE TABLE ctags_parsers (
     id INTEGER PRIMARY KEY,
     profile_id INTEGER NOT NULL
@@ -64,6 +69,8 @@ CREATE TABLE ctags_parsers (
     UNIQUE (id, profile_id)
 ) STRICT;
 
+-- JSON output uses the long kind name. The optional letter is retained as
+-- Ctags profile metadata, but does not identify kinds in public interfaces.
 CREATE TABLE ctags_kinds (
     id INTEGER PRIMARY KEY,
     parser_id INTEGER NOT NULL
@@ -84,6 +91,99 @@ CREATE TABLE ctags_roles (
     UNIQUE (kind_id, name),
     UNIQUE (id, kind_id)
 ) STRICT;
+
+-- There is exactly one current analysis of a blob in a repository. Reanalysis
+-- atomically replaces its tags. A row with no tags is a successful result.
+CREATE TABLE ctags_analyses (
+    id INTEGER PRIMARY KEY,
+    repository_id TEXT NOT NULL,
+    blob_oid BLOB NOT NULL CHECK(length(blob_oid) IN (20, 32)),
+    profile_id INTEGER NOT NULL
+        REFERENCES ctags_profiles(id) ON DELETE RESTRICT,
+    input_name TEXT NOT NULL CHECK(input_name <> ''),
+    input_parser_id INTEGER,
+    UNIQUE (repository_id, blob_oid),
+    UNIQUE (id, profile_id),
+    FOREIGN KEY (repository_id, blob_oid)
+        REFERENCES repository_blobs(repository_id, oid) ON DELETE CASCADE,
+    FOREIGN KEY (input_parser_id, profile_id)
+        REFERENCES ctags_parsers(id, profile_id) ON DELETE RESTRICT
+) STRICT;
+
+CREATE TABLE ctags_tags (
+    id INTEGER PRIMARY KEY,
+    analysis_id INTEGER NOT NULL,
+    profile_id INTEGER NOT NULL,
+    parser_id INTEGER NOT NULL,
+    kind_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    name TEXT NOT NULL,
+    -- Populated by a later pass which pairs Ctags qualified extra-tags.
+    qualified_name TEXT,
+    line_start INTEGER NOT NULL CHECK(line_start > 0),
+    line_end INTEGER CHECK(line_end IS NULL OR line_end >= line_start),
+    signature TEXT,
+    typeref TEXT,
+    access TEXT,
+    scope TEXT,
+    scope_kind TEXT,
+    nth INTEGER CHECK(nth IS NULL OR nth >= 0),
+    is_file_restricted INTEGER NOT NULL
+        CHECK(is_file_restricted IN (0, 1)),
+    is_reference INTEGER NOT NULL CHECK(is_reference IN (0, 1)),
+    -- Populated later by best-effort resolution of scope and scope_kind.
+    enclosing_tag_id INTEGER
+        REFERENCES ctags_tags(id) ON DELETE SET NULL,
+    metadata BLOB CHECK(metadata IS NULL OR json_valid(metadata, 8)),
+    UNIQUE (analysis_id, ordinal),
+    UNIQUE (id, kind_id),
+    FOREIGN KEY (analysis_id, profile_id)
+        REFERENCES ctags_analyses(id, profile_id) ON DELETE CASCADE,
+    FOREIGN KEY (parser_id, profile_id)
+        REFERENCES ctags_parsers(id, profile_id) ON DELETE RESTRICT,
+    FOREIGN KEY (kind_id, parser_id)
+        REFERENCES ctags_kinds(id, parser_id) ON DELETE RESTRICT
+) STRICT;
+
+-- Exact and prefix symbol lookup before restricting results to revisions.
+CREATE INDEX ctags_tags_by_name
+    ON ctags_tags(name, analysis_id, is_reference, kind_id);
+
+-- Precise language-native qualified lookup once names have been paired.
+CREATE INDEX ctags_tags_by_qualified_name
+    ON ctags_tags(qualified_name, analysis_id, is_reference, kind_id)
+    WHERE qualified_name IS NOT NULL;
+
+-- Source-order listing and lookup around a particular line.
+CREATE INDEX ctags_tags_by_analysis_line
+    ON ctags_tags(analysis_id, line_start, ordinal);
+
+-- Members of a class, structure, namespace, or other reported scope.
+CREATE INDEX ctags_tags_by_scope
+    ON ctags_tags(scope, scope_kind, access, analysis_id, kind_id)
+    WHERE scope IS NOT NULL;
+
+-- Best-effort scope hierarchy traversal once enclosing IDs are resolved.
+CREATE INDEX ctags_tags_by_enclosing
+    ON ctags_tags(enclosing_tag_id, ordinal)
+    WHERE enclosing_tag_id IS NOT NULL;
+
+-- Definitions use is_reference = 0 rather than a redundant "def" role row.
+-- References may have multiple parser-defined roles constrained to their kind.
+CREATE TABLE ctags_tag_roles (
+    tag_id INTEGER NOT NULL,
+    kind_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (tag_id, role_id),
+    FOREIGN KEY (tag_id, kind_id)
+        REFERENCES ctags_tags(id, kind_id) ON DELETE CASCADE,
+    FOREIGN KEY (role_id, kind_id)
+        REFERENCES ctags_roles(id, kind_id) ON DELETE RESTRICT
+) STRICT, WITHOUT ROWID;
+
+-- The primary key lists roles for a tag; this finds tags with a given role.
+CREATE INDEX ctags_tag_roles_by_role
+    ON ctags_tag_roles(role_id, tag_id);
 
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,
@@ -199,6 +299,12 @@ class DatabaseError(RuntimeError):
 
 
 def open_database(path: Path, *, create: bool) -> sqlite3.Connection:
+    if sqlite3.sqlite_version_info < MINIMUM_SQLITE_VERSION:
+        required = ".".join(str(item) for item in MINIMUM_SQLITE_VERSION)
+        raise DatabaseError(
+            f"Paper Resources requires SQLite {required} or newer for JSONB; "
+            f"Python is using {sqlite3.sqlite_version}"
+        )
     if not create and not path.is_file():
         raise DatabaseError(
             f"resource index does not exist: {path}; run: just resource index"

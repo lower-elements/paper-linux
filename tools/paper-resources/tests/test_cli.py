@@ -17,6 +17,7 @@ from paper_resources import (
     catalog_index,
     cli,
     ctags,
+    ctags_index,
     database,
     git_resources,
     manager as manager_module,
@@ -545,6 +546,264 @@ class PaperResourcesTest(unittest.TestCase):
             next(event.id for event in second if isinstance(event, ctags.CtagsProfile)),
             profile.id,
         )
+
+    def test_ctags_blob_analysis_storage_normalizes_and_replaces_tags(self) -> None:
+        if shutil.which("ctags") is None:
+            self.skipTest("Universal Ctags is not installed")
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        repository = manifest["repositories"][0]
+        connection = database.open_database(self.base / "ctags-storage.db", create=True)
+        self.addCleanup(connection.close)
+        repository_index.synchronize_catalog(connection, manifest["repositories"])
+
+        content = (
+            b"#include <linux/types.h>\n"
+            b"struct device { int state; };\n"
+            b"static int driver_start(struct device *device) {\n"
+            b"    return device->state;\n"
+            b"}\n"
+        )
+        oid = hashlib.sha1(
+            f"blob {len(content)}\0".encode("ascii") + content
+        ).digest()
+
+        with ctags.CtagsSession(connection) as session:
+            stored = ctags_index.store_blob_analysis(
+                connection,
+                session,
+                repository["id"],
+                oid,
+                "driver.c",
+                content,
+            )
+            self.assertGreater(stored.tags, 0)
+            self.assertGreater(stored.roles, 0)
+            self.assertGreater(stored.ignored_qualified_tags, 0)
+
+            analysis = connection.execute(
+                """
+                SELECT id, profile_id, input_name, input_parser_id
+                FROM ctags_analyses
+                WHERE repository_id = ? AND blob_oid = ?
+                """,
+                (repository["id"], oid),
+            ).fetchone()
+            self.assertEqual(analysis["id"], stored.id)
+            self.assertEqual(analysis["profile_id"], stored.profile_id)
+            self.assertEqual(analysis["input_name"], "driver.c")
+            self.assertEqual(analysis["input_parser_id"], stored.input_parser_id)
+
+            tags = connection.execute(
+                """
+                SELECT
+                    ctags_tags.*,
+                    ctags_parsers.language,
+                    ctags_kinds.name AS kind
+                FROM ctags_tags
+                JOIN ctags_parsers ON ctags_parsers.id = ctags_tags.parser_id
+                JOIN ctags_kinds ON ctags_kinds.id = ctags_tags.kind_id
+                WHERE analysis_id = ?
+                ORDER BY ordinal
+                """,
+                (stored.id,),
+            ).fetchall()
+            self.assertEqual(len(tags), stored.tags)
+            self.assertEqual(
+                [row["ordinal"] for row in tags], list(range(stored.tags))
+            )
+            self.assertTrue(all(row["qualified_name"] is None for row in tags))
+            self.assertTrue(all(row["enclosing_tag_id"] is None for row in tags))
+            self.assertFalse(any("::" in row["name"] for row in tags))
+
+            function = next(row for row in tags if row["name"] == "driver_start")
+            self.assertEqual(function["language"], "C")
+            self.assertEqual(function["kind"], "function")
+            self.assertEqual(function["line_start"], 3)
+            self.assertEqual(function["line_end"], 5)
+            self.assertIsNotNone(function["signature"])
+            self.assertEqual(function["is_file_restricted"], 1)
+            self.assertEqual(function["is_reference"], 0)
+            self.assertEqual(function["scope"], None)
+
+            header = next(row for row in tags if row["name"] == "linux/types.h")
+            self.assertEqual(header["is_reference"], 1)
+            roles = connection.execute(
+                """
+                SELECT ctags_roles.name
+                FROM ctags_tag_roles
+                JOIN ctags_roles ON ctags_roles.id = ctags_tag_roles.role_id
+                WHERE ctags_tag_roles.tag_id = ?
+                """,
+                (header["id"],),
+            ).fetchall()
+            self.assertEqual([row["name"] for row in roles], ["system"])
+
+            state = next(row for row in tags if row["name"] == "state")
+            self.assertEqual(state["scope"], "device")
+            self.assertEqual(state["scope_kind"], "struct")
+            self.assertEqual(state["typeref"], "typename:int")
+            self.assertEqual(
+                connection.execute(
+                    "SELECT typeof(metadata) FROM ctags_tags WHERE id = ?",
+                    (state["id"],),
+                ).fetchone()[0],
+                "blob",
+            )
+            metadata = json.loads(
+                connection.execute(
+                    "SELECT json(metadata) FROM ctags_tags WHERE id = ?",
+                    (state["id"],),
+                ).fetchone()[0]
+            )
+            self.assertIn("pattern", metadata)
+            self.assertFalse(
+                {
+                    "line", "end", "signature", "typeref", "access", "scope",
+                    "scopeKind", "nth", "file", "roles", "reference",
+                }
+                & metadata.keys()
+            )
+
+            replacement = ctags_index.store_blob_analysis(
+                connection,
+                session,
+                repository["id"],
+                oid,
+                "renamed.c",
+                content,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM ctags_analyses"
+                ).fetchone()[0],
+                1,
+            )
+            replacement_tag_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT id FROM ctags_tags ORDER BY ordinal"
+                )
+            ]
+            self.assertEqual(len(replacement_tag_ids), replacement.tags)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT input_name FROM ctags_analyses"
+                ).fetchone()[0],
+                "renamed.c",
+            )
+
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TRIGGER reject_ctags_tag_insert
+                    BEFORE INSERT ON ctags_tags
+                    BEGIN
+                        SELECT RAISE(FAIL, 'test insertion failure');
+                    END
+                    """
+                )
+            with self.assertRaisesRegex(ResourceError, "test insertion failure"):
+                ctags_index.store_blob_analysis(
+                    connection,
+                    session,
+                    repository["id"],
+                    oid,
+                    "driver.c",
+                    content,
+                )
+            self.assertEqual(
+                [
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT id FROM ctags_tags ORDER BY ordinal"
+                    )
+                ],
+                replacement_tag_ids,
+            )
+            with connection:
+                connection.execute("DROP TRIGGER reject_ctags_tag_insert")
+
+            empty_content = b"\x00\xff\x00"
+            empty_oid = hashlib.sha1(
+                f"blob {len(empty_content)}\0".encode("ascii") + empty_content
+            ).digest()
+            empty = ctags_index.store_blob_analysis(
+                connection,
+                session,
+                repository["id"],
+                empty_oid,
+                "unrecognized.paper-resource",
+                empty_content,
+            )
+            self.assertEqual(empty.tags, 0)
+            self.assertIsNone(empty.input_parser_id)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM ctags_tags WHERE analysis_id = ?",
+                    (empty.id,),
+                ).fetchone()[0],
+                0,
+            )
+
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_ctags_tag_normalization_promotes_fields_without_duplication(self) -> None:
+        event = ctags.CtagsTag(
+            parser_id=1,
+            kind_id=2,
+            name="member",
+            language="C++",
+            kind="member",
+            roles=("foreign",),
+            role_ids=(3,),
+            extras=("reference", "fileScope", "subparser"),
+            fields={
+                "line": 10,
+                "end": 12,
+                "signature": "(int value)",
+                "typeref": "typename:int",
+                "access": "private",
+                "scope": "widget",
+                "scopeKind": "class",
+                "nth": 0,
+                "file": True,
+                "implementation": "virtual",
+                "parserSpecific": ["one", "two"],
+            },
+        )
+        tag = ctags_index.normalize_tag(event)
+        self.assertEqual(tag.line_start, 10)
+        self.assertEqual(tag.line_end, 12)
+        self.assertEqual(tag.signature, "(int value)")
+        self.assertEqual(tag.typeref, "typename:int")
+        self.assertEqual(tag.access, "private")
+        self.assertEqual(tag.scope, "widget")
+        self.assertEqual(tag.scope_kind, "class")
+        self.assertEqual(tag.nth, 0)
+        self.assertTrue(tag.is_file_restricted)
+        self.assertTrue(tag.is_reference)
+        self.assertEqual(
+            json.loads(tag.metadata or "null"),
+            {
+                "extras": ["subparser"],
+                "implementation": "virtual",
+                "parserSpecific": ["one", "two"],
+            },
+        )
+        with self.assertRaisesRegex(ResourceError, "invalid end"):
+            ctags_index.normalize_tag(
+                ctags.CtagsTag(
+                    parser_id=1,
+                    kind_id=2,
+                    name="broken",
+                    language="C",
+                    kind="function",
+                    roles=("def",),
+                    role_ids=(),
+                    extras=(),
+                    fields={"line": 10, "end": 9},
+                )
+            )
 
     def test_populate_one_worktree(self) -> None:
         self.tool(

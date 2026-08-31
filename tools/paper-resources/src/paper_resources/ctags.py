@@ -230,6 +230,13 @@ class CtagsSession:
             raise CtagsError("Universal Ctags emitted a non-object JSON record")
         return record
 
+    def _drain_request(self) -> None:
+        """Consume the rest of a cancelled request so the session stays aligned."""
+        while True:
+            record = self._read_record()
+            if record.get("_type") == "completed":
+                return
+
     def close(self) -> None:
         if getattr(self, "_closed", True):
             return
@@ -443,9 +450,19 @@ class CtagsSession:
             raise CtagsError("Ctags input filename must not be empty or contain NUL")
         if not isinstance(content, bytes):
             raise CtagsError("Ctags input content must be bytes")
+        last_event: CtagsEvent | None = None
         try:
             with self.connection:
-                yield from self._analyze(filename, content)
+                for event in self._analyze(filename, content):
+                    last_event = event
+                    yield event
+        except GeneratorExit:
+            try:
+                if not isinstance(last_event, CtagsCompleted):
+                    self._drain_request()
+            finally:
+                self._clear_catalog_cache()
+            raise
         except sqlite3.Error as error:
             self._clear_catalog_cache()
             raise CtagsError(f"cannot update the Ctags catalog: {error}") from error
