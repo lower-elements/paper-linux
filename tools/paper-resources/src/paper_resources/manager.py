@@ -52,6 +52,7 @@ class RevisionInfo:
     id: str
     description: str
     author: str
+    index: bool
     tags: list[str]
     commit: str
     tree: str
@@ -285,6 +286,7 @@ class ResourceManager:
             id=revision["id"],
             description=revision["description"],
             author=revision["author"],
+            index=revision["index"],
             tags=list(revision.get("tags", [])),
             commit=revision["commit"],
             tree=revision["tree"],

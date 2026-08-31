@@ -117,6 +117,10 @@ def validate_manifest_v2(manifest: dict[str, Any]) -> None:
             for field in ("description", "author"):
                 if not isinstance(revision.get(field), str) or not revision[field]:
                     raise ResourceError(f"{repository_id}:{revision_id}: {field} is required")
+            if not isinstance(revision.get("index"), bool):
+                raise ResourceError(
+                    f"{repository_id}:{revision_id}: index must be a boolean"
+                )
             validate_object_id(revision.get("commit"), f"{repository_id}:{revision_id}: commit")
             validate_object_id(revision.get("tree"), f"{repository_id}:{revision_id}: tree")
             source = revision.get("source")

@@ -123,7 +123,9 @@ def print_metadata(items: list[Any], *, json_output: bool) -> None:
         print(identity)
         if value.get("description"):
             print(value["description"])
-        for key in ("author", "commit", "tree", "status", "path", "resolved_path"):
+        for key in (
+            "author", "index", "commit", "tree", "status", "path", "resolved_path"
+        ):
             if value.get(key) is not None:
                 print(f"{key.replace('_', ' ').title()}: {value[key]}")
         if value.get("derived_from"):

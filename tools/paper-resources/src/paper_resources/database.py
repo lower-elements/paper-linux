@@ -6,10 +6,10 @@ from pathlib import Path
 import sqlite3
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 
 CREATE TABLE repositories (
     id TEXT PRIMARY KEY,
@@ -24,6 +24,7 @@ CREATE TABLE repository_revisions (
     tree_oid BLOB NOT NULL CHECK(length(tree_oid) IN (20, 32)),
     author TEXT,
     description TEXT,
+    index_enabled INTEGER NOT NULL CHECK(index_enabled IN (0, 1)),
     PRIMARY KEY (repository_id, id)
 ) STRICT, WITHOUT ROWID;
 

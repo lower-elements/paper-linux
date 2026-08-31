@@ -100,8 +100,8 @@ def synchronize_catalog(
                         """
                         INSERT INTO repository_revisions(
                             repository_id, id, commit_oid, tree_oid,
-                            author, description
-                        ) VALUES (?, ?, ?, ?, ?, ?)
+                            author, description, index_enabled
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             repository_id,
@@ -110,18 +110,20 @@ def synchronize_catalog(
                             tree_oid,
                             revision.get("author"),
                             revision.get("description"),
+                            revision["index"],
                         ),
                     )
                 else:
                     connection.execute(
                         """
                         UPDATE repository_revisions
-                        SET author = ?, description = ?
+                        SET author = ?, description = ?, index_enabled = ?
                         WHERE repository_id = ? AND id = ?
                         """,
                         (
                             revision.get("author"),
                             revision.get("description"),
+                            revision["index"],
                             repository_id,
                             revision_id,
                         ),

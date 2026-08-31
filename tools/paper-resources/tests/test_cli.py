@@ -171,6 +171,7 @@ class PaperResourcesTest(unittest.TestCase):
                             "id": "v1",
                             "description": "test release",
                             "author": "test",
+                            "index": True,
                             "tags": ["test"],
                             "commit": commit,
                             "tree": tree,
@@ -183,6 +184,7 @@ class PaperResourcesTest(unittest.TestCase):
                             "id": "alternate",
                             "description": "test alternate release",
                             "author": "test",
+                            "index": False,
                             "tags": ["test"],
                             "commit": alternate_commit,
                             "tree": alternate_tree,
@@ -261,7 +263,7 @@ class PaperResourcesTest(unittest.TestCase):
         )
         revision = connection.execute(
             """
-            SELECT commit_oid, tree_oid, author, description
+            SELECT commit_oid, tree_oid, author, description, index_enabled
             FROM repository_revisions
             WHERE repository_id = ? AND id = ?
             """,
@@ -279,6 +281,7 @@ class PaperResourcesTest(unittest.TestCase):
             (revision["author"], revision["description"]),
             ("test", "test release"),
         )
+        self.assertEqual(revision["index_enabled"], 1)
 
         repository["revisions"][1]["description"] = "updated alternate"
         repository["revisions"] = repository["revisions"][1:]
@@ -477,6 +480,7 @@ class PaperResourcesTest(unittest.TestCase):
             "id": "patched",
             "description": "derived test release",
             "author": "test",
+            "index": False,
             "commit": "0" * 40,
             "tree": "0" * 40,
             "derived_from": "v1",
