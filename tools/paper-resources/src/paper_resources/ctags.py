@@ -593,6 +593,7 @@ class CtagsSession:
             separators=(",", ":"),
         ).encode("utf-8")
         self._submit_request(command, content)
+        expected_input_language = self.expected_language(filename)
 
         output_version: str | None = None
         json_output_version: str | None = None
@@ -757,6 +758,15 @@ class CtagsSession:
                 current_profile = require_profile()
                 if not profile_emitted:
                     yield current_profile
+                if expected_input_language is not None:
+                    input_parser = request_parsers.get(expected_input_language)
+                    if input_parser is None:
+                        input_parser = self._ensure_parser(
+                            current_profile, expected_input_language, None
+                        )
+                        request_parsers[expected_input_language] = input_parser
+                        yield input_parser
+                    input_parser_id = input_parser.id
                 if pending_kinds or pending_roles:
                     raise CtagsError(
                         "Universal Ctags left unresolved catalog pseudo-tags"

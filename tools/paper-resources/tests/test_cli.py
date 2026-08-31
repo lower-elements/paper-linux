@@ -506,6 +506,9 @@ class PaperResourcesTest(unittest.TestCase):
                 for events in analyses
             ]
             self.assertTrue(all(item.profile_id == profile.id for item in completed))
+            self.assertTrue(
+                all(item.input_parser_id is not None for item in completed[:-1])
+            )
             self.assertEqual(completed[0].input_parser_id, c_parser.id)
             self.assertEqual(completed[-1].input_parser_id, None)
             self.assertEqual(completed[-1].tags, 0)
@@ -533,6 +536,21 @@ class PaperResourcesTest(unittest.TestCase):
                 if isinstance(event, ctags.CtagsParser) and event.language == "C"
             )
             self.assertEqual(repeated_parser.id, c_parser.id)
+            repeated_completed = next(
+                event
+                for event in repeated
+                if isinstance(event, ctags.CtagsCompleted)
+            )
+            self.assertEqual(repeated_completed.input_parser_id, c_parser.id)
+
+            empty_c = list(session.analyze("empty.c", b""))
+            empty_completed = next(
+                event
+                for event in empty_c
+                if isinstance(event, ctags.CtagsCompleted)
+            )
+            self.assertEqual(empty_completed.input_parser_id, c_parser.id)
+            self.assertEqual(empty_completed.tags, 0)
             self.assertEqual(
                 tuple(
                     connection.execute(
