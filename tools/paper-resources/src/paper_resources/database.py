@@ -337,6 +337,8 @@ def open_database(path: Path, *, create: bool) -> sqlite3.Connection:
         connection = sqlite3.connect(path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
             if not create:
