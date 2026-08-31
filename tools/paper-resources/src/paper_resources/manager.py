@@ -12,7 +12,7 @@ from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
 
 
-ResourceKind = Literal["document", "repository", "worktree"]
+ResourceKind = Literal["document", "repository"]
 
 
 @dataclass(frozen=True)
@@ -24,9 +24,54 @@ class RemoteInfo:
 @dataclass(frozen=True)
 class WorktreeInfo:
     id: str
+    repository_id: str
+    revision_id: str
     path: str
     resolved_path: str
+    available: bool
+    status: str
+    head: str | None
+    dirty: bool
+
+
+@dataclass(frozen=True)
+class ReferenceBaseInfo:
+    revision: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class RevisionSourceInfo:
+    remote: str
     ref: str
+
+
+@dataclass(frozen=True)
+class RevisionInfo:
+    repository_id: str
+    id: str
+    description: str
+    author: str
+    tags: list[str]
+    commit: str
+    tree: str
+    available: bool
+    derived_from: str | None
+    reference_base: ReferenceBaseInfo | None
+    source: RevisionSourceInfo | None
+    patches: list[str]
+    worktrees: list[WorktreeInfo]
+
+
+@dataclass(frozen=True)
+class PatchInfo:
+    id: str
+    description: str
+    author: str
+    tags: list[str]
+    path: str
+    resolved_path: str
+    sha256: str
     available: bool
 
 
@@ -42,10 +87,7 @@ class ResourceInfo:
     sha256: str | None = None
     extractor: str | None = None
     clone_url: str | None = None
-    repository_id: str | None = None
-    ref: str | None = None
     remotes: list[RemoteInfo] | None = None
-    worktrees: list[WorktreeInfo] | None = None
 
 
 @dataclass(frozen=True)
@@ -55,7 +97,9 @@ class CatalogInfo:
     database_path: str
     default_extractor: str
     documents: int
+    patches: int
     repositories: int
+    revisions: int
     worktrees: int
 
 
@@ -66,9 +110,14 @@ class ResourceManager:
         self.settings = settings
         self.manifest = manifest
         self.documents = manifest.get("documents", [])
+        self.patches = manifest.get("patches", [])
         self.repositories = manifest.get("repositories", [])
         self.documents_by_id = {
             document["id"]: document for document in self.documents
+        }
+        self.patches_by_id = {patch["id"]: patch for patch in self.patches}
+        self.repositories_by_id = {
+            repository["id"]: repository for repository in self.repositories
         }
         self._connection: sqlite3.Connection | None = None
         self._database_lock = RLock()
@@ -98,9 +147,11 @@ class ResourceManager:
             database_path=str(self.settings.database),
             default_extractor=self.settings.default_extractor,
             documents=len(self.documents),
+            patches=len(self.patches),
             repositories=len(self.repositories),
+            revisions=sum(len(repository.get("revisions", [])) for repository in self.repositories),
             worktrees=sum(
-                len(repository.get("worktrees", []))
+                sum(len(revision.get("worktrees", [])) for revision in repository.get("revisions", []))
                 for repository in self.repositories
             ),
         )
@@ -121,16 +172,6 @@ class ResourceManager:
 
     def _repository_info(self, repository: dict[str, Any]) -> ResourceInfo:
         path = self.settings.root / repository["path"]
-        worktrees = [
-            WorktreeInfo(
-                id=worktree["id"],
-                path=worktree["path"],
-                resolved_path=str((self.settings.root / worktree["path"]).resolve()),
-                ref=worktree["ref"],
-                available=(self.settings.root / worktree["path"]).is_dir(),
-            )
-            for worktree in repository.get("worktrees", [])
-        ]
         remotes = [
             RemoteInfo("origin", repository["clone_url"]),
             *[
@@ -148,23 +189,140 @@ class ResourceManager:
             available=(path / "HEAD").is_file(),
             clone_url=repository["clone_url"],
             remotes=remotes,
-            worktrees=worktrees,
         )
 
-    def _worktree_info(
-        self, repository: dict[str, Any], worktree: dict[str, Any]
-    ) -> ResourceInfo:
-        path = self.settings.root / worktree["path"]
-        return ResourceInfo(
-            id=worktree["id"],
-            kind="worktree",
-            description=repository.get("description", ""),
-            tags=list(repository.get("tags", [])),
-            path=worktree["path"],
+    def list_repositories(self, tag: str | None = None) -> list[ResourceInfo]:
+        return [
+            self._repository_info(repository)
+            for repository in self.repositories
+            if tag is None or tag in repository.get("tags", [])
+        ]
+
+    def get_repository(self, repository_id: str) -> ResourceInfo:
+        repository = self.repositories_by_id.get(repository_id)
+        if repository is None:
+            raise ResourceError(f"unknown repository ID: {repository_id}")
+        return self._repository_info(repository)
+
+    def _patch_info(self, patch: dict[str, Any]) -> PatchInfo:
+        path = self.settings.root / patch["path"]
+        return PatchInfo(
+            id=patch["id"],
+            description=patch["description"],
+            author=patch["author"],
+            tags=list(patch.get("tags", [])),
+            path=patch["path"],
             resolved_path=str(path.resolve()),
-            available=path.is_dir(),
+            sha256=patch["sha256"],
+            available=path.is_file() and artifacts.sha256(path) == patch["sha256"],
+        )
+
+    def _revision_manifest(self, repository_id: str, revision_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        repository = self.repositories_by_id.get(repository_id)
+        if repository is None:
+            raise ResourceError(f"unknown repository ID: {repository_id}")
+        for revision in repository.get("revisions", []):
+            if revision["id"] == revision_id:
+                return repository, revision
+        raise ResourceError(f"unknown revision: {repository_id}:{revision_id}")
+
+    def _worktree_info_v2(
+        self, repository: dict[str, Any], revision: dict[str, Any], worktree: dict[str, Any]
+    ) -> WorktreeInfo:
+        repository_path = self.settings.root / repository["path"]
+        available, status, head, dirty = git_resources.worktree_status(
+            repository_path, revision, worktree, self.settings.root
+        )
+        return WorktreeInfo(
+            id=worktree["id"],
             repository_id=repository["id"],
-            ref=worktree["ref"],
+            revision_id=revision["id"],
+            path=worktree["path"],
+            resolved_path=str((self.settings.root / worktree["path"]).resolve()),
+            available=available,
+            status=status,
+            head=head,
+            dirty=dirty,
+        )
+
+    def _revision_info(self, repository: dict[str, Any], revision: dict[str, Any]) -> RevisionInfo:
+        repository_path = self.settings.root / repository["path"]
+        commit = git_resources.git_object(
+            repository_path, f"{git_resources.revision_ref(revision['id'])}^{{commit}}"
+        ) if repository_path.exists() else None
+        reference = revision.get("reference_base")
+        source = revision.get("source")
+        return RevisionInfo(
+            repository_id=repository["id"],
+            id=revision["id"],
+            description=revision["description"],
+            author=revision["author"],
+            tags=list(revision.get("tags", [])),
+            commit=revision["commit"],
+            tree=revision["tree"],
+            available=commit == revision["commit"],
+            derived_from=revision.get("derived_from"),
+            reference_base=ReferenceBaseInfo(**reference) if reference else None,
+            source=RevisionSourceInfo(**source) if source else None,
+            patches=[git_resources.patch_application(item)[0] for item in revision.get("patches", [])],
+            worktrees=[
+                self._worktree_info_v2(repository, revision, worktree)
+                for worktree in revision.get("worktrees", [])
+            ],
+        )
+
+    def list_patches(self, tag: str | None = None) -> list[PatchInfo]:
+        return [
+            self._patch_info(patch) for patch in self.patches
+            if tag is None or tag in patch.get("tags", [])
+        ]
+
+    def get_patch(self, patch_id: str) -> PatchInfo:
+        patch = self.patches_by_id.get(patch_id)
+        if patch is None:
+            raise ResourceError(f"unknown patch ID: {patch_id}")
+        return self._patch_info(patch)
+
+    def list_revisions(
+        self, repository_id: str | None = None, author: str | None = None,
+        tag: str | None = None
+    ) -> list[RevisionInfo]:
+        repositories = self.repositories if repository_id is None else [
+            self.repositories_by_id.get(repository_id)
+        ]
+        if repositories == [None]:
+            raise ResourceError(f"unknown repository ID: {repository_id}")
+        return [
+            self._revision_info(repository, revision)
+            for repository in repositories if repository is not None
+            for revision in repository.get("revisions", [])
+            if (author is None or revision["author"] == author)
+            and (tag is None or tag in revision.get("tags", []))
+        ]
+
+    def get_revision(self, repository_id: str, revision_id: str) -> RevisionInfo:
+        repository, revision = self._revision_manifest(repository_id, revision_id)
+        return self._revision_info(repository, revision)
+
+    def list_worktrees(
+        self, repository_id: str | None = None, revision_id: str | None = None
+    ) -> list[WorktreeInfo]:
+        revisions = self.list_revisions(repository_id)
+        if revision_id is not None:
+            revisions = [revision for revision in revisions if revision.id == revision_id]
+            if not revisions:
+                raise ResourceError(f"unknown revision: {repository_id}:{revision_id}")
+        return [worktree for revision in revisions for worktree in revision.worktrees]
+
+    def get_worktree(
+        self, repository_id: str, revision_id: str, worktree_id: str
+    ) -> WorktreeInfo:
+        revision = self.get_revision(repository_id, revision_id)
+        for worktree in revision.worktrees:
+            if worktree.id == worktree_id:
+                return worktree
+        raise ResourceError(
+            f"unknown worktree: {repository_id}:{revision_id}:{worktree_id}"
         )
 
     def list_resources(
@@ -173,10 +331,6 @@ class ResourceManager:
         resources = [self._document_info(document) for document in self.documents]
         for repository in self.repositories:
             resources.append(self._repository_info(repository))
-            resources.extend(
-                self._worktree_info(repository, worktree)
-                for worktree in repository.get("worktrees", [])
-            )
         return [
             resource
             for resource in resources
@@ -190,59 +344,176 @@ class ResourceManager:
                 return resource
         raise ResourceError(f"unknown resource ID: {resource_id}")
 
-    def _known_resource_ids(self) -> set[str]:
-        ids = {document["id"] for document in self.documents}
-        for repository in self.repositories:
-            ids.add(repository["id"])
-            ids.update(worktree["id"] for worktree in repository.get("worktrees", []))
-        return ids
-
-    def populate(self, resource_ids: list[str] | None = None) -> list[str]:
-        requested = set(resource_ids or [])
-        unknown = requested - self._known_resource_ids()
-        if unknown:
-            raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
-        output: list[str] = []
-        for document in self.documents:
-            if not requested or document["id"] in requested:
-                output.append(artifacts.populate_file(document, self.settings.root))
-        for repository in self.repositories:
-            selected = not requested or repository["id"] in requested or any(
-                worktree["id"] in requested
-                for worktree in repository.get("worktrees", [])
-            )
-            if selected:
+    def populate(
+        self,
+        resource_ids: list[str] | None = None,
+        *,
+        repository_id: str | None = None,
+        revision_key: tuple[str, str] | None = None,
+        patch_id: str | None = None,
+        worktree_key: tuple[str, str, str] | None = None,
+    ) -> list[str]:
+        if self.manifest.get("version") == 2:
+            selectors = sum(value is not None for value in (
+                repository_id, revision_key, patch_id, worktree_key
+            ))
+            if selectors + bool(resource_ids) > 1:
+                raise ResourceError("select only one repository, revision, patch, or worktree")
+            requested = set(resource_ids or [])
+            globally_known = {
+                *self.documents_by_id, *self.patches_by_id, *self.repositories_by_id
+            }
+            unknown = requested - globally_known
+            if unknown:
+                raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
+            output: list[str] = []
+            if selectors == 0 and not requested:
+                for document in self.documents:
+                    output.append(artifacts.populate_file(document, self.settings.root))
+            elif requested:
+                for document in self.documents:
+                    if document["id"] in requested:
+                        output.append(artifacts.populate_file(document, self.settings.root))
+            selected_repository = repository_id
+            selected_revision: tuple[str, str] | None = revision_key
+            selected_worktree: tuple[str, str, str] | None = worktree_key
+            if selected_revision is not None:
+                selected_repository = selected_revision[0]
+            if selected_worktree is not None:
+                selected_repository = selected_worktree[0]
+                selected_revision = selected_worktree[:2]
+            requested_repositories = requested & self.repositories_by_id.keys()
+            if requested_repositories:
+                repositories = [
+                    self.repositories_by_id[item] for item in sorted(requested_repositories)
+                ]
+            else:
+                repositories = self.repositories if selected_repository is None and not requested else [
+                    self.repositories_by_id.get(selected_repository)
+                ] if selected_repository is not None else []
+            if repositories == [None]:
+                raise ResourceError(f"unknown repository ID: {selected_repository}")
+            needed_patches: set[str] = set()
+            if patch_id is not None:
+                if patch_id not in self.patches_by_id:
+                    raise ResourceError(f"unknown patch ID: {patch_id}")
+                needed_patches.add(patch_id)
+                repositories = []
+            else:
+                for repository in repositories:
+                    if repository is None:
+                        continue
+                    revision_ids = (
+                        git_resources.revision_dependencies(
+                            repository, {selected_revision[1]}
+                        )
+                        if selected_revision is not None else None
+                    )
+                    for revision in repository["revisions"]:
+                        if revision_ids is not None and revision["id"] not in revision_ids:
+                            continue
+                        needed_patches.update(
+                            git_resources.patch_application(item)[0]
+                            for item in revision.get("patches", [])
+                        )
+            needed_patches.update(requested & self.patches_by_id.keys())
+            if selectors == 0:
+                needed_patches.update(self.patches_by_id)
+            for needed_patch in self.patches:
+                if needed_patch["id"] in needed_patches:
+                    output.append(artifacts.populate_file(needed_patch, self.settings.root))
+            for repository in repositories:
+                if repository is None:
+                    continue
+                revision_ids = None if selected_revision is None else {selected_revision[1]}
+                selected_worktree_key = None
+                if selected_worktree is not None:
+                    selected_worktree_key = (selected_worktree[1], selected_worktree[2])
                 output.extend(
                     git_resources.populate_repository(
-                        repository, self.settings.root, requested
+                        repository, self.patches_by_id, self.settings.root,
+                        revision_ids=revision_ids,
+                        worktree_key=selected_worktree_key,
                     )
                 )
-        return output
+            return output
+        raise AssertionError("manifest validation accepted an unsupported version")
 
-    def check(self, resource_ids: list[str] | None = None) -> tuple[bool, list[str]]:
-        requested = set(resource_ids or [])
-        unknown = requested - self._known_resource_ids()
-        if unknown:
-            raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
-        success = True
-        output: list[str] = []
-        for document in self.documents:
-            if not requested or document["id"] in requested:
-                ok, message = artifacts.check_file(document, self.settings.root)
+    def check(
+        self,
+        resource_ids: list[str] | None = None,
+        *,
+        repository_id: str | None = None,
+        revision_key: tuple[str, str] | None = None,
+        patch_id: str | None = None,
+        worktree_key: tuple[str, str, str] | None = None,
+    ) -> tuple[bool, list[str]]:
+        if self.manifest.get("version") == 2:
+            selectors = sum(value is not None for value in (
+                repository_id, revision_key, patch_id, worktree_key
+            ))
+            if selectors + bool(resource_ids) > 1:
+                raise ResourceError("select only one repository, revision, patch, or worktree")
+            requested = set(resource_ids or [])
+            globally_known = {
+                *self.documents_by_id, *self.patches_by_id, *self.repositories_by_id
+            }
+            unknown = requested - globally_known
+            if unknown:
+                raise ResourceError(f"unknown resource ID(s): {', '.join(sorted(unknown))}")
+            success = True
+            output: list[str] = []
+            files: list[dict[str, Any]] = []
+            if selectors == 0 and not requested:
+                files.extend(self.documents)
+                files.extend(self.patches)
+            elif requested:
+                files.extend(
+                    resource for resource in [*self.documents, *self.patches]
+                    if resource["id"] in requested
+                )
+            elif patch_id is not None:
+                patch = self.patches_by_id.get(patch_id)
+                if patch is None:
+                    raise ResourceError(f"unknown patch ID: {patch_id}")
+                files.append(patch)
+            for resource in files:
+                ok, message = artifacts.check_file(resource, self.settings.root)
                 success &= ok
                 output.append(message)
-        for repository in self.repositories:
-            selected = not requested or repository["id"] in requested or any(
-                worktree["id"] in requested
-                for worktree in repository.get("worktrees", [])
+            selected_repository = repository_id
+            selected_revision = revision_key
+            selected_worktree = worktree_key
+            if selected_revision:
+                selected_repository = selected_revision[0]
+            if selected_worktree:
+                selected_repository = selected_worktree[0]
+                selected_revision = selected_worktree[:2]
+            requested_repositories = requested & self.repositories_by_id.keys()
+            repositories = [] if patch_id is not None else (
+                [self.repositories_by_id[item] for item in sorted(requested_repositories)]
+                if requested_repositories else self.repositories if selected_repository is None and not requested
+                else [self.repositories_by_id.get(selected_repository)]
+                if selected_repository is not None else []
             )
-            if selected:
+            if repositories == [None]:
+                raise ResourceError(f"unknown repository ID: {selected_repository}")
+            for repository in repositories:
+                if repository is None:
+                    continue
+                revision_ids = None if selected_revision is None else {selected_revision[1]}
+                selected_worktree_key = None if selected_worktree is None else (
+                    selected_worktree[1], selected_worktree[2]
+                )
                 for ok, message in git_resources.check_repository(
-                    repository, self.settings.root, requested
+                    repository, self.settings.root,
+                    revision_ids=revision_ids,
+                    worktree_key=selected_worktree_key,
                 ):
                     success &= ok
                     output.append(message)
-        return success, output
+            return success, output
+        raise AssertionError("manifest validation accepted an unsupported version")
 
     def index_documents(
         self, resource_ids: list[str] | None = None, extractor: str | None = None

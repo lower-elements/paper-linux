@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "documents": [
     {
       "id": "epson-s1d13521-hardware-spec-1.2",
@@ -110,100 +110,135 @@
       "sha256": "6723ed13bb9c8559bb0dd801ecd5926246a2a1a8ce65a9194b1ab4a2e0a48325"
     }
   ],
+  "patches": [
+    {
+      "id": "rt-2.6.26.8-rt16",
+      "description": "PREEMPT_RT rt16 patch set for Linux 2.6.26.8",
+      "author": "rt",
+      "tags": ["kernel", "realtime"],
+      "path": "patches/linux/patch-2.6.26.8-rt16",
+      "url": "https://cdn.kernel.org/pub/linux/kernel/projects/rt/2.6.26/patch-2.6.26.8-rt16",
+      "sha256": "4154f71bc0a75fd49c05e6c98f63d9003290dadde842fe643610440146e2dee8"
+    },
+    {
+      "id": "freescale-mx35pdk-20090317",
+      "description": "Freescale MX35 PDK changes against Linux 2.6.26, snapshot dated 2009-03-17",
+      "author": "freescale",
+      "tags": ["kernel", "imx35", "freescale"],
+      "path": "patches/linux/2.6.26-mx35pdk-200903170932.patch",
+      "url": "https://repository.timesys.com/buildsources/l/linux/linux-2.6.26/2.6.26-mx35pdk-200903170932.patch",
+      "sha256": "20247f89934bfdad9a74008e67510bcc51c4d59454c5e0f0ceb000546b8a0409"
+    }
+  ],
   "repositories": [
     {
-      "id": "linux-kernel-history",
-      "description": "Shared Linux history used to compare Amazon/Lab126, upstream, stable, and NXP/Freescale kernel versions",
+      "id": "linux",
+      "description": "Combined Linux histories used for kernel archaeology across mainline, realtime, vendor, and platform trees",
       "tags": ["kernel", "kindle3", "imx35"],
-      "path": "git/linux-kernel-history.git",
+      "path": "git/linux.git",
       "clone_url": "https://github.com/torvalds/linux.git",
       "filter": "blob:none",
       "remotes": [
-        {
-          "name": "mainline",
-          "url": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
-          "fetch": []
-        },
-        {
-          "name": "stable",
-          "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git",
-          "fetch": [
-            "+refs/tags/v2.6.26.8:refs/tags/v2.6.26.8",
-            "+refs/tags/v7.0.11:refs/tags/v7.0.11"
-          ]
-        },
-        {
-          "name": "katadelos",
-          "url": "https://github.com/katadelos/linux-2.6.26-lab126.git",
-          "fetch": [
-            "+refs/heads/master:refs/remotes/katadelos/master"
-          ]
-        },
-        {
-          "name": "nxp",
-          "url": "https://github.com/nxp-imx/linux-imx.git",
-          "fetch": [
-            "+refs/heads/imx_2.6.28:refs/remotes/nxp/imx_2.6.28",
-            "+refs/heads/imx_2.6.31_caf:refs/remotes/nxp/imx_2.6.31_caf"
-          ]
-        }
+        {"name": "stable", "url": "https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"},
+        {"name": "katadelos", "url": "https://github.com/katadelos/linux-2.6.26-lab126.git"},
+        {"name": "nxp", "url": "https://github.com/nxp-imx/linux-imx.git"}
       ],
-      "worktrees": [
+      "revisions": [
         {
-          "id": "linux-amazon-kindle3-3.4.3",
-          "path": "worktrees/linux/amazon-kindle3-3.4.3",
-          "ref": "refs/remotes/katadelos/master"
+          "id": "2.6.26",
+          "description": "Mainline Linux 2.6.26 release",
+          "author": "mainline",
+          "tags": ["mainline"],
+          "commit": "bce7f793daec3e65ec5c5705d2457b81fe7b5725",
+          "tree": "05bc81f9b27a1ab60ea4e506357f0c7f2ece4eda",
+          "source": {"remote": "origin", "ref": "refs/tags/v2.6.26"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26"}]
         },
         {
-          "id": "linux-kindle3-provenance",
-          "path": "worktrees/linux/meta-provenance",
-          "ref": "meta/provenance",
-          "manual": true,
-          "source_page": "locally maintained Paper Linux kernel provenance history"
+          "id": "2.6.26.8",
+          "description": "Linux stable release 2.6.26.8",
+          "author": "stable",
+          "tags": ["mainline", "stable"],
+          "commit": "63e0e67b17dc233f93f709610971bbfadc97f75e",
+          "tree": "2a0d457b3094a590911ecea266a404d5e0107d29",
+          "source": {"remote": "stable", "ref": "refs/tags/v2.6.26.8"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26.8"}]
         },
         {
-          "id": "linux-freescale-mx35-20090317",
-          "path": "worktrees/linux/freescale-mx35-20090317",
-          "ref": "reconstruction/freescale-mx35-pdk-20090317",
-          "manual": true,
-          "source_page": "https://repository.timesys.com/buildsources/l/linux/linux-2.6.26/2.6.26-mx35pdk-200903170932.patch"
+          "id": "2.6.26.8-rt16",
+          "description": "Linux 2.6.26.8 with the PREEMPT_RT rt16 patch set",
+          "author": "rt",
+          "tags": ["realtime"],
+          "commit": "21d78a6c827cd9ef3fd8b933924a5212dfa2e0ae",
+          "tree": "2fc9daf790a4a6552989661c658d292cf94cf341",
+          "derived_from": "2.6.26.8",
+          "patches": ["rt-2.6.26.8-rt16"],
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26.8-rt16"}]
         },
         {
-          "id": "linux-rt-2.6.26.8-rt16",
-          "path": "worktrees/linux/rt-2.6.26.8-rt16",
-          "ref": "reconstruction/rt-2.6.26.8-rt16",
-          "manual": true,
-          "source_page": "https://cdn.kernel.org/pub/linux/kernel/projects/rt/2.6.26/patch-2.6.26.8-rt16"
+          "id": "2.6.26-imx35-pdk",
+          "description": "Linux 2.6.26 with the Freescale MX35 PDK snapshot from 2009-03-17",
+          "author": "freescale",
+          "tags": ["imx35", "freescale", "vendor"],
+          "commit": "ec980d0ce508455f8e76b845d0b96d163be92cd5",
+          "tree": "57d27159e0078625877fb649b1b80fdfbc55c9dd",
+          "derived_from": "2.6.26",
+          "patches": ["freescale-mx35pdk-20090317"],
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26-imx35-pdk"}]
         },
         {
-          "id": "linux-upstream-2.6.26",
-          "path": "worktrees/linux/upstream-2.6.26",
-          "ref": "v2.6.26"
+          "id": "2.6.26-rt-lab126",
+          "description": "Lab126 Kindle 3 vendor kernel from Amazon firmware release 3.4.3; based on Linux 2.6.26 with realtime and i.MX platform changes",
+          "author": "lab126",
+          "tags": ["kindle3", "lab126", "vendor", "realtime"],
+          "commit": "ebce95f39edb0e66652352517398c2e918e39558",
+          "tree": "e6bf4eeefc8d1d3a494a787b3fadf05e2df3b7c8",
+          "source": {"remote": "katadelos", "ref": "refs/heads/master"},
+          "reference_base": {
+            "revision": "2.6.26-imx35-pdk",
+            "reason": "The exact Freescale revision forked by Lab126 is unavailable. This contemporaneous Linux 2.6.26 MX35 PDK snapshot is an approximate platform reference, not a known ancestor."
+          },
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.26-rt-lab126"}]
         },
         {
-          "id": "linux-stable-2.6.26.8",
-          "path": "worktrees/linux/stable-2.6.26.8",
-          "ref": "v2.6.26.8"
+          "id": "2.6.28-imx",
+          "description": "NXP/Freescale i.MX vendor branch based on Linux 2.6.28",
+          "author": "freescale",
+          "tags": ["imx", "freescale", "vendor"],
+          "commit": "eee5a08306df7d9b1f23f463c9e9439e04293b57",
+          "tree": "68b959676944d055ad9e0da0d6a4ae720f9ce674",
+          "source": {"remote": "nxp", "ref": "refs/heads/imx_2.6.28"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.28-imx"}]
         },
         {
-          "id": "linux-mainline-imx35-2.6.31",
-          "path": "worktrees/linux/mainline-imx35-v2.6.31",
-          "ref": "v2.6.31"
+          "id": "2.6.31",
+          "description": "Mainline Linux 2.6.31 release with initial i.MX35 platform support",
+          "author": "mainline",
+          "tags": ["mainline", "imx35"],
+          "commit": "74fca6a42863ffacaf7ba6f1936a9f228950f657",
+          "tree": "5caecfdd9edab50789483eb96009e9faf5f1b241",
+          "source": {"remote": "origin", "ref": "refs/tags/v2.6.31"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.31"}]
         },
         {
-          "id": "linux-nxp-imx-2.6.28",
-          "path": "worktrees/linux/nxp-imx-2.6.28",
-          "ref": "refs/remotes/nxp/imx_2.6.28"
+          "id": "2.6.31-imx",
+          "description": "NXP/Freescale i.MX vendor branch based on Linux 2.6.31",
+          "author": "freescale",
+          "tags": ["imx", "freescale", "vendor"],
+          "commit": "9cc12efe87d12994491892fd8e68e651687e8ed3",
+          "tree": "c890ea113308b299a613bc81ab6044701e3095d0",
+          "source": {"remote": "nxp", "ref": "refs/heads/imx_2.6.31_caf"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.31-imx"}]
         },
         {
-          "id": "linux-nxp-imx-2.6.31",
-          "path": "worktrees/linux/nxp-imx-2.6.31",
-          "ref": "refs/remotes/nxp/imx_2.6.31_caf"
-        },
-        {
-          "id": "linux-stable-7.0.11",
-          "path": "worktrees/linux/kindle3-v7.0.11",
-          "ref": "v7.0.11"
+          "id": "7.0.11",
+          "description": "Linux stable release 7.0.11 used as a contemporary mainline reference",
+          "author": "stable",
+          "tags": ["mainline", "stable"],
+          "commit": "bb532bfaf7919c7c98caab81864e9ce2646e11e3",
+          "tree": "4b7fd07149896994fb739e1cbb5d65f2e47cd6d7",
+          "source": {"remote": "stable", "ref": "refs/tags/v7.0.11"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/7.0.11"}]
         }
       ]
     }

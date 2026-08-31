@@ -16,7 +16,10 @@ from pydantic import Field
 
 from . import catalog_index
 from .config import ResourceError, ResourceSettings
-from .manager import CatalogInfo, ResourceInfo, ResourceKind, ResourceManager
+from .manager import (
+    CatalogInfo, PatchInfo, ResourceInfo, ResourceKind, ResourceManager,
+    RevisionInfo, WorktreeInfo,
+)
 
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -80,7 +83,7 @@ def create_server(manager: ResourceManager) -> MCPServer:
         kind: ResourceKind | None = None,
         tag: str | None = None,
     ) -> list[ResourceInfo]:
-        """List cataloged documents, repositories, and worktrees with availability."""
+        """List cataloged documents and repositories with availability."""
         return manager.list_resources(kind, tag)
 
     @server.tool(title="Get resource", annotations=READ_ONLY)
@@ -88,6 +91,61 @@ def create_server(manager: ResourceManager) -> MCPServer:
         """Return manifest metadata and local availability for one resource ID."""
         with domain_errors():
             return manager.get_resource(resource_id)
+
+    @server.tool(title="List Git repositories", annotations=READ_ONLY)
+    def list_repositories(tag: str | None = None) -> list[ResourceInfo]:
+        """List cataloged Git object stores."""
+        return manager.list_repositories(tag)
+
+    @server.tool(title="Get Git repository", annotations=READ_ONLY)
+    def get_repository(repository_id: str) -> ResourceInfo:
+        """Return metadata and local availability for one Git repository."""
+        with domain_errors():
+            return manager.get_repository(repository_id)
+
+    @server.tool(title="List source revisions", annotations=READ_ONLY)
+    def list_revisions(
+        repository_id: str | None = None,
+        author: str | None = None,
+        tag: str | None = None,
+    ) -> list[RevisionInfo]:
+        """List immutable source revisions, optionally filtered by repository."""
+        with domain_errors():
+            return manager.list_revisions(repository_id, author, tag)
+
+    @server.tool(title="Get source revision", annotations=READ_ONLY)
+    def get_revision(repository_id: str, revision_id: str) -> RevisionInfo:
+        """Return pinned identity, provenance, and worktrees for one revision."""
+        with domain_errors():
+            return manager.get_revision(repository_id, revision_id)
+
+    @server.tool(title="List patch artifacts", annotations=READ_ONLY)
+    def list_patches(tag: str | None = None) -> list[PatchInfo]:
+        """List fetched patches used to construct source revisions."""
+        return manager.list_patches(tag)
+
+    @server.tool(title="Get patch artifact", annotations=READ_ONLY)
+    def get_patch(patch_id: str) -> PatchInfo:
+        """Return metadata and local availability for one patch."""
+        with domain_errors():
+            return manager.get_patch(patch_id)
+
+    @server.tool(title="List revision worktrees", annotations=READ_ONLY)
+    def list_worktrees(
+        repository_id: str | None = None,
+        revision_id: str | None = None,
+    ) -> list[WorktreeInfo]:
+        """List worktrees scoped by repository and revision."""
+        with domain_errors():
+            return manager.list_worktrees(repository_id, revision_id)
+
+    @server.tool(title="Get revision worktree", annotations=READ_ONLY)
+    def get_worktree(
+        repository_id: str, revision_id: str, worktree_id: str
+    ) -> WorktreeInfo:
+        """Return status for one revision-scoped worktree."""
+        with domain_errors():
+            return manager.get_worktree(repository_id, revision_id, worktree_id)
 
     @server.tool(title="Search indexed documents", annotations=READ_ONLY)
     def search_documents(
@@ -159,7 +217,7 @@ def create_server(manager: ResourceManager) -> MCPServer:
 
     @server.resource("paper-resource://repositories", mime_type="application/json")
     def repositories_resource() -> str:
-        """All cataloged Git repositories, remotes, and worktrees."""
+        """All cataloged Git repositories and remotes."""
         return json_resource(
             [
                 asdict(resource)
@@ -170,12 +228,17 @@ def create_server(manager: ResourceManager) -> MCPServer:
     @server.resource("paper-resource://worktrees", mime_type="application/json")
     def worktrees_resource() -> str:
         """All cataloged Git worktrees and their local availability."""
-        return json_resource(
-            [
-                asdict(resource)
-                for resource in manager.list_resources(kind="worktree")
-            ]
-        )
+        return json_resource([asdict(resource) for resource in manager.list_worktrees()])
+
+    @server.resource("paper-resource://patches", mime_type="application/json")
+    def patches_resource() -> str:
+        """All cataloged patch artifacts and their local availability."""
+        return json_resource([asdict(patch) for patch in manager.list_patches()])
+
+    @server.resource("paper-resource://revisions", mime_type="application/json")
+    def revisions_resource() -> str:
+        """All immutable source revisions and provenance relationships."""
+        return json_resource([asdict(revision) for revision in manager.list_revisions()])
 
     @server.resource(
         "paper-resource://documents/{document_id}", mime_type="application/json"
@@ -214,21 +277,74 @@ def create_server(manager: ResourceManager) -> MCPServer:
         mime_type="application/json",
     )
     def repository_resource(repository_id: str) -> str:
-        """Manifest metadata, remotes, and worktrees for one Git repository."""
+        """Manifest metadata and remotes for one Git repository."""
         with resource_errors():
             return json_resource(
                 asdict(resource_of_kind(manager, repository_id, "repository"))
             )
 
     @server.resource(
-        "paper-resource://worktrees/{worktree_id}", mime_type="application/json"
+        "paper-resource://patches/{patch_id}", mime_type="application/json"
     )
-    def worktree_resource(worktree_id: str) -> str:
-        """Manifest metadata and local availability for one Git worktree."""
+    def patch_resource(patch_id: str) -> str:
+        """Manifest metadata and local availability for one patch artifact."""
         with resource_errors():
-            return json_resource(
-                asdict(resource_of_kind(manager, worktree_id, "worktree"))
-            )
+            return json_resource(asdict(manager.get_patch(patch_id)))
+
+    @server.resource(
+        "paper-resource://revisions/{repository_id}", mime_type="application/json"
+    )
+    def repository_revisions_resource(repository_id: str) -> str:
+        """All revisions in one repository."""
+        with resource_errors():
+            return json_resource([
+                asdict(revision) for revision in manager.list_revisions(repository_id)
+            ])
+
+    @server.resource(
+        "paper-resource://revisions/{repository_id}/{revision_id}",
+        mime_type="application/json",
+    )
+    def revision_resource(repository_id: str, revision_id: str) -> str:
+        """Pinned identity and provenance for one source revision."""
+        with resource_errors():
+            return json_resource(asdict(manager.get_revision(repository_id, revision_id)))
+
+    @server.resource(
+        "paper-resource://worktrees/{repository_id}/{revision_id}",
+        mime_type="application/json",
+    )
+    def revision_worktrees_resource(repository_id: str, revision_id: str) -> str:
+        """All declared worktrees for one source revision."""
+        with resource_errors():
+            return json_resource([
+                asdict(worktree)
+                for worktree in manager.list_worktrees(repository_id, revision_id)
+            ])
+
+    @server.resource(
+        "paper-resource://worktrees/{repository_id}/{revision_id}/{worktree_id}",
+        mime_type="application/json",
+    )
+    def revision_worktree_resource(
+        repository_id: str, revision_id: str, worktree_id: str
+    ) -> str:
+        """Status for one revision-scoped worktree."""
+        with resource_errors():
+            return json_resource(asdict(
+                manager.get_worktree(repository_id, revision_id, worktree_id)
+            ))
+
+    @server.resource(
+        "paper-resource://worktrees/{repository_id}", mime_type="application/json"
+    )
+    def repository_worktrees_resource(repository_id: str) -> str:
+        """All declared worktrees in one repository."""
+        with resource_errors():
+            return json_resource([
+                asdict(worktree)
+                for worktree in manager.list_worktrees(repository_id)
+            ])
 
     return server
 

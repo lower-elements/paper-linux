@@ -21,6 +21,10 @@ just resource env
 just resource path
 just resource populate
 just resource check
+just resource revisions linux
+just resource revision linux 2.6.26-rt-lab126
+just resource worktrees linux 2.6.26-rt-lab126
+just resource worktree linux 2.6.26-rt-lab126 default
 just resource index
 just resource index-status
 just resource search "display update waveform"
@@ -34,6 +38,44 @@ The wrapper supplies Paper Linux's root `external-resources.json` manifest.
 The resource directory is read from `PAPER_RESOURCES_DIR` in `.env`; an
 already-set shell variable takes precedence. Commands which access files
 accept `--root PATH` as a one-off override.
+
+## Source revisions
+
+Manifest version 2 separates Git repositories, immutable revisions, and
+worktrees. Revision names are scoped to a repository and pin both a commit and
+its tree, so `linux:2.6.26-rt-lab126` identifies the same source regardless of
+which remote supplied its objects. A revision can name an exact
+`derived_from` revision, or an explicitly approximate `reference_base` with a
+reason explaining why it is useful for comparison without claiming ancestry.
+
+Patch files are independently fetched and checksum-pinned artifacts. A
+derived revision can apply one or more declared patches to its exact parent;
+Paper Resources creates deterministic commits and verifies their pinned commit
+and tree identities. Worktrees are separately declared under a revision and
+are always checked out detached at that revision. This keeps the revision as
+the reproducible abstraction while allowing any number of convenient human-
+or agent-readable checkouts.
+
+The metadata commands `repositories`, `patches`, `revisions`, and `worktrees`
+list these objects; their singular forms show one object. Repository and
+revision names are separate positional arguments. Population and checking can
+be restricted without ambiguity:
+
+```sh
+just resource populate --patch rt-2.6.26.8-rt16
+just resource populate --repository linux
+just resource populate --revision linux 2.6.26.8-rt16
+just resource populate --worktree linux 2.6.26.8-rt16 default
+just resource check --revision linux 2.6.26-rt-lab126
+```
+
+Population initializes an empty bare repository when necessary, fetches only
+the objects needed for pinned source revisions, constructs patch-derived
+revisions, and records private `refs/paper-resources/revisions/*` refs. A
+revision selector prepares the revision and its exact ancestry without making
+a checkout; a worktree selector creates the requested checkout, while full or
+repository population creates every declared worktree. Existing compatible
+object stores are reused.
 
 ## Document index
 
@@ -134,7 +176,7 @@ just resource-test
 ```
 
 The root `external-resources.json` belongs to Paper Linux rather than this
-package. Another project can use the tool with its own version-1 manifest by
+package. Another project can use the tool with its own version-2 manifest by
 passing `--manifest PATH` before the subcommand.
 
 ## MCP server
@@ -150,18 +192,22 @@ uv run --project tools/paper-resources paper-resources-mcp \
 
 An MCP host should launch that command with the Paper Linux repository as its
 working directory. `just resource-mcp` is an equivalent convenience command.
-The server exposes typed tools to inspect the catalog, search indexed text,
-read physical PDF pages, inspect index status, and update document indexes. It
-also exposes JSON resources for the complete catalog, document/repository/
-worktree collections, individual manifest resources, indexed physical PDF
-pages, and extracted sections. Resource templates use the following URI forms:
+The server exposes typed tools to inspect documents, repositories, revisions,
+patches, and worktrees; search indexed text; read physical PDF pages; inspect
+index status; and update document indexes. It also exposes corresponding JSON
+resources. Resource templates use the following URI forms:
 
 ```text
 paper-resource://documents/{document_id}
 paper-resource://documents/{document_id}/pages/{page_number}
 paper-resource://documents/{document_id}/sections/{section_index}
 paper-resource://repositories/{repository_id}
-paper-resource://worktrees/{worktree_id}
+paper-resource://patches/{patch_id}
+paper-resource://revisions/{repository_id}
+paper-resource://revisions/{repository_id}/{revision_id}
+paper-resource://worktrees/{repository_id}
+paper-resource://worktrees/{repository_id}/{revision_id}
+paper-resource://worktrees/{repository_id}/{revision_id}/{worktree_id}
 ```
 
 Resource population is deliberately not exposed over MCP; continue to use

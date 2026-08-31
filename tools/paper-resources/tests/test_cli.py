@@ -13,7 +13,7 @@ from unittest.mock import patch
 import anyio
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 
-from paper_resources import catalog_index, cli, manager as manager_module
+from paper_resources import catalog_index, cli, git_resources, manager as manager_module
 from paper_resources.config import ResourceSettings
 from paper_resources.manager import ResourceManager
 from paper_resources.mcp_server import create_server
@@ -84,6 +84,7 @@ class PaperResourcesTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.base = Path(self.temporary.name)
         source = self.base / "source"
+        self.source = source
         source.mkdir()
         git("init", "-b", "main", cwd=source)
         (source / "README").write_text("first\n", encoding="utf-8")
@@ -102,6 +103,8 @@ class PaperResourcesTest(unittest.TestCase):
         )
         git("tag", "v1", cwd=source)
         git("branch", "alternate", cwd=source)
+        commit = git("rev-parse", "v1^{commit}", cwd=source)
+        tree = git("rev-parse", "v1^{tree}", cwd=source)
 
         document = self.base / "source-document.pdf"
         write_test_pdf(
@@ -110,7 +113,7 @@ class PaperResourcesTest(unittest.TestCase):
         )
         digest = hashlib.sha256(document.read_bytes()).hexdigest()
         manifest = {
-            "version": 1,
+            "version": 2,
             "documents": [
                 {
                     "id": "test-document",
@@ -121,31 +124,38 @@ class PaperResourcesTest(unittest.TestCase):
                     "tags": ["display", "test"],
                 }
             ],
+            "patches": [],
             "repositories": [
                 {
                     "id": "test-repository",
                     "description": "test repository",
                     "path": "git/test.git",
                     "clone_url": str(source),
-                    "remotes": [
+                    "remotes": [],
+                    "revisions": [
                         {
-                            "name": "alternate",
-                            "url": str(source),
-                            "fetch": [
-                                "+refs/heads/alternate:refs/remotes/alternate/alternate"
+                            "id": "v1",
+                            "description": "test release",
+                            "author": "test",
+                            "tags": ["test"],
+                            "commit": commit,
+                            "tree": tree,
+                            "source": {"remote": "origin", "ref": "refs/tags/v1"},
+                            "worktrees": [
+                                {"id": "default", "path": "worktrees/test-v1"}
                             ],
-                        }
-                    ],
-                    "worktrees": [
-                        {
-                            "id": "test-v1",
-                            "path": "worktrees/test-v1",
-                            "ref": "v1",
                         },
                         {
-                            "id": "test-alternate",
-                            "path": "worktrees/test-alternate",
-                            "ref": "refs/remotes/alternate/alternate",
+                            "id": "alternate",
+                            "description": "test alternate release",
+                            "author": "test",
+                            "tags": ["test"],
+                            "commit": commit,
+                            "tree": tree,
+                            "source": {"remote": "origin", "ref": "refs/heads/alternate"},
+                            "worktrees": [
+                                {"id": "default", "path": "worktrees/test-alternate"}
+                            ],
                         },
                     ],
                 }
@@ -201,13 +211,96 @@ class PaperResourcesTest(unittest.TestCase):
 
         second = self.tool("populate")
         self.assertIn("ok       test-document", second.stdout)
-        self.assertIn("ok       test-v1", second.stdout)
+        self.assertIn("ok       test-repository:v1:default", second.stdout)
 
     def test_populate_one_worktree(self) -> None:
-        self.tool("populate", "--root", str(self.resources), "test-v1")
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--worktree", "test-repository", "v1", "default",
+        )
         self.assertTrue((self.resources / "worktrees/test-v1").is_dir())
         self.assertFalse((self.resources / "worktrees/test-alternate").exists())
-        self.tool("check", "--root", str(self.resources), "test-v1")
+        self.tool(
+            "check", "--root", str(self.resources),
+            "--worktree", "test-repository", "v1", "default",
+        )
+
+    def test_patch_constructs_pinned_revision_deterministically(self) -> None:
+        patch_path = self.base / "change.patch"
+        patch_path.write_text(
+            "diff --git a/README b/README\n"
+            "--- a/README\n"
+            "+++ b/README\n"
+            "@@ -1 +1 @@\n"
+            "-first\n"
+            "+patched\n",
+            encoding="utf-8",
+        )
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        patch_resource = {
+            "id": "test-change",
+            "description": "test source change",
+            "author": "test",
+            "path": "patches/change.patch",
+            "url": patch_path.as_uri(),
+            "sha256": hashlib.sha256(patch_path.read_bytes()).hexdigest(),
+        }
+        manifest["patches"].append(patch_resource)
+        repository = manifest["repositories"][0]
+        draft = {
+            "id": "patched",
+            "description": "derived test release",
+            "author": "test",
+            "commit": "0" * 40,
+            "tree": "0" * 40,
+            "derived_from": "v1",
+            "patches": ["test-change"],
+            "worktrees": [
+                {"id": "default", "path": "worktrees/test-patched"}
+            ],
+        }
+        repository["revisions"].append(draft)
+        commit, tree = git_resources.construct_revision(
+            repository,
+            self.source / ".git",
+            draft,
+            {"test-change": {"path": str(patch_path)}},
+            Path("/"),
+            verify=False,
+        )
+        draft["commit"] = commit
+        draft["tree"] = tree
+        self.manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+        result = self.tool(
+            "populate", "--root", str(self.resources),
+            "--revision", "test-repository", "patched",
+        )
+        self.assertIn("ok       test-repository:patched", result.stdout)
+        self.assertFalse((self.resources / "worktrees/test-patched").exists())
+        self.tool(
+            "check", "--root", str(self.resources),
+            "--revision", "test-repository", "patched",
+        )
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--worktree", "test-repository", "patched", "default",
+        )
+        self.assertEqual(
+            (self.resources / "worktrees/test-patched/README").read_text(
+                encoding="utf-8"
+            ),
+            "patched\n",
+        )
+        repository_path = self.resources / "git/test.git"
+        self.assertEqual(
+            git("--git-dir", str(repository_path), "rev-parse", "refs/paper-resources/revisions/patched"),
+            commit,
+        )
+        self.assertEqual(
+            git("--git-dir", str(repository_path), "merge-base", "--is-ancestor", manifest["repositories"][0]["revisions"][0]["commit"], commit),
+            "",
+        )
 
     def test_changed_document_fails_check(self) -> None:
         self.tool("populate", "--root", str(self.resources), "test-document")
@@ -428,6 +521,14 @@ class PaperResourcesTest(unittest.TestCase):
                     "get_document_page",
                     "get_index_status",
                     "index_documents",
+                    "list_repositories",
+                    "get_repository",
+                    "list_revisions",
+                    "get_revision",
+                    "list_patches",
+                    "get_patch",
+                    "list_worktrees",
+                    "get_worktree",
                 },
             )
             self.assertNotIn("populate_resources", names)
@@ -447,6 +548,8 @@ class PaperResourcesTest(unittest.TestCase):
                     "paper-resource://documents",
                     "paper-resource://repositories",
                     "paper-resource://worktrees",
+                    "paper-resource://patches",
+                    "paper-resource://revisions",
                 },
             )
             templates = await server.list_resource_templates()
@@ -457,7 +560,12 @@ class PaperResourcesTest(unittest.TestCase):
                     "paper-resource://documents/{document_id}/pages/{page_number}",
                     "paper-resource://documents/{document_id}/sections/{section_index}",
                     "paper-resource://repositories/{repository_id}",
-                    "paper-resource://worktrees/{worktree_id}",
+                    "paper-resource://patches/{patch_id}",
+                    "paper-resource://revisions/{repository_id}",
+                    "paper-resource://revisions/{repository_id}/{revision_id}",
+                    "paper-resource://worktrees/{repository_id}",
+                    "paper-resource://worktrees/{repository_id}/{revision_id}",
+                    "paper-resource://worktrees/{repository_id}/{revision_id}/{worktree_id}",
                 },
             )
 
@@ -541,10 +649,17 @@ class PaperResourcesTest(unittest.TestCase):
             )
 
             worktree = await server.read_resource(
-                "paper-resource://worktrees/test-v1"
+                "paper-resource://worktrees/test-repository/v1/default"
             )
             self.assertEqual(
-                json.loads(list(worktree)[0].content)["kind"], "worktree"
+                json.loads(list(worktree)[0].content)["revision_id"], "v1"
+            )
+
+            revision = await server.read_resource(
+                "paper-resource://revisions/test-repository/v1"
+            )
+            self.assertEqual(
+                json.loads(list(revision)[0].content)["author"], "test"
             )
 
             with self.assertRaises(ResourceNotFoundError):

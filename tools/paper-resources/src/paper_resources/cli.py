@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from pathlib import Path
 import sys
 from typing import Any
@@ -39,14 +40,24 @@ def nonnegative_integer(value: str) -> int:
 
 
 def print_catalog(manifest: dict[str, Any]) -> None:
-    for heading, resources in (("Documents", manifest.get("documents", [])), ("Repositories", manifest.get("repositories", []))):
+    for heading, resources in (
+        ("Documents", manifest.get("documents", [])),
+        ("Patches", manifest.get("patches", [])),
+    ):
         print(f"{heading}:")
         for resource in resources:
             tags = ", ".join(resource.get("tags", []))
             suffix = f" [{tags}]" if tags else ""
             print(f"  {resource['id']}: {resource.get('description', '')}{suffix}")
-            for worktree in resource.get("worktrees", []):
-                print(f"    {worktree['id']}: {worktree['ref']}")
+    print("Repositories:")
+    for repository in manifest.get("repositories", []):
+        tags = ", ".join(repository.get("tags", []))
+        suffix = f" [{tags}]" if tags else ""
+        print(f"  {repository['id']}: {repository.get('description', '')}{suffix}")
+        for revision in repository.get("revisions", []):
+            print(f"    {revision['id']}: {revision.get('description', '')}")
+            for worktree in revision.get("worktrees", []):
+                print(f"      worktree {worktree['id']}: {worktree['path']}")
 
 
 def print_index_report(report: catalog_index.IndexReport) -> None:
@@ -96,6 +107,33 @@ def print_section_result(result: catalog_index.SectionResult) -> None:
     print(result.content)
 
 
+def print_metadata(items: list[Any], *, json_output: bool) -> None:
+    values = [asdict(item) for item in items]
+    if json_output:
+        print(catalog_index.json_output(values))
+        return
+    for index, value in enumerate(values):
+        if index:
+            print()
+        identity = value["id"]
+        if value.get("repository_id"):
+            identity = f"{value['repository_id']}:{identity}"
+        if value.get("revision_id"):
+            identity = f"{value['repository_id']}:{value['revision_id']}:{value['id']}"
+        print(identity)
+        if value.get("description"):
+            print(value["description"])
+        for key in ("author", "commit", "tree", "status", "path", "resolved_path"):
+            if value.get(key) is not None:
+                print(f"{key.replace('_', ' ').title()}: {value[key]}")
+        if value.get("derived_from"):
+            print(f"Derived from: {value['derived_from']}")
+        if value.get("reference_base"):
+            reference = value["reference_base"]
+            print(f"Reference base: {reference['revision']}")
+            print(f"Reason: {reference['reason']}")
+
+
 def print_extraction(result: dict[str, Any]) -> None:
     pages_by_chunk: dict[int, list[int]] = {}
     for relation in result["chunk_pages"]:
@@ -134,6 +172,39 @@ def parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="list catalogued resources")
     subparsers.add_parser("env", help="print the effective resource environment")
     subparsers.add_parser("path", help="print the configured resource directory")
+
+    for command, help_text in (
+        ("repositories", "list Git repositories"),
+        ("patches", "list patch artifacts"),
+        ("revisions", "list source revisions"),
+        ("worktrees", "list revision worktrees"),
+    ):
+        metadata_parser = subparsers.add_parser(command, help=help_text)
+        metadata_parser.add_argument("--json", action="store_true")
+        if command in ("repositories", "patches", "revisions"):
+            metadata_parser.add_argument("--tag")
+        if command == "revisions":
+            metadata_parser.add_argument("--author")
+            metadata_parser.add_argument("repository", nargs="?")
+        if command == "worktrees":
+            metadata_parser.add_argument("repository", nargs="?")
+            metadata_parser.add_argument("revision", nargs="?")
+
+    repository_parser = subparsers.add_parser("repository", help="show one Git repository")
+    repository_parser.add_argument("repository")
+    repository_parser.add_argument("--json", action="store_true")
+    patch_parser = subparsers.add_parser("patch", help="show one patch artifact")
+    patch_parser.add_argument("patch")
+    patch_parser.add_argument("--json", action="store_true")
+    revision_parser = subparsers.add_parser("revision", help="show one source revision")
+    revision_parser.add_argument("repository")
+    revision_parser.add_argument("revision")
+    revision_parser.add_argument("--json", action="store_true")
+    worktree_parser = subparsers.add_parser("worktree", help="show one revision worktree")
+    worktree_parser.add_argument("repository")
+    worktree_parser.add_argument("revision")
+    worktree_parser.add_argument("worktree")
+    worktree_parser.add_argument("--json", action="store_true")
 
     index_parser = subparsers.add_parser("index", help="index document text for search")
     index_parser.add_argument("--root", type=Path, help="override the configured resource directory")
@@ -186,6 +257,14 @@ def parser() -> argparse.ArgumentParser:
     for command, help_text in (("populate", "fetch and prepare resources"), ("check", "check an existing resource directory")):
         subparser = subparsers.add_parser(command, help=help_text)
         subparser.add_argument("--root", type=Path, help="override the configured resource directory")
+        selectors = subparser.add_mutually_exclusive_group()
+        selectors.add_argument("--repository")
+        selectors.add_argument("--revision", nargs=2, metavar=("REPOSITORY", "REVISION"))
+        selectors.add_argument("--patch")
+        selectors.add_argument(
+            "--worktree", nargs=3,
+            metavar=("REPOSITORY", "REVISION", "WORKTREE"),
+        )
         subparser.add_argument("resources", nargs="*", metavar="ID", help="resource IDs (default: all)")
     return result
 
@@ -211,6 +290,26 @@ def main(arguments: list[str] | None = None) -> int:
             return 0
 
         manager = ResourceManager.load(settings)
+
+        if args.command in ("repositories", "repository", "patches", "patch", "revisions", "revision", "worktrees", "worktree"):
+            if args.command == "repositories":
+                items = manager.list_repositories(args.tag)
+            elif args.command == "repository":
+                items = [manager.get_repository(args.repository)]
+            elif args.command == "patches":
+                items = manager.list_patches(args.tag)
+            elif args.command == "patch":
+                items = [manager.get_patch(args.patch)]
+            elif args.command == "revisions":
+                items = manager.list_revisions(args.repository, args.author, args.tag)
+            elif args.command == "revision":
+                items = [manager.get_revision(args.repository, args.revision)]
+            elif args.command == "worktrees":
+                items = manager.list_worktrees(args.repository, args.revision)
+            else:
+                items = [manager.get_worktree(args.repository, args.revision, args.worktree)]
+            print_metadata(items, json_output=args.json)
+            return 0
         if args.command in ("index", "index-status"):
             if args.command == "index":
                 report = manager.index_documents(args.resources, args.extractor)
@@ -269,9 +368,21 @@ def main(arguments: list[str] | None = None) -> int:
 
         if args.command == "populate":
             manager.settings.root.mkdir(parents=True, exist_ok=True)
-            print("\n".join(manager.populate(args.resources)))
+            print("\n".join(manager.populate(
+                args.resources,
+                repository_id=args.repository,
+                revision_key=tuple(args.revision) if args.revision else None,
+                patch_id=args.patch,
+                worktree_key=tuple(args.worktree) if args.worktree else None,
+            )))
             return 0
-        success, messages = manager.check(args.resources)
+        success, messages = manager.check(
+            args.resources,
+            repository_id=args.repository,
+            revision_key=tuple(args.revision) if args.revision else None,
+            patch_id=args.patch,
+            worktree_key=tuple(args.worktree) if args.worktree else None,
+        )
         print("\n".join(messages))
         return 0 if success else 1
     except (ResourceError, catalog_index.CatalogIndexError) as error:
