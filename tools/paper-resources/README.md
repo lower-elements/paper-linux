@@ -28,6 +28,8 @@ just resource worktrees linux 2.6.26-rt-lab126
 just resource worktree linux 2.6.26-rt-lab126 default
 just resource compare linux 2.6.26 2.6.26-imx35-pdk
 just resource diff linux 2.6.26 2.6.26-imx35-pdk drivers/video/Kconfig
+just resource grep linux MAX8660 2.6.26-rt-lab126 7.0.11
+just resource files --glob 'drivers/**/*max8660*' linux 2.6.26-rt-lab126 7.0.11
 just resource index
 just resource index-status
 just resource search "display update waveform"
@@ -154,6 +156,8 @@ indexed blob internally, so callers never need a separate OID lookup:
 just resource outline linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c
 just resource file-source --lines 120:220 \
     linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c
+just resource read-line \
+    linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c 240
 ```
 
 `outline` returns compact, source-ordered definitions before any source is
@@ -179,8 +183,8 @@ Tag IDs are intentionally not stable across a database rebuild.
 
 Source requests read pinned Git blobs, not checkout contents. A configured
 worktree file can be used as a convenient alias with `--worktree PATH` for
-`outline`, `file-source`, and `locate`; the tool maps it back to its manifest
-revision and warns if the checkout is dirty. Batch tag reads load each blob
+`outline`, `file-source`, `locate`, and `read-line`; the tool maps it back to
+its manifest revision and warns if the checkout is dirty. Batch tag reads load each blob
 once, merge overlapping or adjacent regions, retain the exact bounds of every
 requested tag, and enforce line and character budgets.
 
@@ -189,8 +193,12 @@ The higher-level archaeology commands remain summary-oriented:
 ```sh
 just resource references --repository linux memcpy
 just resource locate linux 2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c 240
+just resource file-index linux 7.0.11 drivers/regulator/max8660.c
 just resource outline-diff linux 2.6.26-imx35-pdk \
     2.6.26-rt-lab126 drivers/video/mxc/mxcfb.c
+just resource symbol-diff --from-path drivers/video/mxc/mxcfb.c \
+    --to-path drivers/video/mxc/mxcfb.c linux \
+    2.6.26-imx35-pdk 2.6.26-rt-lab126 mxcfb_probe
 just resource history --path drivers/video/mxc/mxcfb.c linux mxcfb_probe
 just resource tag-facets
 ```
@@ -202,6 +210,53 @@ added, removed, unchanged, changed, or ambiguous without returning a file
 diff. `history` follows manifest revision order and collapses consecutive
 revisions which reuse the same indexed tags. All code-navigation commands
 accept `--json`.
+
+### Source archaeology
+
+Git-backed discovery operates on immutable manifest revisions without requiring
+worktrees. It adds revision and blob provenance, collapses identical content,
+and can resolve text matches to their containing Ctags scope. For a quick search
+of one checkout, using `rg` directly remains entirely appropriate.
+
+```sh
+just resource files --path-prefix drivers/regulator \
+    --glob '*max8660*' linux 2.6.26-rt-lab126 7.0.11
+just resource grep --ignore-case --context 2 --glob '*.c' \
+    linux MAX8660 2.6.26-imx35-pdk 2.6.26-rt-lab126 7.0.11
+just resource blob-occurrences \
+    linux 2.6.26-rt-lab126 drivers/regulator/max8660/reg-max8660.c
+```
+
+`files` and `grep` accept several revisions in one request and group identical
+Git blobs rather than repeating unchanged results. `blob-occurrences` starts
+from a human-readable revision path and finds every manifest path with exactly
+the same content. `file-index` explains whether a path exists, whether revision
+globs selected it, and which Ctags parser and tag count it produced.
+
+History operations are bounded and anchored at a pinned revision:
+
+```sh
+just resource file-history linux 7.0.11 drivers/regulator/max8660.c
+just resource history-search --path drivers/regulator/max8660.c \
+    linux 7.0.11 MAX8660_DCDC_MIN_UV
+just resource history-search --regex linux 7.0.11 'MAX8660.*MIN_UV'
+just resource blame linux 7.0.11 drivers/regulator/max8660.c 35:55
+```
+
+`file-history` optionally follows renames, `history-search` uses Git pickaxe
+semantics (`-S` for text and `-G` for regex), and `blame` accepts at most 500
+lines. For hardware questions spanning code and datasheets, `hardware-search`
+returns bounded document FTS hits, Ctags definitions, and source-text matches:
+
+```sh
+just resource hardware-search --repository linux --revision 2.6.26-rt-lab126 \
+    --revision 7.0.11 MAX8660
+```
+
+A productive agent workflow is: compare changed paths, search source text when
+starting from a hardware name or constant, inspect the containing tag, outline
+the file, batch-read selected definitions, follow references, compare the
+definition across revisions, then cross-check relevant document pages.
 
 ### Document text
 
@@ -325,7 +380,12 @@ document indexes. Code-navigation tools are named for the operation they
 perform: `search_code_tags`, `outline_file`, `outline_scope`, `inspect_tags`,
 `read_tagged_code`, `read_code_file`, `read_enclosing_scope`,
 `diff_tagged_code`, `describe_code_index`, `find_references`,
-`locate_code_at_line`, `compare_file_outlines`, and `trace_symbol_history`.
+`locate_code_at_line`, `read_code_at_line`, `compare_file_outlines`,
+`compare_symbol_definitions`, and `trace_symbol_history`. Git-backed archaeology
+is exposed as `find_revision_files`, `search_source_text`,
+`describe_file_index`, `show_file_history`, `search_revision_history`,
+`blame_file_lines`, and `find_blob_occurrences`; `search_hardware_references`
+federates document, tag, and source-text results.
 `search_code_tags` can include source for at most 20 results to avoid an extra
 round trip when a query is already precise. It also exposes corresponding
 JSON resources. Resource templates use the following URI forms:
