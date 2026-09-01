@@ -209,6 +209,50 @@ def create_server(manager: ResourceManager) -> MCPServer:
         with domain_errors():
             return asdict(manager.describe_file_index(repository, revision, path))
 
+    @server.tool(title="Show source file history", annotations=READ_ONLY)
+    def show_file_history(
+        repository: str,
+        revision: str,
+        path: Annotated[str, Field(min_length=1)],
+        follow_renames: bool = True,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    ) -> dict[str, Any]:
+        """List bounded Git history for one file at a pinned revision."""
+        with domain_errors():
+            return asdict(manager.show_file_history(
+                repository, revision, path, follow=follow_renames, limit=limit
+            ))
+
+    @server.tool(title="Search source revision history", annotations=READ_ONLY)
+    def search_revision_history(
+        repository: str,
+        revision: str,
+        query: Annotated[str, Field(min_length=1)],
+        regex: bool = False,
+        path: str | None = None,
+        limit: Annotated[int, Field(ge=1, le=500)] = 50,
+    ) -> dict[str, Any]:
+        """Find commits whose patch adds or removes text (-S) or matches a regex (-G)."""
+        with domain_errors():
+            return asdict(manager.search_revision_history(
+                repository, revision, query, regex=regex, path=path, limit=limit
+            ))
+
+    @server.tool(title="Blame source file lines", annotations=READ_ONLY)
+    def blame_file_lines(
+        repository: str,
+        revision: str,
+        path: Annotated[str, Field(min_length=1)],
+        line_start: Annotated[int, Field(ge=1)],
+        line_end: Annotated[int, Field(ge=1)],
+    ) -> dict[str, Any]:
+        """Attribute a bounded line range in a pinned revision to Git commits."""
+        with domain_errors():
+            return asdict(manager.blame_file_lines(
+                repository, revision, path,
+                line_start=line_start, line_end=line_end,
+            ))
+
     @server.tool(title="List patch artifacts", annotations=READ_ONLY)
     def list_patches(tag: str | None = None) -> list[PatchInfo]:
         """List fetched patches used to construct source revisions."""

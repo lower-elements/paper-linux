@@ -230,6 +230,14 @@ def print_source_text_search(result: Any) -> None:
         )
 
 
+def print_commits(commits: Any, *, truncated: bool) -> None:
+    for commit in commits:
+        print(f"{commit.commit}\t{commit.authored_at}\t{commit.subject}")
+        print(f"  {commit.author} <{commit.author_email}>")
+    if truncated:
+        print("[history truncated]")
+
+
 def print_extraction(result: dict[str, Any]) -> None:
     pages_by_chunk: dict[int, list[int]] = {}
     for relation in result["chunk_pages"]:
@@ -408,6 +416,39 @@ def parser() -> argparse.ArgumentParser:
     file_index_parser.add_argument("repository")
     file_index_parser.add_argument("revision")
     file_index_parser.add_argument("file", metavar="FILE")
+
+    file_history_parser = subparsers.add_parser(
+        "file-history", help="show bounded Git history for one revision file"
+    )
+    file_history_parser.add_argument("--root", type=Path)
+    file_history_parser.add_argument("--no-follow", action="store_true")
+    file_history_parser.add_argument("--limit", type=positive_integer, default=50)
+    file_history_parser.add_argument("--json", action="store_true")
+    file_history_parser.add_argument("repository")
+    file_history_parser.add_argument("revision")
+    file_history_parser.add_argument("file", metavar="FILE")
+
+    history_search_parser = subparsers.add_parser(
+        "history-search", help="search changes reachable from a pinned revision"
+    )
+    history_search_parser.add_argument("--root", type=Path)
+    history_search_parser.add_argument("--regex", action="store_true")
+    history_search_parser.add_argument("--path")
+    history_search_parser.add_argument("--limit", type=positive_integer, default=50)
+    history_search_parser.add_argument("--json", action="store_true")
+    history_search_parser.add_argument("repository")
+    history_search_parser.add_argument("revision")
+    history_search_parser.add_argument("query")
+
+    blame_parser = subparsers.add_parser(
+        "blame", help="attribute a bounded revision file line range"
+    )
+    blame_parser.add_argument("--root", type=Path)
+    blame_parser.add_argument("--json", action="store_true")
+    blame_parser.add_argument("repository")
+    blame_parser.add_argument("revision")
+    blame_parser.add_argument("file", metavar="FILE")
+    blame_parser.add_argument("lines", type=line_range, metavar="START:END")
 
     index_parser = subparsers.add_parser(
         "index", help="index documents and selected source revisions"
@@ -741,6 +782,42 @@ def main(arguments: list[str] | None = None) -> int:
                 if result.language:
                     print(f"Language: {result.language}")
                 print(f"Tags: {result.tag_count}")
+            return 0
+        if args.command == "file-history":
+            result = manager.show_file_history(
+                args.repository, args.revision, args.file,
+                follow=not args.no_follow, limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_commits(result.commits, truncated=result.truncated)
+            return 0
+        if args.command == "history-search":
+            result = manager.search_revision_history(
+                args.repository, args.revision, args.query,
+                regex=args.regex, path=args.path, limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_commits(result.commits, truncated=result.truncated)
+            return 0
+        if args.command == "blame":
+            start, end = args.lines
+            if end is None:
+                end = start
+            result = manager.blame_file_lines(
+                args.repository, args.revision, args.file,
+                line_start=start, line_end=end,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                for line in result.lines:
+                    print(
+                        f"{line.line}\t{line.commit}\t{line.author}\t{line.text}"
+                    )
             return 0
         if args.command in ("index", "index-status"):
             if args.command == "index":

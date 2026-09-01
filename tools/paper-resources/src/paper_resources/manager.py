@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from . import (
     artifacts, catalog_index, code_navigation, ctags_index, database,
-    git_resources, repository_index, source_search,
+    git_history, git_resources, repository_index, source_search,
 )
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
@@ -526,6 +526,45 @@ class ResourceManager:
             git_resources.oid_to_hex(blob.oid) if blob else None,
             blob.size if blob else None, bool(revision["index"]), selected,
             indexed, input_name, language, tag_count,
+        )
+
+    def show_file_history(
+        self, repository_id: str, revision_id: str, path: str,
+        *, follow: bool = True, limit: int = 50,
+    ) -> git_history.FileHistory:
+        repository_path, revisions = self._revision_search_context(
+            repository_id, [revision_id]
+        )
+        _id, commit, _tree = revisions[0]
+        return git_history.file_history(
+            repository_path, repository_id, revision_id, commit, path,
+            follow=follow, limit=limit,
+        )
+
+    def search_revision_history(
+        self, repository_id: str, revision_id: str, query: str,
+        *, regex: bool = False, path: str | None = None, limit: int = 50,
+    ) -> git_history.HistorySearch:
+        repository_path, revisions = self._revision_search_context(
+            repository_id, [revision_id]
+        )
+        _id, commit, _tree = revisions[0]
+        return git_history.search_history(
+            repository_path, repository_id, revision_id, commit, query,
+            regex=regex, path=path, limit=limit,
+        )
+
+    def blame_file_lines(
+        self, repository_id: str, revision_id: str, path: str,
+        *, line_start: int, line_end: int,
+    ) -> git_history.FileBlame:
+        repository_path, revisions = self._revision_search_context(
+            repository_id, [revision_id]
+        )
+        _id, commit, _tree = revisions[0]
+        return git_history.blame_lines(
+            repository_path, repository_id, revision_id, commit, path,
+            line_start=line_start, line_end=line_end,
         )
 
     def compare_revisions(

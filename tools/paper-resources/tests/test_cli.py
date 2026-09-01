@@ -1407,6 +1407,43 @@ class PaperResourcesTest(unittest.TestCase):
         ).stdout)
         self.assertEqual(cli_search["results"][0]["line"], 2)
 
+    def test_bounded_git_history_and_blame_queries(self) -> None:
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--repository", "test-repository",
+        )
+        settings = ResourceSettings.load(self.manifest, self.resources)
+        resource_manager = ResourceManager.load(settings)
+        self.addCleanup(resource_manager.close)
+
+        history = resource_manager.show_file_history(
+            "test-repository", "alternate", "README"
+        )
+        self.assertEqual([item.subject for item in history.commits], ["alternate", "first"])
+        searched = resource_manager.search_revision_history(
+            "test-repository", "alternate", "second", path="README"
+        )
+        self.assertEqual([item.subject for item in searched.commits], ["alternate"])
+        blamed = resource_manager.blame_file_lines(
+            "test-repository", "alternate", "README",
+            line_start=1, line_end=1,
+        )
+        self.assertEqual(blamed.lines[0].text, "second")
+        self.assertEqual(blamed.lines[0].author, "Test")
+
+        self.assertIn("alternate", self.tool(
+            "file-history", "--root", str(self.resources),
+            "test-repository", "alternate", "README",
+        ).stdout)
+        self.assertIn("alternate", self.tool(
+            "history-search", "--root", str(self.resources), "--path", "README",
+            "test-repository", "alternate", "second",
+        ).stdout)
+        self.assertIn("second", self.tool(
+            "blame", "--root", str(self.resources),
+            "test-repository", "alternate", "README", "1:1",
+        ).stdout)
+
     def test_patch_constructs_pinned_revision_deterministically(self) -> None:
         patch_path = self.base / "change.patch"
         patch_path.write_text(
@@ -1726,6 +1763,9 @@ class PaperResourcesTest(unittest.TestCase):
                     "find_revision_files",
                     "search_source_text",
                     "describe_file_index",
+                    "show_file_history",
+                    "search_revision_history",
+                    "blame_file_lines",
                     "list_patches",
                     "get_patch",
                     "list_worktrees",
