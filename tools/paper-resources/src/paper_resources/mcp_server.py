@@ -199,6 +199,16 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 resolve_scope=resolve_scope, offset=offset, limit=limit,
             ))
 
+    @server.tool(title="Describe source file index", annotations=READ_ONLY)
+    def describe_file_index(
+        repository: str,
+        revision: str,
+        path: Annotated[str, Field(min_length=1)],
+    ) -> dict[str, Any]:
+        """Explain Git presence, manifest selection, parser, and Ctags coverage."""
+        with domain_errors():
+            return asdict(manager.describe_file_index(repository, revision, path))
+
     @server.tool(title="List patch artifacts", annotations=READ_ONLY)
     def list_patches(tag: str | None = None) -> list[PatchInfo]:
         """List fetched patches used to construct source revisions."""

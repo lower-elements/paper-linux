@@ -136,6 +136,22 @@ class CatalogInfo:
     worktrees: int
 
 
+@dataclass(frozen=True, slots=True)
+class FileIndexStatus:
+    repository: str
+    revision: str
+    path: str
+    present: bool
+    blob_oid: str | None
+    size: int | None
+    revision_index_enabled: bool
+    selected_by_patterns: bool
+    indexed: bool
+    analysis_input_name: str | None
+    language: str | None
+    tag_count: int
+
+
 class ResourceManager:
     """Manifest-backed resource and index operations."""
 
@@ -462,6 +478,54 @@ class ResourceManager:
             result.repository, result.revisions, result.query, result.regex,
             result.case_sensitive, result.total, result.offset, result.limit,
             tuple(enriched), result.truncated,
+        )
+
+    def describe_file_index(
+        self, repository_id: str, revision_id: str, path: str
+    ) -> FileIndexStatus:
+        """Explain Git presence, manifest selection, and Ctags coverage for a file."""
+        repository, revision = self._revision_manifest(repository_id, revision_id)
+        repository_path, _selected = self._revision_search_context(
+            repository_id, [revision_id]
+        )
+        normalized = git_resources.validate_repository_path(path)
+        blob = git_resources.tree_blob_at_path(
+            repository_path, revision["tree"], normalized
+        )
+        selected = repository_index.revision_path_included(revision, normalized)
+        indexed = False
+        input_name = language = None
+        tag_count = 0
+        if blob is not None and self.settings.database.is_file():
+            with self._database_lock:
+                row = self._database(create=False).execute(
+                    """
+                    SELECT analysis.input_name, parser.language,
+                           count(tag.id) AS tag_count
+                    FROM ctags_revision_paths AS path
+                    JOIN ctags_analyses AS analysis
+                      ON analysis.repository_id = path.repository_id
+                     AND analysis.blob_oid = path.blob_oid
+                    LEFT JOIN ctags_parsers AS parser
+                      ON parser.id = analysis.input_parser_id
+                    LEFT JOIN ctags_tags AS tag
+                      ON tag.analysis_id = analysis.id
+                    WHERE path.repository_id = ? AND path.revision_id = ?
+                      AND path.path = ?
+                    GROUP BY analysis.id, parser.id
+                    """,
+                    (repository_id, revision_id, normalized),
+                ).fetchone()
+            if row is not None:
+                indexed = True
+                input_name = row["input_name"]
+                language = row["language"]
+                tag_count = row["tag_count"]
+        return FileIndexStatus(
+            repository_id, revision_id, normalized, blob is not None,
+            git_resources.oid_to_hex(blob.oid) if blob else None,
+            blob.size if blob else None, bool(revision["index"]), selected,
+            indexed, input_name, language, tag_count,
         )
 
     def compare_revisions(

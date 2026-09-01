@@ -1118,6 +1118,19 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(description.repositories, 1)
         self.assertGreater(description.tags, 0)
         self.assertIn("C", dict(description.languages))
+        file_status = resource_manager.describe_file_index(
+            "test-repository", "v1", "driver.c"
+        )
+        self.assertTrue(file_status.present)
+        self.assertTrue(file_status.selected_by_patterns)
+        self.assertTrue(file_status.indexed)
+        self.assertEqual(file_status.language, "C")
+        self.assertEqual(file_status.tag_count, 4)
+        missing_status = resource_manager.describe_file_index(
+            "test-repository", "v1", "missing.c"
+        )
+        self.assertFalse(missing_status.present)
+        self.assertFalse(missing_status.indexed)
 
         outline = resource_manager.outline_code_file(
             "test-repository", "v1", "driver.c"
@@ -1254,6 +1267,11 @@ class PaperResourcesTest(unittest.TestCase):
             "tag-facets", "--root", str(self.resources), "--json"
         ).stdout)
         self.assertGreater(facets["tags"], 0)
+        cli_status = json.loads(self.tool(
+            "file-index", "--root", str(self.resources), "--json",
+            "test-repository", "v1", "driver.c",
+        ).stdout)
+        self.assertTrue(cli_status["indexed"])
         self.assertIn("linux/types.h", self.tool(
             "references", "--root", str(self.resources),
             "--repository", "test-repository", "--revision", "v1",
@@ -1707,6 +1725,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "diff_revision_file",
                     "find_revision_files",
                     "search_source_text",
+                    "describe_file_index",
                     "list_patches",
                     "get_patch",
                     "list_worktrees",
@@ -1810,6 +1829,14 @@ class PaperResourcesTest(unittest.TestCase):
                 },
             )
             self.assertIn("+second", file_diff.structured_content["diff"])
+            file_status = await server.call_tool(
+                "describe_file_index",
+                {
+                    "repository": "test-repository", "revision": "v1",
+                    "path": "driver.c",
+                },
+            )
+            self.assertTrue(file_status.structured_content["indexed"])
 
             code_search = await server.call_tool(
                 "search_code_tags",

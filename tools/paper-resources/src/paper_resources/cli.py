@@ -400,6 +400,15 @@ def parser() -> argparse.ArgumentParser:
     grep_parser.add_argument("query")
     grep_parser.add_argument("revisions", nargs="+", metavar="REVISION")
 
+    file_index_parser = subparsers.add_parser(
+        "file-index", help="explain Ctags index coverage for one revision file"
+    )
+    file_index_parser.add_argument("--root", type=Path)
+    file_index_parser.add_argument("--json", action="store_true")
+    file_index_parser.add_argument("repository")
+    file_index_parser.add_argument("revision")
+    file_index_parser.add_argument("file", metavar="FILE")
+
     index_parser = subparsers.add_parser(
         "index", help="index documents and selected source revisions"
     )
@@ -712,6 +721,26 @@ def main(arguments: list[str] | None = None) -> int:
                 print(catalog_index.json_output(asdict(result)))
             else:
                 print_source_text_search(result)
+            return 0
+        if args.command == "file-index":
+            result = manager.describe_file_index(
+                args.repository, args.revision, args.file
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"{result.repository}@{result.revision}:{result.path}")
+                print(f"Present: {result.present}")
+                print(f"Revision indexing enabled: {result.revision_index_enabled}")
+                print(f"Selected by patterns: {result.selected_by_patterns}")
+                print(f"Indexed: {result.indexed}")
+                if result.blob_oid:
+                    print(f"Blob: {result.blob_oid} ({result.size} bytes)")
+                if result.analysis_input_name:
+                    print(f"Analysis input: {result.analysis_input_name}")
+                if result.language:
+                    print(f"Language: {result.language}")
+                print(f"Tags: {result.tag_count}")
             return 0
         if args.command in ("index", "index-status"):
             if args.command == "index":

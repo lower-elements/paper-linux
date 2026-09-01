@@ -279,6 +279,35 @@ def iter_tree_blobs(repository_path: Path, tree_oid: str | bytes) -> Iterator[Gi
         )
 
 
+def tree_blob_at_path(
+    repository_path: Path, tree_oid: str | bytes, path: str
+) -> GitBlob | None:
+    """Return the exact blob at a repository-relative tree path, if present."""
+    normalized = validate_repository_path(path)
+    object_name = oid_to_hex(tree_oid) if isinstance(tree_oid, bytes) else tree_oid
+    records = list(iter_git_nul_records([
+        "--git-dir", str(repository_path), "ls-tree", "-z", "-l",
+        "--full-tree", object_name, "--", normalized,
+    ]))
+    for record in records:
+        try:
+            metadata, raw_path = record.split(b"\t", 1)
+            raw_mode, object_type, raw_oid, raw_size = metadata.split()
+            found_path = raw_path.decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ResourceError("git returned an invalid tree entry") from error
+        if found_path != normalized or object_type != b"blob":
+            continue
+        try:
+            return GitBlob(
+                oid_from_hex(raw_oid.decode("ascii")), int(raw_size),
+                int(raw_mode, 8), normalized,
+            )
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ResourceError("git returned invalid blob metadata") from error
+    return None
+
+
 def read_blob(repository_path: Path, oid: str | bytes) -> bytes:
     """Read one blob directly from a repository object database."""
     object_name = (
