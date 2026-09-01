@@ -14,6 +14,7 @@ from .git_resources import (
     iter_tree_blobs,
     oid_to_hex,
     read_blob,
+    tree_blob_at_path,
     validate_repository_path,
 )
 
@@ -73,6 +74,17 @@ class SourceTextSearch:
     limit: int
     results: tuple[SourceTextMatch, ...]
     truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class BlobOccurrences:
+    repository: str
+    source_revision: str
+    source_path: str
+    blob_oid: str
+    size: int
+    searched_revisions: tuple[str, ...]
+    occurrences: tuple[FileOccurrence, ...]
 
 
 def _matches_path(
@@ -236,4 +248,33 @@ def search_text(
         repository, tuple(item[0] for item in revisions), query, regex,
         case_sensitive, len(raw_results), offset, limit, tuple(results),
         offset + limit < len(raw_results),
+    )
+
+
+def find_blob_occurrences(
+    repository_path: Path,
+    repository: str,
+    revisions: tuple[tuple[str, str, str], ...],
+    source_revision: str,
+    source_path: str,
+) -> BlobOccurrences:
+    """Find every path containing the source file's exact blob."""
+    normalized = validate_repository_path(source_path)
+    source = next((item for item in revisions if item[0] == source_revision), None)
+    if source is None:
+        raise ResourceError(f"source revision was not selected: {source_revision}")
+    source_blob = tree_blob_at_path(repository_path, source[2], normalized)
+    if source_blob is None:
+        raise ResourceError(
+            f"file does not exist: {repository}:{source_revision}:{normalized}"
+        )
+    occurrences = tuple(
+        FileOccurrence(revision_id, blob.path)
+        for revision_id, _commit, tree in revisions
+        for blob in iter_tree_blobs(repository_path, tree)
+        if blob.oid == source_blob.oid
+    )
+    return BlobOccurrences(
+        repository, source_revision, normalized, oid_to_hex(source_blob.oid),
+        source_blob.size, tuple(item[0] for item in revisions), occurrences,
     )

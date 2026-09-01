@@ -567,6 +567,32 @@ class ResourceManager:
             line_start=line_start, line_end=line_end,
         )
 
+    def find_blob_occurrences(
+        self,
+        repository_id: str,
+        source_revision_id: str,
+        source_path: str,
+        *,
+        revision_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> source_search.BlobOccurrences:
+        if revision_ids is None:
+            repository = self.repositories_by_id.get(repository_id)
+            if repository is None:
+                raise ResourceError(f"unknown repository ID: {repository_id}")
+            revision_ids = [
+                revision["id"] for revision in repository.get("revisions", [])
+            ]
+        selected_ids = list(revision_ids)
+        if source_revision_id not in selected_ids:
+            selected_ids.insert(0, source_revision_id)
+        repository_path, revisions = self._revision_search_context(
+            repository_id, selected_ids
+        )
+        return source_search.find_blob_occurrences(
+            repository_path, repository_id, revisions,
+            source_revision_id, source_path,
+        )
+
     def compare_revisions(
         self,
         repository_id: str,

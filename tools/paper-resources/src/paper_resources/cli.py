@@ -450,6 +450,16 @@ def parser() -> argparse.ArgumentParser:
     blame_parser.add_argument("file", metavar="FILE")
     blame_parser.add_argument("lines", type=line_range, metavar="START:END")
 
+    blob_parser = subparsers.add_parser(
+        "blob-occurrences", help="find revision paths containing an identical blob"
+    )
+    blob_parser.add_argument("--root", type=Path)
+    blob_parser.add_argument("--revision", action="append", dest="revisions")
+    blob_parser.add_argument("--json", action="store_true")
+    blob_parser.add_argument("repository")
+    blob_parser.add_argument("source_revision")
+    blob_parser.add_argument("source_path")
+
     index_parser = subparsers.add_parser(
         "index", help="index documents and selected source revisions"
     )
@@ -818,6 +828,18 @@ def main(arguments: list[str] | None = None) -> int:
                     print(
                         f"{line.line}\t{line.commit}\t{line.author}\t{line.text}"
                     )
+            return 0
+        if args.command == "blob-occurrences":
+            result = manager.find_blob_occurrences(
+                args.repository, args.source_revision, args.source_path,
+                revision_ids=args.revisions,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"{result.blob_oid}\t{result.size} bytes")
+                for occurrence in result.occurrences:
+                    print(f"{occurrence.revision}:{occurrence.path}")
             return 0
         if args.command in ("index", "index-status"):
             if args.command == "index":

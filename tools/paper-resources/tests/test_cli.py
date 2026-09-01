@@ -1444,6 +1444,30 @@ class PaperResourcesTest(unittest.TestCase):
             "test-repository", "alternate", "README", "1:1",
         ).stdout)
 
+    def test_identical_blob_occurrences_across_revisions(self) -> None:
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--repository", "test-repository",
+        )
+        settings = ResourceSettings.load(self.manifest, self.resources)
+        resource_manager = ResourceManager.load(settings)
+        self.addCleanup(resource_manager.close)
+        result = resource_manager.find_blob_occurrences(
+            "test-repository", "v1", "obsolete.txt"
+        )
+        self.assertEqual(
+            {(item.revision, item.path) for item in result.occurrences},
+            {
+                ("v1", "obsolete.txt"), ("v1", "duplicate.txt"),
+                ("alternate", "renamed.txt"), ("alternate", "duplicate.txt"),
+            },
+        )
+        cli_result = json.loads(self.tool(
+            "blob-occurrences", "--root", str(self.resources), "--json",
+            "test-repository", "v1", "obsolete.txt",
+        ).stdout)
+        self.assertEqual(len(cli_result["occurrences"]), 4)
+
     def test_patch_constructs_pinned_revision_deterministically(self) -> None:
         patch_path = self.base / "change.patch"
         patch_path.write_text(
@@ -1766,6 +1790,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "show_file_history",
                     "search_revision_history",
                     "blame_file_lines",
+                    "find_blob_occurrences",
                     "list_patches",
                     "get_patch",
                     "list_worktrees",

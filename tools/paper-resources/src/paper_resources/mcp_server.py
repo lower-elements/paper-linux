@@ -253,6 +253,20 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 line_start=line_start, line_end=line_end,
             ))
 
+    @server.tool(title="Find identical blob occurrences", annotations=READ_ONLY)
+    def find_blob_occurrences(
+        repository: str,
+        source_revision: str,
+        source_path: Annotated[str, Field(min_length=1)],
+        revisions: Annotated[list[str] | None, Field(max_length=100)] = None,
+    ) -> dict[str, Any]:
+        """Find manifest revision paths containing exactly the same Git blob."""
+        with domain_errors():
+            return asdict(manager.find_blob_occurrences(
+                repository, source_revision, source_path,
+                revision_ids=revisions,
+            ))
+
     @server.tool(title="List patch artifacts", annotations=READ_ONLY)
     def list_patches(tag: str | None = None) -> list[PatchInfo]:
         """List fetched patches used to construct source revisions."""
