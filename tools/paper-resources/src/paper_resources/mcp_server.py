@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import asdict
+from importlib.resources import files
 import json
 from pathlib import Path
 from typing import Annotated, Any, Iterator, Literal
@@ -29,6 +30,13 @@ INDEX_WRITE = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
+
+
+def agent_guide() -> str:
+    """Load the installed, agent-neutral operating guide."""
+    return files("paper_resources").joinpath("agent-guide.md").read_text(
+        encoding="utf-8"
+    )
 
 
 @contextmanager
@@ -75,9 +83,10 @@ def create_server(manager: ResourceManager) -> MCPServer:
     server = MCPServer(
         "Paper Resources",
         instructions=(
-            "Search and inspect the local external-resource catalog. Document search "
-            "results identify manifest resource IDs and physical PDF pages; cite both "
-            "when using indexed reference material."
+            "Paper Linux's project-specific catalog, document index, and pinned-source "
+            "archaeology service. Read paper-resource://help for operation selection, "
+            "bounded workflows, provenance rules, and citation guidance before a "
+            "substantial investigation."
         ),
     )
 
@@ -652,6 +661,11 @@ def create_server(manager: ResourceManager) -> MCPServer:
             return asdict(manager.trace_code_symbol_history(
                 repository, symbol, path=path, qualified=qualified,
             ))
+
+    @server.resource("paper-resource://help", mime_type="text/markdown")
+    def help_resource() -> str:
+        """Authoritative workflow, provenance, and evidence guidance for agents."""
+        return agent_guide()
 
     @server.resource("paper-resource://catalog", mime_type="application/json")
     def catalog_resource() -> str:

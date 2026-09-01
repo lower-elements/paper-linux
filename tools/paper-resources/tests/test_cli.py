@@ -1857,6 +1857,7 @@ class PaperResourcesTest(unittest.TestCase):
             self.assertEqual(
                 {str(resource.uri) for resource in resources},
                 {
+                    "paper-resource://help",
                     "paper-resource://catalog",
                     "paper-resource://documents",
                     "paper-resource://repositories",
@@ -2080,6 +2081,12 @@ class PaperResourcesTest(unittest.TestCase):
 
             resource = await server.read_resource("paper-resource://catalog")
             self.assertIn("test-document", list(resource)[0].content)
+
+            help_resource = await server.read_resource("paper-resource://help")
+            help_content = list(help_resource)[0]
+            self.assertEqual(help_content.mime_type, "text/markdown")
+            self.assertIn("Vendor-to-mainline archaeology", help_content.content)
+            self.assertIn("reference_base", help_content.content)
 
             document = await server.read_resource(
                 "paper-resource://documents/test-document"

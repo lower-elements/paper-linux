@@ -213,6 +213,11 @@ accept `--json`.
 
 ### Source archaeology
 
+Agents should read the authoritative [Paper Resources agent guide](src/paper_resources/agent-guide.md)
+for operation selection, bounded investigation workflows, provenance rules,
+and evidence standards. MCP clients can read the same installed file from
+`paper-resource://help`.
+
 Git-backed discovery operates on immutable manifest revisions without requiring
 worktrees. It adds revision and blob provenance, collapses identical content,
 and can resolve text matches to their containing Ctags scope. For a quick search
@@ -388,9 +393,14 @@ is exposed as `find_revision_files`, `search_source_text`,
 federates document, tag, and source-text results.
 `search_code_tags` can include source for at most 20 results to avoid an extra
 round trip when a query is already precise. It also exposes corresponding
-JSON resources. Resource templates use the following URI forms:
+JSON resources. MCP resources use the following URI forms:
+
+The server's concise instructions direct agents to the authoritative
+`paper-resource://help` guide rather than duplicating workflow guidance in each
+tool description.
 
 ```text
+paper-resource://help
 paper-resource://documents/{document_id}
 paper-resource://documents/{document_id}/pages/{page_number}
 paper-resource://documents/{document_id}/sections/{section_index}
