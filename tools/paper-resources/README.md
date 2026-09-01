@@ -136,6 +136,14 @@ and resolve reported enclosing scopes on a best-effort basis. Replacing one
 blob analysis is transactional, including its catalog records, tags, roles,
 qualified names, and enclosing relationships.
 
+Each indexed revision may optionally define `include` and `exclude` lists of
+repository-relative glob patterns. With no patterns every tree path is
+eligible; `include` acts as an allow-list when present, and an explicitly
+included path takes precedence over matching excludes. This makes
+`"exclude": ["*"]` plus a small `include` list a convenient way to index only
+the hardware paths relevant to a modern kernel while leaving Git authoritative
+for the complete tree.
+
 ### Code navigation
 
 Code is normally identified by a human-readable repository, revision, and
