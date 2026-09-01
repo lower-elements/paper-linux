@@ -207,18 +207,18 @@ def search_text(
     if context_lines < 0 or offset < 0 or limit < 1:
         raise ResourceError("source search bounds must be nonnegative and limit positive")
     blob_by_revision_path: dict[tuple[str, str], GitBlob] = {}
-    for revision_id, _commit_oid, tree_oid in revisions:
-        blob_by_revision_path.update(
-            ((revision_id, blob.path), blob)
-            for blob in iter_tree_blobs(repository_path, tree_oid)
-        )
     grouped: dict[tuple[bytes, int, str], list[TextOccurrence]] = {}
-    for revision_id, commit, _tree_oid in revisions:
+    for revision_id, commit, tree_oid in revisions:
         for path, line, text in _git_grep(
             repository_path, commit, query, regex=regex,
             case_sensitive=case_sensitive, path_prefix=path_prefix, globs=globs,
         ):
-            blob = blob_by_revision_path.get((revision_id, path))
+            key = (revision_id, path)
+            blob = blob_by_revision_path.get(key)
+            if blob is None:
+                blob = tree_blob_at_path(repository_path, tree_oid, path)
+                if blob is not None:
+                    blob_by_revision_path[key] = blob
             if blob is None:
                 raise ResourceError(f"git grep returned a path absent from its tree: {path}")
             grouped.setdefault((blob.oid, line, text), []).append(
