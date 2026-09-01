@@ -1327,6 +1327,51 @@ class PaperResourcesTest(unittest.TestCase):
         )
         self.assertIn("invalid repository-relative path", traversal.stderr)
 
+    def test_revision_file_and_source_text_search(self) -> None:
+        self.tool(
+            "populate", "--root", str(self.resources),
+            "--repository", "test-repository",
+        )
+        settings = ResourceSettings.load(self.manifest, self.resources)
+        resource_manager = ResourceManager.load(settings)
+        self.addCleanup(resource_manager.close)
+
+        files = resource_manager.find_revision_files(
+            "test-repository", ["v1", "alternate"], globs=["*.txt"]
+        )
+        shared = next(
+            result for result in files.results
+            if {item.path for item in result.occurrences}
+            >= {"obsolete.txt", "renamed.txt"}
+        )
+        self.assertIn("v1", {item.revision for item in shared.occurrences})
+        self.assertIn("alternate", {item.revision for item in shared.occurrences})
+
+        search = resource_manager.search_source_text(
+            "test-repository", ["v1", "alternate"], "driver_start",
+            context_lines=1,
+        )
+        driver = next(
+            result for result in search.results
+            if any(item.path == "driver.c" for item in result.occurrences)
+        )
+        self.assertEqual(driver.line, 2)
+        self.assertIn("driver_start", driver.source)
+        self.assertEqual(
+            {item.revision for item in driver.occurrences}, {"v1", "alternate"}
+        )
+
+        cli_files = json.loads(self.tool(
+            "files", "--root", str(self.resources), "--glob", "*.txt", "--json",
+            "test-repository", "v1", "alternate",
+        ).stdout)
+        self.assertGreater(cli_files["total"], 0)
+        cli_search = json.loads(self.tool(
+            "grep", "--root", str(self.resources), "--context", "1", "--json",
+            "test-repository", "driver_start", "v1", "alternate",
+        ).stdout)
+        self.assertEqual(cli_search["results"][0]["line"], 2)
+
     def test_patch_constructs_pinned_revision_deterministically(self) -> None:
         patch_path = self.base / "change.patch"
         patch_path.write_text(
@@ -1643,6 +1688,8 @@ class PaperResourcesTest(unittest.TestCase):
                     "get_revision",
                     "compare_revisions",
                     "diff_revision_file",
+                    "find_revision_files",
+                    "search_source_text",
                     "list_patches",
                     "get_patch",
                     "list_worktrees",

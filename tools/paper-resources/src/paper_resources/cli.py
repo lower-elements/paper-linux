@@ -193,6 +193,43 @@ def print_revision_file_diff(result: Any) -> None:
     print(result.diff, end="" if result.diff.endswith("\n") else "\n")
 
 
+def print_revision_files(result: Any) -> None:
+    for match in result.results:
+        print(f"{match.blob_oid}\t{match.size} bytes")
+        for occurrence in match.occurrences:
+            print(f"  {occurrence.revision}:{occurrence.path}")
+    if result.truncated:
+        print(
+            f"Showing {result.offset + 1}-"
+            f"{result.offset + len(result.results)} of {result.total}"
+        )
+
+
+def print_source_text_search(result: Any) -> None:
+    if not result.results:
+        print("no matches")
+        return
+    for index, match in enumerate(result.results):
+        if index:
+            print()
+        locations = ", ".join(
+            f"{item.revision}:{item.path}" for item in match.occurrences
+        )
+        print(f"{locations}:{match.line} [{match.blob_oid}]")
+        if match.containing:
+            tag = match.containing[0]
+            print(
+                f"Containing: [{tag.tag_id}] {tag.kind} "
+                f"{tag.qualified_name or tag.name}"
+            )
+        print(match.source)
+    if result.truncated:
+        print(
+            f"Showing {result.offset + 1}-"
+            f"{result.offset + len(result.results)} of {result.total}"
+        )
+
+
 def print_extraction(result: dict[str, Any]) -> None:
     pages_by_chunk: dict[int, list[int]] = {}
     for relation in result["chunk_pages"]:
@@ -333,6 +370,35 @@ def parser() -> argparse.ArgumentParser:
     diff_parser.add_argument("from_revision", metavar="FROM")
     diff_parser.add_argument("to_revision", metavar="TO")
     diff_parser.add_argument("file", metavar="FILE")
+
+    files_parser = subparsers.add_parser(
+        "files", help="find files across pinned source revisions"
+    )
+    files_parser.add_argument("--root", type=Path)
+    files_parser.add_argument("--path-prefix")
+    files_parser.add_argument("--glob", action="append", default=[])
+    files_parser.add_argument("--offset", type=nonnegative_integer, default=0)
+    files_parser.add_argument("--limit", type=positive_integer, default=200)
+    files_parser.add_argument("--json", action="store_true")
+    files_parser.add_argument("repository")
+    files_parser.add_argument("revisions", nargs="+", metavar="REVISION")
+
+    grep_parser = subparsers.add_parser(
+        "grep", help="search text across pinned source revisions"
+    )
+    grep_parser.add_argument("--root", type=Path)
+    grep_parser.add_argument("--regex", action="store_true")
+    grep_parser.add_argument("--ignore-case", action="store_true")
+    grep_parser.add_argument("--path-prefix")
+    grep_parser.add_argument("--glob", action="append", default=[])
+    grep_parser.add_argument("--context", type=nonnegative_integer, default=0)
+    grep_parser.add_argument("--no-scope", action="store_true")
+    grep_parser.add_argument("--offset", type=nonnegative_integer, default=0)
+    grep_parser.add_argument("--limit", type=positive_integer, default=50)
+    grep_parser.add_argument("--json", action="store_true")
+    grep_parser.add_argument("repository")
+    grep_parser.add_argument("query")
+    grep_parser.add_argument("revisions", nargs="+", metavar="REVISION")
 
     index_parser = subparsers.add_parser(
         "index", help="index documents and selected source revisions"
@@ -607,6 +673,29 @@ def main(arguments: list[str] | None = None) -> int:
                 print(catalog_index.json_output(asdict(file_diff)))
             else:
                 print_revision_file_diff(file_diff)
+            return 0
+        if args.command == "files":
+            result = manager.find_revision_files(
+                args.repository, args.revisions, path_prefix=args.path_prefix,
+                globs=args.glob, offset=args.offset, limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_revision_files(result)
+            return 0
+        if args.command == "grep":
+            result = manager.search_source_text(
+                args.repository, args.revisions, args.query, regex=args.regex,
+                case_sensitive=not args.ignore_case,
+                path_prefix=args.path_prefix, globs=args.glob,
+                context_lines=args.context, resolve_scope=not args.no_scope,
+                offset=args.offset, limit=args.limit,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print_source_text_search(result)
             return 0
         if args.command in ("index", "index-status"):
             if args.command == "index":

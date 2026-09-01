@@ -160,6 +160,45 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 repository_id, from_revision_id, to_revision_id, path
             )
 
+    @server.tool(title="Find files in source revisions", annotations=READ_ONLY)
+    def find_revision_files(
+        repository: str,
+        revisions: Annotated[list[str], Field(min_length=1, max_length=100)],
+        path_prefix: str | None = None,
+        globs: Annotated[list[str] | None, Field(max_length=100)] = None,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 200,
+    ) -> dict[str, Any]:
+        """Find revision paths and collapse occurrences of identical Git blobs."""
+        with domain_errors():
+            return asdict(manager.find_revision_files(
+                repository, revisions, path_prefix=path_prefix,
+                globs=globs or (), offset=offset, limit=limit,
+            ))
+
+    @server.tool(title="Search pinned source text", annotations=READ_ONLY)
+    def search_source_text(
+        repository: str,
+        revisions: Annotated[list[str], Field(min_length=1, max_length=100)],
+        query: Annotated[str, Field(min_length=1)],
+        regex: bool = False,
+        case_sensitive: bool = True,
+        path_prefix: str | None = None,
+        globs: Annotated[list[str] | None, Field(max_length=100)] = None,
+        context_lines: Annotated[int, Field(ge=0, le=100)] = 0,
+        resolve_scope: bool = True,
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ) -> dict[str, Any]:
+        """Search Git revisions, deduplicate blobs, and identify containing Ctags scopes."""
+        with domain_errors():
+            return asdict(manager.search_source_text(
+                repository, revisions, query, regex=regex,
+                case_sensitive=case_sensitive, path_prefix=path_prefix,
+                globs=globs or (), context_lines=context_lines,
+                resolve_scope=resolve_scope, offset=offset, limit=limit,
+            ))
+
     @server.tool(title="List patch artifacts", annotations=READ_ONLY)
     def list_patches(tag: str | None = None) -> list[PatchInfo]:
         """List fetched patches used to construct source revisions."""

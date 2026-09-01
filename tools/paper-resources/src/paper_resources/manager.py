@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from . import (
     artifacts, catalog_index, code_navigation, ctags_index, database,
-    git_resources, repository_index,
+    git_resources, repository_index, source_search,
 )
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
@@ -362,6 +362,107 @@ class ResourceManager:
                 repository_path, repository_id, revision, commit
             )
         return repository, from_revision, to_revision, repository_path
+
+    def _revision_search_context(
+        self, repository_id: str, revision_ids: list[str] | tuple[str, ...]
+    ) -> tuple[Path, tuple[tuple[str, str, str], ...]]:
+        if not revision_ids:
+            raise ResourceError("select at least one source revision")
+        repository = self.repositories_by_id.get(repository_id)
+        if repository is None:
+            raise ResourceError(f"unknown repository ID: {repository_id}")
+        repository_path = self.settings.root / repository["path"]
+        if not (repository_path / "HEAD").is_file():
+            raise ResourceError(f"repository is not populated: {repository_id}")
+        selected: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for revision_id in revision_ids:
+            if revision_id in seen:
+                continue
+            seen.add(revision_id)
+            _repository, revision = self._revision_manifest(
+                repository_id, revision_id
+            )
+            commit = git_resources.git_object(
+                repository_path, f"{revision['commit']}^{{commit}}"
+            )
+            if commit is None:
+                raise ResourceError(
+                    f"revision is not populated: {repository_id}:{revision_id}"
+                )
+            git_resources.verify_revision_objects(
+                repository_path, repository_id, revision, commit
+            )
+            selected.append((revision_id, revision["commit"], revision["tree"]))
+        return repository_path, tuple(selected)
+
+    def find_revision_files(
+        self,
+        repository_id: str,
+        revision_ids: list[str] | tuple[str, ...],
+        *,
+        path_prefix: str | None = None,
+        globs: list[str] | tuple[str, ...] = (),
+        offset: int = 0,
+        limit: int = 200,
+    ) -> source_search.RevisionFileSearch:
+        repository_path, revisions = self._revision_search_context(
+            repository_id, revision_ids
+        )
+        return source_search.find_files(
+            repository_path, repository_id, revisions,
+            path_prefix=path_prefix, globs=tuple(globs), offset=offset, limit=limit,
+        )
+
+    def search_source_text(
+        self,
+        repository_id: str,
+        revision_ids: list[str] | tuple[str, ...],
+        query: str,
+        *,
+        regex: bool = False,
+        case_sensitive: bool = True,
+        path_prefix: str | None = None,
+        globs: list[str] | tuple[str, ...] = (),
+        context_lines: int = 0,
+        resolve_scope: bool = True,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> source_search.SourceTextSearch:
+        repository_path, revisions = self._revision_search_context(
+            repository_id, revision_ids
+        )
+        result = source_search.search_text(
+            repository_path, repository_id, revisions, query, regex=regex,
+            case_sensitive=case_sensitive, path_prefix=path_prefix,
+            globs=tuple(globs), context_lines=context_lines,
+            offset=offset, limit=limit,
+        )
+        if not resolve_scope or not self.settings.database.is_file():
+            return result
+        enriched: list[source_search.SourceTextMatch] = []
+        with self._database_lock:
+            connection = self._database(create=False)
+            for match in result.results:
+                occurrence = match.occurrences[0]
+                try:
+                    location = code_navigation.locate_at_line(
+                        connection, repository_id, occurrence.revision,
+                        occurrence.path, match.line,
+                    )
+                except ResourceError:
+                    location = None
+                enriched.append(source_search.SourceTextMatch(
+                    match.blob_oid, match.line, match.text, match.line_start,
+                    match.line_end, match.source, match.occurrences,
+                    location.containing if location else (),
+                    location.enclosing_chain if location else (),
+                ))
+        return source_search.SourceTextSearch(
+            result.repository, result.revisions, result.query, result.regex,
+            result.case_sensitive, result.total, result.offset, result.limit,
+            tuple(enriched), result.truncated,
+        )
 
     def compare_revisions(
         self,
