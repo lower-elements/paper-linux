@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fnmatch
 from pathlib import Path
 import sqlite3
 from typing import Any, Iterator
@@ -25,6 +26,22 @@ class RevisionBlob:
     size: int
     mode: int
     path: str
+
+
+def revision_path_included(revision: dict[str, Any], path: str) -> bool:
+    """Apply revision include/exclude globs to one repository-relative path.
+
+    Explicit includes are allow-list entries and take precedence over excludes;
+    this permits ``exclude: ["*"]`` with a small set of paths or subtrees.
+    """
+    includes = revision.get("include", [])
+    excludes = revision.get("exclude", [])
+    included = not includes or any(fnmatch.fnmatchcase(path, pattern) for pattern in includes)
+    if not included:
+        return False
+    if any(fnmatch.fnmatchcase(path, pattern) for pattern in includes):
+        return True
+    return not any(fnmatch.fnmatchcase(path, pattern) for pattern in excludes)
 
 
 def synchronize_catalog(
@@ -152,6 +169,8 @@ def iter_revision_blobs(
         repository_path, repository_id, revision, commit
     )
     for blob in git_resources.iter_tree_blobs(repository_path, revision["tree"]):
+        if not revision_path_included(revision, blob.path):
+            continue
         yield RevisionBlob(
             repository_id=repository_id,
             revision_id=revision_id,

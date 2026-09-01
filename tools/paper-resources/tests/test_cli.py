@@ -393,6 +393,17 @@ class PaperResourcesTest(unittest.TestCase):
             git_resources.oid_to_hex(git_resources.oid_from_hex("ab" * 32)),
             "ab" * 32,
         )
+        self.assertTrue(repository_index.revision_path_included({}, "driver.c"))
+        self.assertFalse(
+            repository_index.revision_path_included({"exclude": ["*"]}, "driver.c")
+        )
+        self.assertTrue(repository_index.revision_path_included(
+            {"exclude": ["*"], "include": ["drivers/**", "driver.c"]},
+            "driver.c",
+        ))
+        self.assertFalse(repository_index.revision_path_included(
+            {"exclude": ["*"], "include": ["drivers/**"]}, "driver.c"
+        ))
 
     def test_ctags_session_lazily_catalogs_blob_languages(self) -> None:
         if shutil.which("ctags") is None:

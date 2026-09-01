@@ -29,6 +29,15 @@ def validate_relative_path(value: str, context: str) -> None:
         raise ResourceError(f"{context} must be a non-empty relative path: {value!r}")
 
 
+def validate_glob_patterns(value: Any, context: str) -> None:
+    if not isinstance(value, list) or any(not isinstance(pattern, str) or not pattern for pattern in value):
+        raise ResourceError(f"{context} must be a list of non-empty glob patterns")
+    for pattern in value:
+        path = Path(pattern)
+        if path.is_absolute() or ".." in path.parts:
+            raise ResourceError(f"{context} contains an invalid repository path pattern: {pattern!r}")
+
+
 def validate_sha256(value: Any, context: str) -> None:
     if not isinstance(value, str) or len(value) != 64:
         raise ResourceError(f"{context}: sha256 must contain 64 hex digits")
@@ -121,6 +130,11 @@ def validate_manifest_v2(manifest: dict[str, Any]) -> None:
                 raise ResourceError(
                     f"{repository_id}:{revision_id}: index must be a boolean"
                 )
+            for field in ("include", "exclude"):
+                if field in revision:
+                    validate_glob_patterns(
+                        revision[field], f"{repository_id}:{revision_id}: {field}"
+                    )
             validate_object_id(revision.get("commit"), f"{repository_id}:{revision_id}: commit")
             validate_object_id(revision.get("tree"), f"{repository_id}:{revision_id}: tree")
             source = revision.get("source")
