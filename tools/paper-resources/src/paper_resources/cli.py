@@ -574,6 +574,22 @@ def parser() -> argparse.ArgumentParser:
         help="REPOSITORY REVISION FILE LINE, or LINE with --worktree",
     )
 
+    read_line_parser = subparsers.add_parser(
+        "read-line", help="read the enclosing tag or context at one source line"
+    )
+    read_line_parser.add_argument("--root", type=Path)
+    read_line_parser.add_argument("--worktree", type=Path, metavar="PATH")
+    read_line_parser.add_argument("--fallback-context", type=nonnegative_integer, default=10)
+    read_line_parser.add_argument("--context", type=nonnegative_integer, default=0)
+    read_line_parser.add_argument("--no-line-numbers", action="store_true")
+    read_line_parser.add_argument("--max-lines", type=positive_integer, default=5000)
+    read_line_parser.add_argument("--max-chars", type=positive_integer, default=200_000)
+    read_line_parser.add_argument("--json", action="store_true")
+    read_line_parser.add_argument(
+        "coordinates", nargs="+",
+        help="REPOSITORY REVISION FILE LINE, or LINE with --worktree",
+    )
+
     outline_diff_parser = subparsers.add_parser(
         "outline-diff", help="compare definitions in two revision files"
     )
@@ -925,6 +941,40 @@ def main(arguments: list[str] | None = None) -> int:
                         item.qualified_name or item.name
                         for item in result.enclosing_chain
                     ))
+            return 0
+
+        if args.command == "read-line":
+            if args.worktree is not None and len(args.coordinates) == 1:
+                repository = revision = file = None
+                line = positive_integer(args.coordinates[0])
+            elif args.worktree is None and len(args.coordinates) == 4:
+                repository, revision, file, line_text = args.coordinates
+                line = positive_integer(line_text)
+            else:
+                raise ResourceError(
+                    "read-line expects REPOSITORY REVISION FILE LINE, or "
+                    "--worktree PATH LINE"
+                )
+            result = manager.read_code_at_line(
+                repository=repository, revision=revision, path=file,
+                worktree_path=args.worktree, line=line,
+                fallback_context_lines=args.fallback_context,
+                context_lines=args.context, numbered=not args.no_line_numbers,
+                max_lines=args.max_lines, max_chars=args.max_chars,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(
+                    f"{result.source.file.repository}@{result.source.file.revision}:"
+                    f"{result.source.file.path}:{line} ({result.mode})"
+                )
+                if result.selected_tag is not None:
+                    tag = result.selected_tag
+                    print(f"[{tag.tag_id}] {tag.kind} {tag.qualified_name or tag.name}")
+                print(result.source.source)
+                if result.source.truncated:
+                    print("[output truncated]")
             return 0
 
         if args.command == "outline-diff":

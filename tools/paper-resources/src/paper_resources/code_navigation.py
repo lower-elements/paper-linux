@@ -187,6 +187,14 @@ class CodeLineLocation:
 
 
 @dataclass(frozen=True, slots=True)
+class CodeLineRead:
+    mode: str
+    location: CodeLineLocation
+    selected_tag: CodeOutlineItem | None
+    source: CodeFileSource
+
+
+@dataclass(frozen=True, slots=True)
 class CodeOutlineChange:
     status: str
     symbol: str

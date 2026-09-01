@@ -1058,6 +1058,56 @@ class ResourceManager:
                 result.enclosing_chain, result.nearby,
             )
 
+    def read_code_at_line(
+        self,
+        *,
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | Path | None = None,
+        line: int,
+        fallback_context_lines: int = 10,
+        context_lines: int = 0,
+        numbered: bool = True,
+        max_lines: int = 5000,
+        max_chars: int = 200_000,
+    ) -> code_navigation.CodeLineRead:
+        """Read the innermost tagged region at a line, or nearby context."""
+        if fallback_context_lines < 0 or context_lines < 0:
+            raise ResourceError("source context lines must be at least 0")
+        repository, revision, path, warning = self._resolve_code_file_selector(
+            repository, revision, path, worktree_path
+        )
+        with self._database_lock:
+            connection = self._database(create=False)
+            location = code_navigation.locate_at_line(
+                connection, repository, revision, path, line
+            )
+            selected = location.containing[0] if location.containing else None
+            if selected is None:
+                start = max(1, line - fallback_context_lines)
+                end = line + fallback_context_lines
+                mode = "context"
+            else:
+                start = max(1, selected.line_start - context_lines)
+                end = (selected.line_end or selected.line_start) + context_lines
+                mode = "tag"
+            source = code_navigation.read_file_source(
+                connection, repository, revision, path,
+                self._read_code_blob,
+                line_start=start, line_end=end, numbered=numbered,
+                max_lines=max_lines, max_chars=max_chars, warning=warning,
+            )
+            file = code_navigation.CodeFile(
+                location.file.repository, location.file.revision,
+                location.file.path, location.file.blob_oid, warning,
+            )
+            location = code_navigation.CodeLineLocation(
+                file, location.line, location.containing,
+                location.enclosing_chain, location.nearby,
+            )
+            return code_navigation.CodeLineRead(mode, location, selected, source)
+
     def compare_code_file_outlines(
         self,
         repository: str,

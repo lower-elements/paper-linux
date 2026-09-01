@@ -1198,6 +1198,19 @@ class PaperResourcesTest(unittest.TestCase):
         )
         self.assertEqual(location.file.path, "driver.c")
         self.assertIn("device", {item.name for item in location.containing})
+        line_read = resource_manager.read_code_at_line(
+            repository="test-repository", revision="v1", path="driver.c",
+            line=2,
+        )
+        self.assertEqual(line_read.mode, "tag")
+        self.assertEqual(line_read.selected_tag.name, "driver_start")
+        self.assertIn("driver_start", line_read.source.source)
+        fallback_read = resource_manager.read_code_at_line(
+            repository="test-repository", revision="v1", path="driver.c",
+            line=3, fallback_context_lines=1,
+        )
+        self.assertEqual(fallback_read.mode, "context")
+        self.assertIn("linux/types.h", fallback_read.source.source)
         comparison = resource_manager.compare_code_file_outlines(
             "test-repository", "v1", "v1", "driver.c"
         )
@@ -1221,6 +1234,10 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(cli_outline["file"]["path"], "driver.c")
         self.assertIn("driver_start", self.tool(
             "tag-source", "--root", str(self.resources), str(function.tag_id)
+        ).stdout)
+        self.assertIn("(tag)", self.tool(
+            "read-line", "--root", str(self.resources),
+            "test-repository", "v1", "driver.c", "2",
         ).stdout)
         self.assertIn("struct device", self.tool(
             "tag-scope", "--root", str(self.resources), str(state.tag_id)
@@ -1705,6 +1722,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "describe_code_index",
                     "find_references",
                     "locate_code_at_line",
+                    "read_code_at_line",
                     "compare_file_outlines",
                     "trace_symbol_history",
                 },
@@ -1857,6 +1875,15 @@ class PaperResourcesTest(unittest.TestCase):
                 },
             )
             self.assertTrue(location.structured_content["containing"])
+            line_read = await server.call_tool(
+                "read_code_at_line",
+                {
+                    "repository": "test-repository", "revision": "v1",
+                    "path": "driver.c", "line": 2,
+                },
+            )
+            self.assertEqual(line_read.structured_content["mode"], "tag")
+            self.assertIn("driver_start", line_read.structured_content["source"]["source"])
             outline_comparison = await server.call_tool(
                 "compare_file_outlines",
                 {

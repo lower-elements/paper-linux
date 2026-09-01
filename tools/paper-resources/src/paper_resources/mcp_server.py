@@ -490,6 +490,31 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 nearby_limit=nearby_limit,
             ))
 
+    @server.tool(title="Read code at line", annotations=READ_ONLY)
+    def read_code_at_line(
+        line: Annotated[int, Field(ge=1)],
+        repository: str | None = None,
+        revision: str | None = None,
+        path: str | None = None,
+        worktree_path: str | None = None,
+        fallback_context_lines: Annotated[int, Field(ge=0, le=100)] = 10,
+        context_lines: Annotated[int, Field(ge=0, le=100)] = 0,
+        line_numbers: bool = True,
+        max_lines: Annotated[int, Field(ge=1, le=20_000)] = 5000,
+        max_chars: Annotated[int, Field(ge=1, le=500_000)] = 200_000,
+    ) -> dict[str, Any]:
+        """Read the innermost tagged region at a line, falling back to nearby lines."""
+        with domain_errors():
+            if worktree_path is not None and not Path(worktree_path).is_absolute():
+                raise ResourceError("MCP worktree paths must be absolute")
+            return asdict(manager.read_code_at_line(
+                repository=repository, revision=revision, path=path,
+                worktree_path=worktree_path, line=line,
+                fallback_context_lines=fallback_context_lines,
+                context_lines=context_lines, numbered=line_numbers,
+                max_lines=max_lines, max_chars=max_chars,
+            ))
+
     @server.tool(title="Compare file outlines", annotations=READ_ONLY)
     def compare_file_outlines(
         repository: str,
