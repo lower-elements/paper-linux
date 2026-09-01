@@ -598,6 +598,28 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 to_path=to_path,
             ))
 
+    @server.tool(title="Compare symbol definitions", annotations=READ_ONLY)
+    def compare_symbol_definitions(
+        repository: str,
+        from_revision: str,
+        to_revision: str,
+        symbol: Annotated[str, Field(min_length=1)],
+        from_path: str | None = None,
+        to_path: str | None = None,
+        kind: str | None = None,
+        qualified: bool = False,
+        context_lines: Annotated[int, Field(ge=0, le=100)] = 3,
+        max_chars: Annotated[int, Field(ge=1, le=500_000)] = 200_000,
+    ) -> dict[str, Any]:
+        """Resolve an exact definition in two revisions and return a focused diff."""
+        with domain_errors():
+            return asdict(manager.compare_symbol_definitions(
+                repository, from_revision, to_revision, symbol,
+                from_path=from_path, to_path=to_path, kind=kind,
+                qualified=qualified, context_lines=context_lines,
+                max_chars=max_chars,
+            ))
+
     @server.tool(title="Trace symbol history", annotations=READ_ONLY)
     def trace_symbol_history(
         repository: str,

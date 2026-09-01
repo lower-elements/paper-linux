@@ -1228,6 +1228,12 @@ class PaperResourcesTest(unittest.TestCase):
             "test-repository", "v1", "v1", "driver.c"
         )
         self.assertEqual(comparison.status_counts, {"unchanged": 3})
+        symbol_comparison = resource_manager.compare_symbol_definitions(
+            "test-repository", "v1", "v1", "driver_start",
+            from_path="driver.c", to_path="driver.c",
+        )
+        self.assertEqual(symbol_comparison.status, "unchanged")
+        self.assertEqual(symbol_comparison.from_side.matches[0].name, "driver_start")
         history = resource_manager.trace_code_symbol_history(
             "test-repository", "driver_start", path="driver.c"
         )
@@ -1286,6 +1292,11 @@ class PaperResourcesTest(unittest.TestCase):
             "test-repository", "v1", "v1", "driver.c",
         ).stdout)
         self.assertEqual(outline_diff["status_counts"], {"unchanged": 3})
+        self.assertIn("unchanged", self.tool(
+            "symbol-diff", "--root", str(self.resources),
+            "--from-path", "driver.c", "--to-path", "driver.c",
+            "test-repository", "v1", "v1", "driver_start",
+        ).stdout)
         self.assertIn("driver_start", self.tool(
             "history", "--root", str(self.resources), "--path", "driver.c",
             "test-repository", "driver_start",
@@ -1808,6 +1819,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "locate_code_at_line",
                     "read_code_at_line",
                     "compare_file_outlines",
+                    "compare_symbol_definitions",
                     "trace_symbol_history",
                 },
             )
@@ -1987,6 +1999,16 @@ class PaperResourcesTest(unittest.TestCase):
                 outline_comparison.structured_content["status_counts"],
                 {"unchanged": 3},
             )
+            symbol_comparison = await server.call_tool(
+                "compare_symbol_definitions",
+                {
+                    "repository": "test-repository",
+                    "from_revision": "v1", "to_revision": "v1",
+                    "symbol": "driver_start",
+                    "from_path": "driver.c", "to_path": "driver.c",
+                },
+            )
+            self.assertEqual(symbol_comparison.structured_content["status"], "unchanged")
             history = await server.call_tool(
                 "trace_symbol_history",
                 {

@@ -661,6 +661,22 @@ def parser() -> argparse.ArgumentParser:
     outline_diff_parser.add_argument("to_revision", metavar="TO")
     outline_diff_parser.add_argument("file", metavar="FILE")
 
+    symbol_diff_parser = subparsers.add_parser(
+        "symbol-diff", help="compare one definition across indexed revisions"
+    )
+    symbol_diff_parser.add_argument("--root", type=Path)
+    symbol_diff_parser.add_argument("--from-path")
+    symbol_diff_parser.add_argument("--to-path")
+    symbol_diff_parser.add_argument("--kind")
+    symbol_diff_parser.add_argument("--qualified", action="store_true")
+    symbol_diff_parser.add_argument("--context", type=nonnegative_integer, default=3)
+    symbol_diff_parser.add_argument("--max-chars", type=positive_integer, default=200_000)
+    symbol_diff_parser.add_argument("--json", action="store_true")
+    symbol_diff_parser.add_argument("repository")
+    symbol_diff_parser.add_argument("from_revision", metavar="FROM")
+    symbol_diff_parser.add_argument("to_revision", metavar="TO")
+    symbol_diff_parser.add_argument("symbol")
+
     history_parser = subparsers.add_parser(
         "history", help="trace a code symbol through indexed revisions"
     )
@@ -1120,6 +1136,31 @@ def main(arguments: list[str] | None = None) -> int:
                 print(counts)
                 for change in result.changes:
                     print(f"{change.status}\t{change.kind}\t{change.symbol}")
+            return 0
+
+        if args.command == "symbol-diff":
+            result = manager.compare_symbol_definitions(
+                args.repository, args.from_revision, args.to_revision,
+                args.symbol, from_path=args.from_path, to_path=args.to_path,
+                kind=args.kind, qualified=args.qualified,
+                context_lines=args.context, max_chars=args.max_chars,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print(f"{result.status}: {result.symbol}")
+                if result.diff is not None and result.diff.diff:
+                    print(
+                        result.diff.diff,
+                        end="" if result.diff.diff.endswith("\n") else "\n",
+                    )
+                else:
+                    for side in (result.from_side, result.to_side):
+                        tags = ", ".join(
+                            f"[{tag.tag_id}] {tag.qualified_name or tag.name}"
+                            for tag in side.matches
+                        ) or "no match"
+                        print(f"{side.revision}: {tags}")
             return 0
 
         if args.command == "history":

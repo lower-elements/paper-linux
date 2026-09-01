@@ -225,6 +225,23 @@ class CodeSymbolHistory:
     steps: tuple[CodeHistoryStep, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CodeSymbolSide:
+    revision: str
+    path: str | None
+    matches: tuple[CodeTagSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CodeSymbolComparison:
+    repository: str
+    symbol: str
+    status: str
+    from_side: CodeSymbolSide
+    to_side: CodeSymbolSide
+    diff: CodeTagDiff | None
+
+
 def _values(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -1115,3 +1132,64 @@ def trace_history(
                 (revision,), matches, len(matches) > 1,
             ))
     return CodeSymbolHistory(repository, symbol, tuple(steps))
+
+
+def compare_symbol_definitions(
+    connection: sqlite3.Connection,
+    read_blob: Callable[[str, bytes], bytes],
+    repository: str,
+    from_revision: str,
+    to_revision: str,
+    symbol: str,
+    *,
+    from_path: str | None = None,
+    to_path: str | None = None,
+    kind: str | None = None,
+    qualified: bool = False,
+    context_lines: int = 3,
+    max_chars: int = 200_000,
+) -> CodeSymbolComparison:
+    """Resolve and compare one exact definition across two indexed revisions."""
+    filters: dict[str, Any] = {
+        "repository": repository,
+        "is_reference": False,
+        "limit": MAX_SEARCH_LIMIT,
+    }
+    filters["qualified_name" if qualified else "name"] = symbol
+    if kind is not None:
+        filters["kind"] = kind
+    before = search_tags(
+        connection, revision=from_revision, path=from_path, **filters
+    )
+    after = search_tags(
+        connection, revision=to_revision, path=to_path, **filters
+    )
+    from_side = CodeSymbolSide(from_revision, from_path, before.results)
+    to_side = CodeSymbolSide(to_revision, to_path, after.results)
+    if before.truncated or after.truncated or len(before.results) > 1 or len(after.results) > 1:
+        status = "ambiguous"
+        diff = None
+    elif not before.results and not after.results:
+        status, diff = "missing", None
+    elif not before.results:
+        status, diff = "added", None
+    elif not after.results:
+        status, diff = "removed", None
+    elif before.results[0].tag_id == after.results[0].tag_id:
+        status, diff = "unchanged", None
+    else:
+        status = "changed"
+        before_occurrence = before.results[0].occurrences[0]
+        after_occurrence = after.results[0].occurrences[0]
+        diff = diff_tagged_source(
+            connection, before.results[0].tag_id, after.results[0].tag_id,
+            read_blob, from_repository=repository,
+            from_revision=from_revision,
+            from_path=from_path or before_occurrence.path,
+            to_repository=repository, to_revision=to_revision,
+            to_path=to_path or after_occurrence.path,
+            context_lines=context_lines, max_chars=max_chars,
+        )
+    return CodeSymbolComparison(
+        repository, symbol, status, from_side, to_side, diff
+    )

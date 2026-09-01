@@ -1283,6 +1283,40 @@ class ResourceManager:
                 path=normalized_path, qualified=qualified,
             )
 
+    def compare_symbol_definitions(
+        self,
+        repository: str,
+        from_revision: str,
+        to_revision: str,
+        symbol: str,
+        *,
+        from_path: str | None = None,
+        to_path: str | None = None,
+        kind: str | None = None,
+        qualified: bool = False,
+        context_lines: int = 3,
+        max_chars: int = 200_000,
+    ) -> code_navigation.CodeSymbolComparison:
+        """Resolve and compare one definition across indexed revisions."""
+        self._revision_manifest(repository, from_revision)
+        self._revision_manifest(repository, to_revision)
+        normalized_from = (
+            git_resources.validate_repository_path(from_path)
+            if from_path is not None else None
+        )
+        normalized_to = (
+            git_resources.validate_repository_path(to_path)
+            if to_path is not None else None
+        )
+        with self._database_lock:
+            return code_navigation.compare_symbol_definitions(
+                self._database(create=False), self._read_code_blob,
+                repository, from_revision, to_revision, symbol,
+                from_path=normalized_from, to_path=normalized_to, kind=kind,
+                qualified=qualified, context_lines=context_lines,
+                max_chars=max_chars,
+            )
+
     def index_status(
         self, resource_ids: list[str] | None = None, extractor: str | None = None
     ) -> list[catalog_index.IndexStatus]:
