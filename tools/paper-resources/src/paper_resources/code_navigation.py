@@ -662,18 +662,37 @@ def read_file_source(
     warning: str | None = None,
 ) -> CodeFileSource:
     """Read a bounded line range from the indexed Git blob for one file."""
+    file, _analysis_id = resolve_file(connection, repository, revision, path)
+    file = CodeFile(file.repository, file.revision, file.path, file.blob_oid, warning)
+    return read_blob_source(
+        file, read_blob(repository, bytes.fromhex(file.blob_oid)),
+        line_start=line_start, line_end=line_end, numbered=numbered,
+        max_lines=max_lines, max_chars=max_chars,
+    )
+
+
+def read_blob_source(
+    file: CodeFile,
+    content: bytes,
+    *,
+    line_start: int = 1,
+    line_end: int | None = None,
+    numbered: bool = True,
+    max_lines: int = 5000,
+    max_chars: int = 200_000,
+) -> CodeFileSource:
+    """Read a bounded line range from an already resolved Git blob."""
     if line_start < 1:
         raise ResourceError("source line start must be at least 1")
     if line_end is not None and line_end < line_start:
         raise ResourceError("source line end must not precede its start")
     if max_lines < 1 or max_chars < 1:
         raise ResourceError("source output limits must be positive")
-    file, _analysis_id = resolve_file(connection, repository, revision, path)
-    file = CodeFile(file.repository, file.revision, file.path, file.blob_oid, warning)
-    lines = _source_lines(read_blob(repository, bytes.fromhex(file.blob_oid)))
+    lines = _source_lines(content)
     if line_start > len(lines):
         raise ResourceError(
-            f"source line {line_start} is beyond the end of {repository}:{revision}:{path}"
+            f"source line {line_start} is beyond the end of "
+            f"{file.repository}:{file.revision}:{file.path}"
         )
     requested_end = len(lines) if line_end is None else min(line_end, len(lines))
     actual_end = min(requested_end, line_start + max_lines - 1)

@@ -1229,6 +1229,13 @@ class PaperResourcesTest(unittest.TestCase):
         )
         self.assertEqual(fallback_read.mode, "context")
         self.assertIn("linux/types.h", fallback_read.source.source)
+        unindexed_read = resource_manager.read_code_at_line(
+            repository="test-repository", revision="alternate",
+            path="drivers/new.c", line=1,
+        )
+        self.assertEqual(unindexed_read.mode, "context")
+        self.assertEqual(unindexed_read.location.containing, ())
+        self.assertIn("new_driver", unindexed_read.source.source)
         comparison = resource_manager.compare_code_file_outlines(
             "test-repository", "v1", "v1", "driver.c"
         )
