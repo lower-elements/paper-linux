@@ -152,6 +152,15 @@ class FileIndexStatus:
     tag_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class HardwareReferenceSearch:
+    query: str
+    documents: tuple[catalog_index.SearchResult, ...]
+    tags: tuple[code_navigation.CodeTagSummary, ...]
+    source_searches: tuple[source_search.SourceTextSearch, ...]
+    warnings: tuple[str, ...]
+
+
 class ResourceManager:
     """Manifest-backed resource and index operations."""
 
@@ -1358,6 +1367,63 @@ class ResourceManager:
                 tag=tag,
                 limit=limit,
             )
+
+    def search_hardware_references(
+        self,
+        query: str,
+        *,
+        repository: str | None = None,
+        revisions: list[str] | tuple[str, ...] | None = None,
+        document_tag: str | None = None,
+        document_limit: int = 5,
+        tag_limit: int = 20,
+        source_limit: int = 20,
+        context_lines: int = 1,
+    ) -> HardwareReferenceSearch:
+        """Search indexed documents, Ctags, and pinned source text together."""
+        if not query:
+            raise ResourceError("hardware reference query must not be empty")
+        documents = tuple(self.search_documents(
+            query, tag=document_tag, limit=document_limit
+        ))
+        repositories = (
+            [self.repositories_by_id.get(repository)]
+            if repository is not None else self.repositories
+        )
+        if repositories == [None]:
+            raise ResourceError(f"unknown repository ID: {repository}")
+        repository_ids = [item["id"] for item in repositories if item is not None]
+        tags_by_id: dict[int, code_navigation.CodeTagSummary] = {}
+        for spelling in dict.fromkeys((query, query.lower(), query.upper())):
+            result = self.search_code_tags(
+                repository=repository_ids, name_prefix=spelling,
+                is_reference=False, limit=tag_limit,
+            )
+            for tag in result.results:
+                tags_by_id.setdefault(tag.tag_id, tag)
+                if len(tags_by_id) >= tag_limit:
+                    break
+        source_results: list[source_search.SourceTextSearch] = []
+        warnings: list[str] = []
+        for repository_manifest in repositories:
+            if repository_manifest is None:
+                continue
+            selected_revisions = list(revisions) if revisions is not None else [
+                item["id"] for item in repository_manifest.get("revisions", [])
+                if item.get("index", True)
+            ]
+            try:
+                source_results.append(self.search_source_text(
+                    repository_manifest["id"], selected_revisions, query,
+                    case_sensitive=False, context_lines=context_lines,
+                    limit=source_limit,
+                ))
+            except ResourceError as error:
+                warnings.append(f"{repository_manifest['id']}: {error}")
+        return HardwareReferenceSearch(
+            query, documents, tuple(tags_by_id.values()),
+            tuple(source_results), tuple(warnings),
+        )
 
     def get_document_page(
         self, document_id: str, page_number: int

@@ -496,6 +496,20 @@ def parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--json", action="store_true", help="print JSON output")
     search_parser.add_argument("query", help="search query")
 
+    hardware_parser = subparsers.add_parser(
+        "hardware-search", help="search document and source references together"
+    )
+    hardware_parser.add_argument("--root", type=Path)
+    hardware_parser.add_argument("--repository")
+    hardware_parser.add_argument("--revision", action="append", dest="revisions")
+    hardware_parser.add_argument("--document-tag")
+    hardware_parser.add_argument("--document-limit", type=positive_integer, default=5)
+    hardware_parser.add_argument("--tag-limit", type=positive_integer, default=20)
+    hardware_parser.add_argument("--source-limit", type=positive_integer, default=20)
+    hardware_parser.add_argument("--context", type=nonnegative_integer, default=1)
+    hardware_parser.add_argument("--json", action="store_true")
+    hardware_parser.add_argument("query")
+
     page_parser = subparsers.add_parser("page", help="print indexed text for one PDF page")
     page_parser.add_argument("--root", type=Path, help="override the configured resource directory")
     page_parser.add_argument("--json", action="store_true", help="print JSON output")
@@ -903,6 +917,29 @@ def main(arguments: list[str] | None = None) -> int:
                 print(catalog_index.json_output([result.to_dict() for result in results]))
             else:
                 print_search_results(results)
+            return 0
+
+        if args.command == "hardware-search":
+            result = manager.search_hardware_references(
+                args.query, repository=args.repository,
+                revisions=args.revisions, document_tag=args.document_tag,
+                document_limit=args.document_limit, tag_limit=args.tag_limit,
+                source_limit=args.source_limit, context_lines=args.context,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(result)))
+            else:
+                print("Documents:")
+                print_search_results(list(result.documents))
+                print("\nCode tags:")
+                print_code_tag_search(code_navigation.CodeTagSearch(
+                    result.tags, None, False
+                ))
+                print("\nSource text:")
+                for search in result.source_searches:
+                    print_source_text_search(search)
+                for warning in result.warnings:
+                    print(f"Warning: {warning}")
             return 0
 
         if args.command == "page":

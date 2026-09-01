@@ -313,6 +313,26 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 raw_fts=raw_fts,
             )
 
+    @server.tool(title="Search hardware references", annotations=READ_ONLY)
+    def search_hardware_references(
+        query: Annotated[str, Field(min_length=1)],
+        repository: str | None = None,
+        revisions: Annotated[list[str] | None, Field(max_length=100)] = None,
+        document_tag: str | None = None,
+        document_limit: Annotated[int, Field(ge=1, le=50)] = 5,
+        tag_limit: Annotated[int, Field(ge=1, le=200)] = 20,
+        source_limit: Annotated[int, Field(ge=1, le=200)] = 20,
+        context_lines: Annotated[int, Field(ge=0, le=20)] = 1,
+    ) -> dict[str, Any]:
+        """Search document text, code definitions, and pinned source text together."""
+        with domain_errors():
+            return asdict(manager.search_hardware_references(
+                query, repository=repository, revisions=revisions,
+                document_tag=document_tag, document_limit=document_limit,
+                tag_limit=tag_limit, source_limit=source_limit,
+                context_lines=context_lines,
+            ))
+
     @server.tool(title="Get indexed document page", annotations=READ_ONLY)
     def get_document_page(
         document_id: str,

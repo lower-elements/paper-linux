@@ -1118,6 +1118,11 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(description.repositories, 1)
         self.assertGreater(description.tags, 0)
         self.assertIn("C", dict(description.languages))
+        hardware = resource_manager.search_hardware_references(
+            "driver", repository="test-repository", revisions=["v1"]
+        )
+        self.assertIn("driver_start", {item.name for item in hardware.tags})
+        self.assertTrue(hardware.source_searches[0].results)
         file_status = resource_manager.describe_file_index(
             "test-repository", "v1", "driver.c"
         )
@@ -1273,6 +1278,11 @@ class PaperResourcesTest(unittest.TestCase):
             "tag-facets", "--root", str(self.resources), "--json"
         ).stdout)
         self.assertGreater(facets["tags"], 0)
+        cli_hardware = json.loads(self.tool(
+            "hardware-search", "--root", str(self.resources), "--json",
+            "--repository", "test-repository", "--revision", "v1", "driver",
+        ).stdout)
+        self.assertTrue(cli_hardware["source_searches"][0]["results"])
         cli_status = json.loads(self.tool(
             "file-index", "--root", str(self.resources), "--json",
             "test-repository", "v1", "driver.c",
@@ -1786,6 +1796,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "list_resources",
                     "get_resource",
                     "search_documents",
+                    "search_hardware_references",
                     "get_document_page",
                     "get_index_status",
                     "index_documents",
@@ -1881,6 +1892,15 @@ class PaperResourcesTest(unittest.TestCase):
                 "get_resource", {"resource_id": "test-document"}
             )
             self.assertTrue(detail.structured_content["available"])
+
+            hardware = await server.call_tool(
+                "search_hardware_references",
+                {
+                    "query": "driver", "repository": "test-repository",
+                    "revisions": ["v1"],
+                },
+            )
+            self.assertTrue(hardware.structured_content["source_searches"][0]["results"])
 
             comparison = await server.call_tool(
                 "compare_revisions",
