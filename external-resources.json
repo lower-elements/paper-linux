@@ -255,6 +255,24 @@
           "worktrees": [{"id": "default", "path": "worktrees/linux/2.6.31-imx"}]
         },
         {
+          "id": "6.6-rc-mx3-ipu-last",
+          "description": "Last upstream revision containing the MX3 IPU driver, immediately before its removal in the 6.6 merge window",
+          "author": "mainline",
+          "index": true,
+          "exclude": ["*"],
+          "include": [
+            "drivers/dma/Kconfig",
+            "drivers/dma/Makefile",
+            "drivers/dma/ipu/**",
+            "include/linux/dma/ipu-dma.h"
+          ],
+          "tags": ["mainline", "imx", "imx35", "ipu", "dma"],
+          "commit": "1b13e52c0c76097fde35d3283e8105545d34b80b",
+          "tree": "1ca483558fa7dd16b5cb9ea80a28cd76ad7f95ee",
+          "source": {"remote": "origin", "ref": "1b13e52c0c76097fde35d3283e8105545d34b80b"},
+          "worktrees": [{"id": "default", "path": "worktrees/linux/6.6-rc-mx3-ipu-last"}]
+        },
+        {
           "id": "7.0.11",
           "description": "Linux stable release 7.0.11 used as a contemporary mainline reference",
           "author": "stable",
