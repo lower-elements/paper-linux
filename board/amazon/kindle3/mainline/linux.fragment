@@ -1,6 +1,10 @@
 # Buildroot sets CONFIG_INITRAMFS_SOURCE to its generated rootfs.cpio.
 CONFIG_BLK_DEV_INITRD=y
 
+# Restore the upstream MX3 IPU DMA/IRQ driver for initial i.MX35 probing.
+CONFIG_MX3_IPU=y
+CONFIG_MX3_IPU_IRQS=4
+
 # AR6002 enablement is later work; omit unrelated upstream WLAN drivers and
 # their signed regulatory database machinery from the first boot image.
 # CONFIG_CFG80211 is not set

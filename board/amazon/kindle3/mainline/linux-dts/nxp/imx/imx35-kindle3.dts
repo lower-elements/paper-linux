@@ -260,6 +260,19 @@
 	};
 };
 
+/* The MX3 IPU is absent from the 7.0.11 upstream device tree. */
+&aips2 {
+	ipu: ipu@53fc0000 {
+		compatible = "fsl,imx35-ipu";
+		/* Resource order matches the restored MX3 IPU driver. */
+		reg = <0x53fc0000 0x60>, <0x53fc0088 0x2c>;
+		interrupts = <42>, <41>;
+		clocks = <&clks 55>;
+		clock-names = "ipu";
+		status = "okay";
+	};
+};
+
 &kpp {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_kpp>;
