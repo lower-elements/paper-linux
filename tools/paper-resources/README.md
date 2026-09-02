@@ -31,6 +31,8 @@ just resource diff linux 2.6.26 2.6.26-imx35-pdk drivers/video/Kconfig
 just resource grep linux MAX8660 2.6.26-rt-lab126 7.0.11
 just resource files --glob 'drivers/**/*max8660*' linux 2.6.26-rt-lab126 7.0.11
 just resource index
+just resource index-code --repository linux
+just resource index-code --revision linux 7.0.11
 just resource index-status
 just resource search "display update waveform"
 just resource page epson-s1d13521-hardware-spec-1.2 42
@@ -131,6 +133,11 @@ set of revision paths associated with analysed blobs. It also reports when a
 reused blob appears under a filename for which Ctags would select a different
 language. Re-running `index` reuses analyses made with the current Ctags
 program, output format, and configuration profile.
+
+`just resource index-code` updates only the source index and accepts selectors
+for one repository or one revision. For example, `--repository linux` indexes
+all index-enabled Linux revisions, while `--revision linux 7.0.11` indexes only
+that revision. With no selector it indexes every manifest-selected revision.
 
 Tags store commonly queried fields relationally, retain parser-specific data
 as SQLite JSONB, pair Ctags' qualified extra-tags with their ordinary rows,

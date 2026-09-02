@@ -323,6 +323,36 @@
           "worktrees": [{"id": "default", "path": "worktrees/linux/7.0.11"}]
         }
       ]
+    },
+    {
+      "id": "barebox",
+      "description": "Barebox bootloader histories for current and planned Kindle 3 support",
+      "tags": ["bootloader", "kindle3", "imx35"],
+      "path": "git/barebox.git",
+      "clone_url": "https://github.com/barebox/barebox.git",
+      "filter": "blob:none",
+      "revisions": [
+        {
+          "id": "2019.10.0",
+          "description": "Barebox 2019.10.0 with the Kindle 3 board support currently used by Paper Linux",
+          "author": "barebox",
+          "index": true,
+          "tags": ["kindle3", "current"],
+          "commit": "5b2d69d78c286cea48a49eb2c77cd8e4b790ac4b",
+          "tree": "581c3c03fdbd44380a3dd0b2c242ef74f74eefd5",
+          "source": {"remote": "origin", "ref": "refs/tags/v2019.10.0"}
+        },
+        {
+          "id": "2022.12.0",
+          "description": "Barebox 2022.12.0, the version selected by this copy of Buildroot for future Kindle 3 porting",
+          "author": "barebox",
+          "index": true,
+          "tags": ["upstream", "buildroot-default", "future"],
+          "commit": "fada08899355634d7d376614453a6a8c557bda0b",
+          "tree": "140a2ee34c30a65b872401744113ce31bfcad53d",
+          "source": {"remote": "origin", "ref": "refs/tags/v2022.12.0"}
+        }
+      ]
     }
   ]
 }

@@ -468,6 +468,20 @@ def parser() -> argparse.ArgumentParser:
     index_parser.add_argument("--json", action="store_true", help="print JSON output")
     index_parser.add_argument("resources", nargs="*", metavar="ID", help="document IDs (default: all)")
 
+    index_code_parser = subparsers.add_parser(
+        "index-code", help="index selected source revisions with Universal Ctags"
+    )
+    index_code_parser.add_argument("--root", type=Path, help="override the configured resource directory")
+    selectors = index_code_parser.add_mutually_exclusive_group()
+    selectors.add_argument(
+        "--repository", help="index all index-enabled revisions in one repository"
+    )
+    selectors.add_argument(
+        "--revision", nargs=2, metavar=("REPOSITORY", "REVISION"),
+        help="index one source revision",
+    )
+    index_code_parser.add_argument("--json", action="store_true", help="print JSON output")
+
     status_parser = subparsers.add_parser(
         "index-status", help="show whether document indexes are current"
     )
@@ -894,6 +908,19 @@ def main(arguments: list[str] | None = None) -> int:
                 for status in statuses:
                     print(f"{status.status:10} {status.document_id} ({status.detail})")
             return 0 if all(status.status == "ok" for status in statuses) else 1
+
+        if args.command == "index-code":
+            repository_id = args.repository
+            revision_id = None
+            if args.revision is not None:
+                selected_repository, revision_id = args.revision
+                repository_id = selected_repository
+            code_report = manager.index_code(repository_id, revision_id)
+            if args.json:
+                print(catalog_index.json_output(code_report.to_dict()))
+            else:
+                print_code_index_report(code_report)
+            return 1 if code_report.failed else 0
 
         if args.command == "extract":
             extraction = manager.extract_document(

@@ -1066,6 +1066,33 @@ class PaperResourcesTest(unittest.TestCase):
         self.assertEqual(revision["reused"], 4)
         self.assertFalse(current["code"]["failed"])
 
+    def test_index_code_command_selects_repository_or_revision(self) -> None:
+        if shutil.which("ctags") is None:
+            self.skipTest("Universal Ctags is not installed")
+        self.tool("populate", "--root", str(self.resources))
+
+        revision = self.tool(
+            "index-code", "--root", str(self.resources),
+            "--revision", "test-repository", "v1",
+        )
+        self.assertIn("ok         test-repository:v1", revision.stdout)
+        self.assertNotIn("test-repository:alternate", revision.stdout)
+
+        repository = self.tool(
+            "index-code", "--root", str(self.resources),
+            "--repository", "test-repository",
+        )
+        self.assertIn("ok         test-repository:v1", repository.stdout)
+        self.assertNotIn("test-repository:alternate", repository.stdout)
+
+        with sqlite3.connect(self.resources / "resources.db") as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM ctags_revision_paths"
+                ).fetchone()[0],
+                6,
+            )
+
     def test_structured_code_tag_queries_and_inspection(self) -> None:
         if shutil.which("ctags") is None:
             self.skipTest("Universal Ctags is not installed")

@@ -456,9 +456,11 @@ def index_repositories(
     root: Path,
     connection: sqlite3.Connection,
     *,
+    repository_ids: set[str] | None = None,
+    revision_keys: set[tuple[str, str]] | None = None,
     executable: str = "ctags",
 ) -> CodeIndexReport:
-    """Index unique blobs reachable from manifest-selected revisions."""
+    """Index unique blobs reachable from selected manifest revisions."""
     repository_index.synchronize_catalog(connection, repositories)
     with connection:
         connection.execute(
@@ -479,6 +481,11 @@ def index_repositories(
         for repository in repositories
         for revision in repository.get("revisions", [])
         if revision["index"]
+        and (repository_ids is None or repository["id"] in repository_ids)
+        and (
+            revision_keys is None
+            or (repository["id"], revision["id"]) in revision_keys
+        )
     ]
     if not selected:
         return CodeIndexReport(())

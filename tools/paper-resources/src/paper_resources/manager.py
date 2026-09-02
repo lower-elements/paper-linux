@@ -894,12 +894,29 @@ class ResourceManager:
                 set(resource_ids or []),
             )
 
-    def index_code(self) -> ctags_index.CodeIndexReport:
+    def index_code(
+        self,
+        repository_id: str | None = None,
+        revision_id: str | None = None,
+    ) -> ctags_index.CodeIndexReport:
+        repository_ids = None
+        revision_keys = None
+        if repository_id is not None:
+            if repository_id not in self.repositories_by_id:
+                raise ResourceError(f"unknown repository ID: {repository_id}")
+            repository_ids = {repository_id}
+        if revision_id is not None:
+            if repository_id is None:
+                raise ResourceError("a repository is required when selecting a revision")
+            self._revision_manifest(repository_id, revision_id)
+            revision_keys = {(repository_id, revision_id)}
         with self._database_lock:
             return ctags_index.index_repositories(
                 self.repositories,
                 self.settings.root,
                 self._database(create=True),
+                repository_ids=repository_ids,
+                revision_keys=revision_keys,
             )
 
     def search_code_tags(self, **filters: Any) -> code_navigation.CodeTagSearch:
