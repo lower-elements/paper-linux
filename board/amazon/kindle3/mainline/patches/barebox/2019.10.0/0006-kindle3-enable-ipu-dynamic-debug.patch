@@ -1,0 +1,12 @@
+From: Paper Linux <paper-linux@localhost>
+Subject: [PATCH] ARM: kindle3: enable IPU dynamic debug at boot
+
+Enable dynamic debug for the restored MX3 IPU driver through the board Barebox
+bootargs environment. This preserves all other bootloader-provided arguments.
+
+Signed-off-by: Paper Linux <paper-linux@localhost>
+
+--- /dev/null
++++ b/arch/arm/boards/kindle3/env/nv/linux.bootargs.ipu
+@@ -0,0 +1 @@
++dyndbg="file drivers/dma/ipu/* +p"
