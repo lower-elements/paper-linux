@@ -17,7 +17,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
 ---
 --- a/drivers/clk/imx/clk-imx35.c
 +++ b/drivers/clk/imx/clk-imx35.c
-@@ -31,6 +31,8 @@
+@@ -31,8 +31,10 @@
  #define MX35_CCM_CGR2		0x34
  #define MX35_CCM_CGR3		0x38
  
@@ -28,7 +28,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  #define MX35_CONSUMER_512MHZ	0
  #define MX35_CONSUMER_256MHZ	2
  #define MX35_MPLL_RATE		512000000
-@@ -133,15 +131,15 @@
+@@ -133,15 +135,15 @@
  {
  	struct imx35_consumer_clk *consumer = to_imx35_consumer_clk(hw);
  	unsigned long flags;
@@ -47,7 +47,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  		break;
  	default:
  		return -EINVAL;
-@@ -160,9 +158,6 @@
+@@ -160,9 +162,6 @@
  	}
  
  	spin_lock_irqsave(&imx_ccm_lock, flags);
@@ -57,7 +57,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  	writel(pdr0, consumer->base + MXC_CCM_PDR0);
  	spin_unlock_irqrestore(&imx_ccm_lock, flags);
  
-@@ -284,7 +279,12 @@
+@@ -284,7 +283,12 @@
  	clk[ipg] = imx_clk_fixed_factor("ipg", "ahb", 1, 2);
  
  	clk[arm_per_div] = imx_clk_divider("arm_per_div", "arm", base + MX35_CCM_PDR4, 16, 6);
