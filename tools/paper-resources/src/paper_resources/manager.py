@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from . import (
     artifacts, buildroot, catalog_index, code_navigation, ctags_index, database,
-    git_history, git_resources, repository_index, source_search,
+    git_history, git_resources, repository_index, source_search, workspace_store,
 )
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
@@ -179,6 +179,54 @@ class ResourceManager:
         }
         self._connection: sqlite3.Connection | None = None
         self._database_lock = RLock()
+        self._merge_local_revisions()
+
+    def _merge_local_revisions(self) -> None:
+        """Merge durable instance-owned revisions into the in-memory catalog."""
+        if not self.settings.database.is_file():
+            return
+        connection = database.open_database(self.settings.database, create=False)
+        try:
+            local_revisions = workspace_store.list_local_revisions(connection)
+        finally:
+            connection.close()
+        for local in local_revisions:
+            repository = self.repositories_by_id.get(local.repository_id)
+            if repository is None:
+                repository = {
+                    "id": local.repository_id,
+                    "description": "Instance-local workspace source repository",
+                    "path": local.repository_path,
+                    "clone_url": "",
+                    "remotes": [],
+                    "tags": ["local"],
+                    "revisions": [],
+                    "local": True,
+                }
+                self.repositories.append(repository)
+                self.repositories_by_id[local.repository_id] = repository
+            elif repository["path"] != local.repository_path:
+                raise ResourceError(
+                    f"local repository path conflicts with manifest: {local.repository_id}"
+                )
+            existing = next(
+                (
+                    item for item in repository.get("revisions", [])
+                    if item["id"] == local.revision_id
+                ),
+                None,
+            )
+            if existing is not None:
+                if (
+                    existing["commit"] != local.commit
+                    or existing["tree"] != local.tree
+                ):
+                    raise ResourceError(
+                        f"local revision conflicts with manifest: "
+                        f"{local.repository_id}:{local.revision_id}"
+                    )
+                continue
+            repository.setdefault("revisions", []).append(local.manifest())
 
     @classmethod
     def load(cls, settings: ResourceSettings) -> "ResourceManager":

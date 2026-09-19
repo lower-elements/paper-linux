@@ -6,8 +6,9 @@ import textwrap
 import unittest
 from unittest.mock import patch
 
-from paper_resources import buildroot
-from paper_resources.config import ResourceError
+from paper_resources import buildroot, database, repository_index, workspace_store
+from paper_resources.config import ResourceError, ResourceSettings
+from paper_resources.manager import ResourceManager
 
 
 class BuildrootInspectionTest(unittest.TestCase):
@@ -120,6 +121,110 @@ class BuildrootInspectionTest(unittest.TestCase):
             buildroot.inspect_package(
                 self.project, self.resources, [], "test_board", "$(shell bad)"
             )
+
+
+class WorkspacePersistenceTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def test_schema_eight_migrates_without_losing_catalog_data(self) -> None:
+        path = self.root / "resources.db"
+        connection = __import__("sqlite3").connect(path)
+        connection.executescript(
+            database.SCHEMA.replace("PRAGMA user_version = 9;", "PRAGMA user_version = 8;")
+        )
+        connection.execute(
+            """
+            INSERT INTO documents(
+                id, description, path, sha256, extractor, extractor_version
+            ) VALUES ('kept', 'kept', 'kept.pdf', ?, 'test', '1')
+            """,
+            (b"x" * 32,),
+        )
+        connection.commit()
+        connection.close()
+
+        migrated = database.open_database(path, create=True)
+        self.addCleanup(migrated.close)
+        self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 9)
+        self.assertEqual(
+            migrated.execute("SELECT id FROM documents").fetchone()[0], "kept"
+        )
+        self.assertIsNotNone(
+            migrated.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'workspaces'"
+            ).fetchone()
+        )
+
+    def test_local_revisions_survive_manifest_catalog_synchronization(self) -> None:
+        path = self.root / "resources.db"
+        connection = database.open_database(path, create=True)
+        self.addCleanup(connection.close)
+        local = workspace_store.LocalRevision(
+            repository_id="repo",
+            repository_path="git/repo.git",
+            revision_id="local-base",
+            commit="11" * 20,
+            tree="22" * 20,
+            parent_commit=None,
+            description="local base",
+            author="Paper Resources",
+            index=True,
+            construction_policy="package-patches-v1",
+            input_fingerprint="fingerprint",
+            provenance={"kind": "workspace-base"},
+            created_at=workspace_store.now(),
+        )
+        workspace_store.register_local_revision(connection, local)
+        repository_index.synchronize_catalog(connection, [])
+        self.assertEqual(
+            connection.execute(
+                "SELECT count(*) FROM local_revision_definitions"
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            connection.execute(
+                "SELECT count(*) FROM repository_revisions"
+            ).fetchone()[0],
+            1,
+        )
+
+        manifest = self.root / "manifest.json"
+        manifest.write_text(
+            json.dumps({"version": 2, "documents": [], "patches": [], "repositories": []}),
+            encoding="utf-8",
+        )
+        settings = ResourceSettings(
+            manifest_path=manifest,
+            root=self.root,
+            database=path,
+            default_extractor="pypdf",
+        )
+        manager = ResourceManager.load(settings)
+        self.addCleanup(manager.close)
+        revision = manager.get_revision("repo", "local-base")
+        self.assertEqual(revision.commit, "11" * 20)
+        self.assertTrue(revision.index)
+
+    def test_local_revision_identity_is_immutable(self) -> None:
+        connection = database.open_database(self.root / "resources.db", create=True)
+        self.addCleanup(connection.close)
+        original = workspace_store.LocalRevision(
+            "repo", "git/repo.git", "local", "11" * 20, "22" * 20,
+            None, "local", "Paper Resources", False, "v1", "one", {},
+            workspace_store.now(),
+        )
+        workspace_store.register_local_revision(connection, original)
+        changed = workspace_store.LocalRevision(
+            "repo", "git/repo.git", "local", "33" * 20, "44" * 20,
+            None, "changed", "Paper Resources", False, "v1", "two", {},
+            workspace_store.now(),
+        )
+        with self.assertRaisesRegex(ResourceError, "immutable"):
+            workspace_store.register_local_revision(connection, changed)
 
 
 if __name__ == "__main__":

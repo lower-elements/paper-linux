@@ -7,10 +7,10 @@ import sqlite3
 
 
 MINIMUM_SQLITE_VERSION = (3, 45, 0)
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;
 
 CREATE TABLE repositories (
     id TEXT PRIMARY KEY,
@@ -315,6 +315,113 @@ END;
 """
 
 
+OPERATIONAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS package_source_bindings (
+    project_root TEXT NOT NULL,
+    buildroot_config TEXT NOT NULL,
+    package TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    correspondence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_root, buildroot_config, package, source_fingerprint)
+) STRICT, WITHOUT ROWID;
+
+-- These definitions are instance-owned catalog inputs. They intentionally do
+-- not reference disposable manifest catalog rows with cascading foreign keys.
+CREATE TABLE IF NOT EXISTS local_revision_definitions (
+    repository_id TEXT NOT NULL,
+    repository_path TEXT NOT NULL,
+    revision_id TEXT NOT NULL,
+    commit_oid BLOB NOT NULL CHECK(length(commit_oid) IN (20, 32)),
+    tree_oid BLOB NOT NULL CHECK(length(tree_oid) IN (20, 32)),
+    parent_commit_oid BLOB CHECK(
+        parent_commit_oid IS NULL OR length(parent_commit_oid) IN (20, 32)
+    ),
+    description TEXT NOT NULL,
+    author TEXT NOT NULL,
+    index_enabled INTEGER NOT NULL CHECK(index_enabled IN (0, 1)),
+    construction_policy TEXT NOT NULL,
+    input_fingerprint TEXT NOT NULL,
+    provenance TEXT NOT NULL CHECK(json_valid(provenance)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (repository_id, revision_id)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    package TEXT NOT NULL,
+    name TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    repository_path TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    branch TEXT NOT NULL UNIQUE,
+    notes_ref TEXT NOT NULL UNIQUE,
+    project_root TEXT NOT NULL,
+    origin_config TEXT NOT NULL,
+    input_fingerprint TEXT NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    export_base_oid BLOB NOT NULL CHECK(length(export_base_oid) IN (20, 32)),
+    imported_tip_oid BLOB NOT NULL CHECK(length(imported_tip_oid) IN (20, 32)),
+    state TEXT NOT NULL,
+    inspection TEXT NOT NULL CHECK(json_valid(inspection)),
+    created_at TEXT NOT NULL,
+    retired_at TEXT,
+    UNIQUE (package, name)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS workspace_attachments (
+    project_root TEXT NOT NULL,
+    buildroot_config TEXT NOT NULL,
+    package TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    override_path TEXT NOT NULL,
+    block_id TEXT NOT NULL,
+    managed_block BLOB NOT NULL,
+    file_created INTEGER NOT NULL CHECK(file_created IN (0, 1)),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project_root, buildroot_config, package)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS workspace_exports (
+    id INTEGER PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    tip_oid BLOB NOT NULL CHECK(length(tip_oid) IN (20, 32)),
+    notes_digest TEXT NOT NULL,
+    verification TEXT NOT NULL,
+    obsolete_paths TEXT NOT NULL CHECK(json_valid(obsolete_paths)),
+    created_at TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS workspace_exports_by_workspace
+    ON workspace_exports(workspace_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS workspace_export_paths (
+    export_id INTEGER NOT NULL
+        REFERENCES workspace_exports(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    commit_oid BLOB NOT NULL CHECK(length(commit_oid) IN (20, 32)),
+    path TEXT NOT NULL,
+    content_sha256 BLOB NOT NULL CHECK(length(content_sha256) = 32),
+    PRIMARY KEY (export_id, ordinal),
+    UNIQUE (export_id, path)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS workspace_operations (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    operation_kind TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    payload TEXT NOT NULL CHECK(json_valid(payload)),
+    error TEXT,
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT, WITHOUT ROWID;
+"""
+
+
 class DatabaseError(RuntimeError):
     """The resource index could not be opened or initialized."""
 
@@ -344,6 +451,11 @@ def open_database(path: Path, *, create: bool) -> sqlite3.Connection:
             if not create:
                 raise DatabaseError(f"{path} is not a Paper Resources index")
             connection.executescript(SCHEMA)
+            connection.executescript(OPERATIONAL_SCHEMA)
+        elif version == 8:
+            with connection:
+                connection.executescript(OPERATIONAL_SCHEMA)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         elif version != SCHEMA_VERSION:
             raise DatabaseError(
                 f"unsupported resource index schema {version}; "

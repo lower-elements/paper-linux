@@ -53,12 +53,29 @@ def synchronize_catalog(
         len(repository.get("revisions", [])) for repository in repositories
     )
     with connection:
+        local_repositories = {
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT repository_id FROM local_revision_definitions"
+            )
+        }
+        local_revisions = {
+            (row[0], row[1])
+            for row in connection.execute(
+                "SELECT repository_id, revision_id FROM local_revision_definitions"
+            )
+        }
         indexed_repository_ids = {
             row[0] for row in connection.execute("SELECT id FROM repositories")
         }
         connection.executemany(
             "DELETE FROM repositories WHERE id = ?",
-            [(item,) for item in sorted(indexed_repository_ids - repository_ids)],
+            [
+                (item,)
+                for item in sorted(
+                    indexed_repository_ids - repository_ids - local_repositories
+                )
+            ],
         )
 
         for repository in repositories:
@@ -85,6 +102,7 @@ def synchronize_catalog(
                 [
                     (repository_id, revision_id)
                     for revision_id in sorted(indexed_revision_ids - revision_ids)
+                    if (repository_id, revision_id) not in local_revisions
                 ],
             )
 
