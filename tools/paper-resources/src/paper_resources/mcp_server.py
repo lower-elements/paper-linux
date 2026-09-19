@@ -15,7 +15,7 @@ from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import buildroot, catalog_index, database
+from . import buildroot, catalog_index, database, workspaces
 from .config import ResourceError, ResourceSettings
 from .manager import (
     CatalogInfo, PatchInfo, ResourceInfo, ResourceKind, ResourceManager,
@@ -25,6 +25,12 @@ from .manager import (
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 INDEX_WRITE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+LOCAL_WRITE = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
     idempotent_hint=True,
@@ -109,6 +115,48 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 package,
                 repository=repository,
                 revision=revision,
+            )
+
+    @server.tool(title="Open package patch workspace", annotations=LOCAL_WRITE)
+    def open_workspace(
+        buildroot_config: str,
+        package: str,
+        name: str,
+        repository: str | None = None,
+        revision: str | None = None,
+    ) -> workspaces.OpenWorkspaceResult:
+        """Construct immutable inputs and open a Git branch/worktree."""
+        with domain_errors():
+            return manager.open_workspace(
+                buildroot_config, package, name,
+                repository=repository, revision=revision,
+            )
+
+    @server.tool(title="List package patch workspaces", annotations=READ_ONLY)
+    def list_workspaces(
+        package: str | None = None,
+        buildroot_config: str | None = None,
+    ) -> list[workspaces.WorkspaceStatus]:
+        """List durable workspaces with current Git and export status."""
+        with domain_errors():
+            return manager.list_workspaces(package, buildroot_config)
+
+    @server.tool(title="Get package patch workspace status", annotations=READ_ONLY)
+    def get_workspace_status(
+        package: str, name: str
+    ) -> workspaces.WorkspaceStatus:
+        """Report branch, worktree, note, attachment, and export state."""
+        with domain_errors():
+            return manager.get_workspace_status(package, name)
+
+    @server.tool(title="Annotate workspace commit", annotations=LOCAL_WRITE)
+    def annotate_workspace_commit(
+        package: str, name: str, commit: str, patch_path: str
+    ) -> workspaces.AnnotationResult:
+        """Replace one commit's workspace note with an exact patch path."""
+        with domain_errors():
+            return manager.annotate_workspace_commit(
+                package, name, commit, patch_path
             )
 
     @server.tool(title="List resources", annotations=READ_ONLY)

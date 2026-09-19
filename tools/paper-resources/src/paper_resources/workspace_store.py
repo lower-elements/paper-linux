@@ -53,6 +53,135 @@ class LocalRevision:
         }
 
 
+@dataclass(frozen=True)
+class WorkspaceRecord:
+    id: str
+    package: str
+    name: str
+    repository_id: str
+    repository_path: str
+    path: str
+    branch: str
+    notes_ref: str
+    project_root: str
+    origin_config: str
+    input_fingerprint: str
+    source_fingerprint: str
+    export_base: str
+    imported_tip: str
+    state: str
+    inspection: dict[str, Any]
+    created_at: str
+    retired_at: str | None
+
+
+def _workspace(row: sqlite3.Row) -> WorkspaceRecord:
+    return WorkspaceRecord(
+        id=row["id"], package=row["package"], name=row["name"],
+        repository_id=row["repository_id"],
+        repository_path=row["repository_path"], path=row["path"],
+        branch=row["branch"], notes_ref=row["notes_ref"],
+        project_root=row["project_root"], origin_config=row["origin_config"],
+        input_fingerprint=row["input_fingerprint"],
+        source_fingerprint=row["source_fingerprint"],
+        export_base=git_resources.oid_to_hex(row["export_base_oid"]),
+        imported_tip=git_resources.oid_to_hex(row["imported_tip_oid"]),
+        state=row["state"], inspection=json.loads(row["inspection"]),
+        created_at=row["created_at"], retired_at=row["retired_at"],
+    )
+
+
+def get_workspace(
+    connection: sqlite3.Connection, package: str, name: str
+) -> WorkspaceRecord | None:
+    row = connection.execute(
+        "SELECT * FROM workspaces WHERE package = ? AND name = ? AND retired_at IS NULL",
+        (package, name),
+    ).fetchone()
+    return _workspace(row) if row is not None else None
+
+
+def get_workspace_by_id(
+    connection: sqlite3.Connection, workspace_id: str
+) -> WorkspaceRecord | None:
+    row = connection.execute(
+        "SELECT * FROM workspaces WHERE id = ? AND retired_at IS NULL",
+        (workspace_id,),
+    ).fetchone()
+    return _workspace(row) if row is not None else None
+
+
+def list_workspaces(
+    connection: sqlite3.Connection,
+    *,
+    package: str | None = None,
+    buildroot_config: str | None = None,
+) -> list[WorkspaceRecord]:
+    clauses = ["retired_at IS NULL"]
+    parameters: list[str] = []
+    if package is not None:
+        clauses.append("package = ?")
+        parameters.append(package)
+    if buildroot_config is not None:
+        clauses.append("origin_config = ?")
+        parameters.append(buildroot_config)
+    rows = connection.execute(
+        "SELECT * FROM workspaces WHERE " + " AND ".join(clauses)
+        + " ORDER BY package, name",
+        parameters,
+    ).fetchall()
+    return [_workspace(row) for row in rows]
+
+
+def create_workspace(
+    connection: sqlite3.Connection, workspace: WorkspaceRecord
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO workspaces(
+                id, package, name, repository_id, repository_path, path,
+                branch, notes_ref, project_root, origin_config,
+                input_fingerprint, source_fingerprint, export_base_oid,
+                imported_tip_oid, state, inspection, created_at, retired_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                workspace.id, workspace.package, workspace.name,
+                workspace.repository_id, workspace.repository_path,
+                workspace.path, workspace.branch, workspace.notes_ref,
+                workspace.project_root, workspace.origin_config,
+                workspace.input_fingerprint, workspace.source_fingerprint,
+                git_resources.oid_from_hex(workspace.export_base),
+                git_resources.oid_from_hex(workspace.imported_tip),
+                workspace.state, json_text(workspace.inspection),
+                workspace.created_at, workspace.retired_at,
+            ),
+        )
+
+
+def latest_export(
+    connection: sqlite3.Connection, workspace_id: str
+) -> tuple[sqlite3.Row, list[sqlite3.Row]] | None:
+    export = connection.execute(
+        """
+        SELECT * FROM workspace_exports
+        WHERE workspace_id = ? ORDER BY id DESC LIMIT 1
+        """,
+        (workspace_id,),
+    ).fetchone()
+    if export is None:
+        return None
+    paths = connection.execute(
+        """
+        SELECT * FROM workspace_export_paths
+        WHERE export_id = ? ORDER BY ordinal
+        """,
+        (export["id"],),
+    ).fetchall()
+    return export, paths
+
+
 def _local_revision(row: sqlite3.Row) -> LocalRevision:
     return LocalRevision(
         repository_id=row["repository_id"],

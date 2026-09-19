@@ -340,6 +340,46 @@ def parser() -> argparse.ArgumentParser:
     package_inspect.add_argument("--root", type=Path)
     package_inspect.add_argument("--json", action="store_true")
 
+    workspace_parser = subparsers.add_parser(
+        "workspace", help="manage Buildroot package patch workspaces"
+    )
+    workspace_subparsers = workspace_parser.add_subparsers(
+        dest="workspace_command", required=True
+    )
+    workspace_open = workspace_subparsers.add_parser(
+        "open", help="import a configured package patch stack"
+    )
+    workspace_open.add_argument("buildroot_config")
+    workspace_open.add_argument("package")
+    workspace_open.add_argument("name")
+    workspace_open.add_argument("--repository")
+    workspace_open.add_argument("--revision")
+    workspace_open.add_argument("--root", type=Path)
+    workspace_open.add_argument("--json", action="store_true")
+    workspace_list = workspace_subparsers.add_parser(
+        "list", help="list package patch workspaces"
+    )
+    workspace_list.add_argument("--package")
+    workspace_list.add_argument("--config", dest="buildroot_config")
+    workspace_list.add_argument("--root", type=Path)
+    workspace_list.add_argument("--json", action="store_true")
+    workspace_status = workspace_subparsers.add_parser(
+        "status", help="show authoritative Git and export status"
+    )
+    workspace_status.add_argument("package")
+    workspace_status.add_argument("name")
+    workspace_status.add_argument("--root", type=Path)
+    workspace_status.add_argument("--json", action="store_true")
+    workspace_annotate = workspace_subparsers.add_parser(
+        "annotate", help="map a workspace commit to a patch destination"
+    )
+    workspace_annotate.add_argument("package")
+    workspace_annotate.add_argument("name")
+    workspace_annotate.add_argument("commit")
+    workspace_annotate.add_argument("--patch-path", required=True)
+    workspace_annotate.add_argument("--root", type=Path)
+    workspace_annotate.add_argument("--json", action="store_true")
+
     for command, help_text in (
         ("repositories", "list Git repositories"),
         ("patches", "list patch artifacts"),
@@ -800,6 +840,48 @@ def main(arguments: list[str] | None = None) -> int:
                     print(f"Excluded: {stage}")
                 for warning in inspection.warnings:
                     print(f"Warning: {warning}")
+            return 0
+
+        if args.command == "workspace":
+            if args.workspace_command == "open":
+                workspace_result = manager.open_workspace(
+                    args.buildroot_config, args.package, args.name,
+                    repository=args.repository, revision=args.revision,
+                )
+            elif args.workspace_command == "list":
+                workspace_result = manager.list_workspaces(
+                    args.package, args.buildroot_config
+                )
+            elif args.workspace_command == "status":
+                workspace_result = manager.get_workspace_status(
+                    args.package, args.name
+                )
+            else:
+                workspace_result = manager.annotate_workspace_commit(
+                    args.package, args.name, args.commit, args.patch_path
+                )
+            if args.json:
+                if isinstance(workspace_result, list):
+                    value = [asdict(item) for item in workspace_result]
+                else:
+                    value = asdict(workspace_result)
+                print(catalog_index.json_output(value))
+            elif isinstance(workspace_result, list):
+                for item in workspace_result:
+                    print(f"{item.package}/{item.name}\t{item.path}\t{item.state}")
+            elif args.workspace_command == "open":
+                print(workspace_result.status.path)
+                print("created" if workspace_result.created else "already open")
+            elif args.workspace_command == "status":
+                print(f"{workspace_result.package}/{workspace_result.name}")
+                print(f"Path: {workspace_result.path}")
+                print(f"HEAD: {workspace_result.head or 'unavailable'}")
+                print(f"Clean: {workspace_result.clean}")
+                print(f"Exported: {workspace_result.exported}")
+                for blocker in workspace_result.blockers:
+                    print(f"Blocker: {blocker}")
+            else:
+                print(f"{workspace_result.commit}\t{workspace_result.patch_path}")
             return 0
 
         if args.command in ("repositories", "repository", "patches", "patch", "revisions", "revision", "worktrees", "worktree"):

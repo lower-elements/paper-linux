@@ -11,6 +11,7 @@ from typing import Any, Literal
 from . import (
     artifacts, buildroot, catalog_index, code_navigation, ctags_index, database,
     git_history, git_resources, repository_index, source_search, workspace_store,
+    workspaces,
 )
 from .config import ResourceError, ResourceSettings
 from .manifest import load_manifest
@@ -279,6 +280,84 @@ class ResourceManager:
             package,
             repository=repository,
             revision=revision,
+        )
+
+    def open_workspace(
+        self,
+        buildroot_config: str,
+        package: str,
+        name: str,
+        *,
+        repository: str | None = None,
+        revision: str | None = None,
+    ) -> workspaces.OpenWorkspaceResult:
+        inspection = self.inspect_buildroot_package(
+            buildroot_config, package, repository=repository, revision=revision
+        )
+        connection = self._database(create=True)
+        if inspection.source_binding is None and repository is None:
+            saved = workspace_store.get_source_binding(
+                connection,
+                project_root=str(self.settings.manifest_path.parent),
+                buildroot_config=buildroot_config,
+                package=package,
+                source_fingerprint=inspection.source_fingerprint,
+            )
+            if saved is not None:
+                inspection = self.inspect_buildroot_package(
+                    buildroot_config, package,
+                    repository=saved[0], revision=saved[1],
+                )
+        result = workspaces.open_workspace(
+            connection, inspection, self.repositories_by_id,
+            self.settings.root, name,
+        )
+        binding = inspection.source_binding
+        assert binding is not None
+        workspace_store.save_source_binding(
+            connection,
+            project_root=str(self.settings.manifest_path.parent),
+            buildroot_config=buildroot_config,
+            package=package,
+            source_fingerprint=inspection.source_fingerprint,
+            repository_id=binding.repository,
+            revision_id=binding.revision,
+            correspondence=binding.correspondence,
+        )
+        self._merge_local_revisions()
+        return result
+
+    def list_workspaces(
+        self,
+        package: str | None = None,
+        buildroot_config: str | None = None,
+    ) -> list[workspaces.WorkspaceStatus]:
+        connection = self._database(create=True)
+        return [
+            workspaces.get_workspace_status(connection, item)
+            for item in workspace_store.list_workspaces(
+                connection, package=package, buildroot_config=buildroot_config
+            )
+        ]
+
+    def get_workspace_status(
+        self, package: str, name: str
+    ) -> workspaces.WorkspaceStatus:
+        connection = self._database(create=True)
+        workspace = workspace_store.get_workspace(connection, package, name)
+        if workspace is None:
+            raise ResourceError(f"unknown workspace: {package}/{name}")
+        return workspaces.get_workspace_status(connection, workspace)
+
+    def annotate_workspace_commit(
+        self, package: str, name: str, commit: str, patch_path: str
+    ) -> workspaces.AnnotationResult:
+        connection = self._database(create=True)
+        workspace = workspace_store.get_workspace(connection, package, name)
+        if workspace is None:
+            raise ResourceError(f"unknown workspace: {package}/{name}")
+        return workspaces.annotate_workspace_commit(
+            connection, workspace, commit, patch_path
         )
 
     def _document_info(self, document: dict[str, Any]) -> ResourceInfo:

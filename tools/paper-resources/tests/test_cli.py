@@ -1828,6 +1828,10 @@ class PaperResourcesTest(unittest.TestCase):
                 {
                     "get_catalog_info",
                     "inspect_buildroot_package",
+                    "open_workspace",
+                    "list_workspaces",
+                    "get_workspace_status",
+                    "annotate_workspace_commit",
                     "list_resources",
                     "get_resource",
                     "search_documents",

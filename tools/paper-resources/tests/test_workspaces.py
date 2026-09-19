@@ -1,12 +1,15 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import textwrap
 import unittest
 from unittest.mock import patch
 
-from paper_resources import buildroot, database, repository_index, workspace_store
+from paper_resources import (
+    buildroot, database, repository_index, workspace_store, workspaces,
+)
 from paper_resources.config import ResourceError, ResourceSettings
 from paper_resources.manager import ResourceManager
 
@@ -225,6 +228,189 @@ class WorkspacePersistenceTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ResourceError, "immutable"):
             workspace_store.register_local_revision(connection, changed)
+
+
+def run_git(*arguments: str, cwd: Path) -> str:
+    result = subprocess.run(
+        ["git", *arguments], cwd=cwd, check=True, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    return result.stdout.strip()
+
+
+class WorkspaceOpenTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.project = self.root / "project"
+        self.resources = self.root / "resources"
+        self.source = self.root / "source"
+        self.project.mkdir()
+        self.resources.mkdir()
+        self.source.mkdir()
+        run_git("init", "-b", "main", cwd=self.source)
+        (self.source / "file.txt").write_text("base\n", encoding="utf-8")
+        run_git("add", "file.txt", cwd=self.source)
+        self.commit("base")
+        self.base_commit = run_git("rev-parse", "HEAD", cwd=self.source)
+        self.base_tree = run_git("rev-parse", "HEAD^{tree}", cwd=self.source)
+
+        patch_dir = self.project / "patches/foo/1.0"
+        patch_dir.mkdir(parents=True)
+        (self.source / "file.txt").write_text("base\ninternal\n", encoding="utf-8")
+        run_git("add", "file.txt", cwd=self.source)
+        self.commit("internal prerequisite")
+        internal = self.project / "internal.patch"
+        internal.write_bytes(subprocess.run(
+            ["git", "format-patch", "-1", "--stdout", "--no-signature"],
+            cwd=self.source, check=True, stdout=subprocess.PIPE,
+        ).stdout)
+        (self.source / "file.txt").write_text(
+            "base\ninternal\nfirst\n", encoding="utf-8"
+        )
+        run_git("add", "file.txt", cwd=self.source)
+        self.commit("first editable")
+        first = patch_dir / "0001-first-editable.patch"
+        first.write_bytes(subprocess.run(
+            ["git", "format-patch", "-1", "--stdout", "--no-signature"],
+            cwd=self.source, check=True, stdout=subprocess.PIPE,
+        ).stdout)
+        (self.source / "file.txt").write_text(
+            "base\ninternal\nfirst\nsecond\n", encoding="utf-8"
+        )
+        run_git("add", "file.txt", cwd=self.source)
+        self.commit("second editable")
+        second = patch_dir / "0002-second-editable.patch"
+        second.write_bytes(subprocess.run(
+            ["git", "format-patch", "-1", "--stdout", "--no-signature"],
+            cwd=self.source, check=True, stdout=subprocess.PIPE,
+        ).stdout)
+
+        repository_path = self.resources / "git/repo.git"
+        repository_path.parent.mkdir(parents=True)
+        run_git("clone", "--bare", str(self.source), str(repository_path), cwd=self.root)
+        self.repository_path = repository_path
+        self.connection = database.open_database(
+            self.resources / "resources.db", create=True
+        )
+        self.addCleanup(self.connection.close)
+        patch_input = lambda path, stage, directory=None: buildroot.PatchInput(
+            path=path.relative_to(self.project).as_posix(),
+            resolved_path=str(path), stage=stage, directory=directory,
+            sha256=__import__("hashlib").sha256(path.read_bytes()).hexdigest(),
+        )
+        binding = buildroot.SourceBinding(
+            "repo", "v1", self.base_commit, self.base_tree,
+            "declared-source-correspondence",
+        )
+        self.inspection = buildroot.PackageInspection(
+            buildroot_config="test_board", project_root=str(self.project),
+            output_path=str(self.project / "output/test_board"),
+            buildroot_root=str(self.project / "buildroot"),
+            buildroot_revision=None, package="foo", variable_prefix="FOO",
+            version="1.0", download_version="1.0", source="foo.tar.gz",
+            site="https://example.invalid/foo", site_method="https",
+            recipe_directory="buildroot/package/foo",
+            download_directory=str(self.project / "dl/foo"),
+            override_file=str(self.project / "output/test_board/local.mk"),
+            effective_override=None, source_binding=binding,
+            source_fingerprint="source-fingerprint",
+            input_fingerprint="input-fingerprint",
+            prerequisite_patches=(patch_input(internal, "prerequisite"),),
+            editable_patches=(
+                patch_input(first, "editable", "patches/foo/1.0"),
+                patch_input(second, "editable", "patches/foo/1.0"),
+            ),
+            patch_directories=(buildroot.PatchDirectory(
+                "patches/foo/1.0", str(patch_dir), "editable", True, True,
+            ),),
+            pre_patch_hooks=(), post_patch_hooks=("FOO_POST",),
+            excluded_stages=("post-patch hooks: FOO_POST",), warnings=(),
+        )
+        self.repositories = {
+            "repo": {"id": "repo", "path": "git/repo.git", "revisions": []}
+        }
+
+    def commit(self, message: str) -> None:
+        run_git(
+            "-c", "user.name=Patch Author", "-c",
+            "user.email=author@example.invalid", "-c", "commit.gpgSign=false",
+            "commit", "-m", message, cwd=self.source,
+        )
+
+    def test_open_imports_stack_and_native_rebase_keeps_isolated_notes(self) -> None:
+        first = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        self.assertTrue(first.created)
+        self.assertTrue(first.status.exported)
+        self.assertEqual(first.status.commit_count, 2)
+        self.assertEqual(first.status.annotated_commits, 2)
+        checkout = Path(first.status.path)
+        self.assertEqual(
+            (checkout / "file.txt").read_text(encoding="utf-8"),
+            "base\ninternal\nfirst\nsecond\n",
+        )
+        second = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "reader",
+        )
+        old_commits = run_git(
+            "rev-list", "--reverse", f"{first.status.export_base}..HEAD",
+            cwd=checkout,
+        ).splitlines()
+        env = os.environ.copy()
+        env.update({
+            "GIT_COMMITTER_NAME": "Rewriter",
+            "GIT_COMMITTER_EMAIL": "rewriter@example.invalid",
+        })
+        rebase = subprocess.run(
+            [
+                "git", "-c", "commit.gpgSign=false", "rebase",
+                "--force-rebase", first.status.export_base,
+            ],
+            cwd=checkout, env=env, check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(rebase.returncode, 0, rebase.stderr)
+        status = workspaces.get_workspace_status(
+            self.connection,
+            workspace_store.get_workspace(self.connection, "foo", "display"),
+        )
+        self.assertEqual(status.annotated_commits, 2)
+        self.assertEqual(status.missing_annotations, ())
+        new_commits = run_git(
+            "rev-list", "--reverse", f"{status.export_base}..HEAD", cwd=checkout
+        ).splitlines()
+        self.assertNotEqual(old_commits, new_commits)
+        reader = workspace_store.get_workspace(self.connection, "foo", "reader")
+        self.assertEqual(
+            workspaces.read_note(
+                self.repository_path, reader.notes_ref, new_commits[-1]
+            ),
+            (),
+        )
+        self.assertTrue(second.status.exported)
+
+    def test_annotation_rejects_paths_outside_selected_layers(self) -> None:
+        opened = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        workspace = workspace_store.get_workspace(
+            self.connection, "foo", "display"
+        )
+        with self.assertRaisesRegex(ResourceError, "outside"):
+            workspaces.annotate_workspace_commit(
+                self.connection, workspace, "HEAD", "elsewhere/0001.patch"
+            )
+        result = workspaces.annotate_workspace_commit(
+            self.connection, workspace, "HEAD",
+            "patches/foo/1.0/0009-renamed.patch",
+        )
+        self.assertEqual(result.patch_path, "patches/foo/1.0/0009-renamed.patch")
 
 
 if __name__ == "__main__":
