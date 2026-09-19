@@ -302,8 +302,8 @@
 		#size-cells = <0>;
 		status = "okay";
 
-		epdc-detect@0 {
-			compatible = "amazon,kindle3-epdc-detect";
+		display-controller@0 {
+			compatible = "amazon,kindle3-broadsheet";
 			reg = <0>;
 			pinctrl-names = "default";
 			pinctrl-0 = <&pinctrl_ipu_di_epdc>;

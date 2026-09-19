@@ -4,6 +4,8 @@ CONFIG_BLK_DEV_INITRD=y
 # Restore the upstream MX3 IPU DMA/IRQ driver for initial i.MX35 probing.
 CONFIG_MX3_IPU=y
 CONFIG_MX3_IPU_IRQS=4
+CONFIG_FB_BROADSHEET=y
+CONFIG_FB_BROADSHEET_KINDLE3=y
 # Compile dev_dbg() callsites so Barebox can enable the IPU messages at boot.
 CONFIG_DYNAMIC_DEBUG=y
 
