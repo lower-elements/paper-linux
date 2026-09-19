@@ -1,0 +1,20 @@
+Epson S1D13522 command firmware
+================================
+
+commands.bin is the 1,298-byte `isis_commands` program published in Amazon's
+Kindle 3 Linux kernel source release for firmware 3.4.3.  Its source is:
+
+  repository: linux
+  Paper Resources revision: 2.6.26-rt-lab126
+  commit: ebce95f39edb0e66652352517398c2e918e39558
+  path: drivers/video/eink/broadsheet/broadsheet.c
+  symbol: isis_commands
+  license: GPL-2.0
+
+The binary is formed by writing the hexadecimal byte initializers in array
+order.  Its expected SHA-256 is:
+
+  391efed1746232ceeda3307cf39c4af4395afe6282ac872b0b6d5bced5f4072e
+
+Keep the corresponding GPL kernel source available when redistributing this
+firmware.
