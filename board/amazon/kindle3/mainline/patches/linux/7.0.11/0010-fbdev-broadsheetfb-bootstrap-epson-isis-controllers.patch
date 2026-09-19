@@ -1,0 +1,237 @@
+From 6dda60f92958e0f8066e2d58b447c932c8bc4492 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 00:26:46 +0100
+Subject: [PATCH] fbdev: broadsheetfb: bootstrap Epson Isis controllers
+
+Recognize the Isis product code, upload its GPL command firmware, start the command processor, and verify that the controller remains responsive. Defer framebuffer registration until panel setup and power sequencing are implemented.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ drivers/video/fbdev/broadsheetfb.c | 153 +++++++++++++++++++++++++++--
+ include/video/broadsheetfb.h       |   1 +
+ 2 files changed, 145 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/video/fbdev/broadsheetfb.c b/drivers/video/fbdev/broadsheetfb.c
+index c8ba098a8c42f34ce56e65db1b0c8dcd602f4f17..d5ccc19fe32d868228d5bec41157b626cff94f51 100644
+--- a/drivers/video/fbdev/broadsheetfb.c
++++ b/drivers/video/fbdev/broadsheetfb.c
+@@ -31,9 +31,23 @@
+ #include <linux/list.h>
+ #include <linux/firmware.h>
+ #include <linux/uaccess.h>
++#include <linux/unaligned.h>
+ 
+ #include <video/broadsheetfb.h>
+ 
++#define BS_PRODUCT_BROADSHEET		0x0047
++#define BS_PRODUCT_ISIS			0x004d
++
++#define BS_CMD_INIT_CMD_SET		0x0000
++#define BS_CMD_INIT_PLL_STBY		0x0001
++
++#define BS_ISIS_PLL_CFG0		0x0004
++#define BS_ISIS_PLL_CFG1		0x5949
++#define BS_ISIS_PLL_CFG2		0x0040
++
++#define BS_ISIS_COMMAND_FIRMWARE	"epson/s1d13522/commands.bin"
++#define BS_ISIS_COMMAND_SIZE		1298
++
+ /* track panel specific parameters */
+ struct panel_info {
+ 	int w;
+@@ -838,19 +852,123 @@ static void broadsheet_init_display(struct broadsheetfb_par *par)
+ 	par->board->wait_for_rdy(par);
+ }
+ 
+-static void broadsheet_identify(struct broadsheetfb_par *par)
++static int broadsheet_identify(struct broadsheetfb_par *par, u16 *product)
+ {
+ 	u16 rev, prc;
+ 	struct device *dev = par->info->device;
+ 
+ 	rev = broadsheet_read_reg(par, BS_REG_REV);
+ 	prc = broadsheet_read_reg(par, BS_REG_PRC);
+-	dev_info(dev, "Broadsheet Rev 0x%x, Product Code 0x%x\n", rev, prc);
++	*product = prc;
++
++	switch (prc) {
++	case BS_PRODUCT_BROADSHEET:
++		dev_info(dev, "detected Epson Broadsheet, revision %#06x, product code %#06x\n",
++			 rev, prc);
++		if (rev != 0x0100)
++			dev_warn(dev, "unrecognized Broadsheet revision %#06x\n",
++				 rev);
++		return 0;
++	case BS_PRODUCT_ISIS:
++		dev_info(dev, "detected Epson Isis, revision %#06x, product code %#06x\n",
++			 rev, prc);
++		return 0;
++	default:
++		dev_err(dev, "unrecognized Epson display controller: revision %#06x, product code %#06x\n",
++			rev, prc);
++		return -ENODEV;
++	}
++}
++
++static int broadsheet_wait_ready(struct broadsheetfb_par *par,
++				 const char *operation)
++{
++	int ret = par->board->wait_for_rdy(par);
++
++	if (ret)
++		dev_err(par->info->device, "%s failed waiting for ready: %d\n",
++			operation, ret);
++
++	return ret;
++}
++
++static int broadsheet_isis_load_commands(struct broadsheetfb_par *par)
++{
++	struct device *dev = par->info->device;
++	const struct firmware *firmware;
++	size_t i;
++	int ret;
++	u16 args[] = {
++		BS_ISIS_PLL_CFG0,
++		BS_ISIS_PLL_CFG1,
++		BS_ISIS_PLL_CFG2,
++	};
++
++	ret = request_firmware(&firmware, BS_ISIS_COMMAND_FIRMWARE, dev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to load Isis command firmware %s\n",
++				     BS_ISIS_COMMAND_FIRMWARE);
++
++	if (firmware->size != BS_ISIS_COMMAND_SIZE) {
++		dev_err(dev, "Isis command firmware has size %zu, expected %u\n",
++			firmware->size, BS_ISIS_COMMAND_SIZE);
++		ret = -EINVAL;
++		goto out_release;
++	}
++
++	dev_info(dev, "initializing Isis standby PLL\n");
++	broadsheet_send_cmdargs(par, BS_CMD_INIT_PLL_STBY,
++				ARRAY_SIZE(args), args);
++	ret = broadsheet_wait_ready(par, "Isis standby PLL initialization");
++	if (ret)
++		goto out_release;
++
++	dev_info(dev, "uploading %zu-byte Isis command set from %s\n",
++		 firmware->size, BS_ISIS_COMMAND_FIRMWARE);
++	broadsheet_send_command(par, BS_CMD_INIT_CMD_SET);
++	for (i = 0; i < firmware->size; i += sizeof(u16))
++		par->board->mmio_write(par, BS_MMIO_DATA,
++				       get_unaligned_le16(firmware->data + i));
++
++	ret = broadsheet_wait_ready(par, "Isis command-set upload");
++	if (ret)
++		goto out_release;
++
++	dev_info(dev, "starting Isis command processor\n");
++	broadsheet_send_command(par, BS_CMD_INIT_SYS_RUN);
++	msleep(1000);
++	ret = broadsheet_wait_ready(par, "Isis system start");
++	if (!ret)
++		dev_info(dev, "Isis command processor initialized successfully\n");
++
++out_release:
++	release_firmware(firmware);
++	return ret;
++}
++
++static int broadsheet_init_isis(struct broadsheetfb_par *par)
++{
++	u16 product;
++	int ret;
++
++	ret = broadsheet_isis_load_commands(par);
++	if (ret)
++		return ret;
++
++	ret = broadsheet_identify(par, &product);
++	if (ret)
++		return ret;
++	if (product != BS_PRODUCT_ISIS) {
++		dev_err(par->info->device,
++			"controller changed identity after Isis initialization: %#06x\n",
++			product);
++		return -ENODEV;
++	}
+ 
+-	if (prc != 0x0047)
+-		dev_warn(dev, "Unrecognized Broadsheet Product Code\n");
+-	if (rev != 0x0100)
+-		dev_warn(dev, "Unrecognized Broadsheet Revision\n");
++	dev_info(par->info->device,
++		 "Isis bootstrap complete; framebuffer registration deferred\n");
++	return 0;
+ }
+ 
+ static void broadsheet_init(struct broadsheetfb_par *par)
+@@ -1008,6 +1126,7 @@ static int broadsheetfb_probe(struct platform_device *dev)
+ 	int videomemorysize;
+ 	unsigned char *videomemory;
+ 	struct broadsheetfb_par *par;
++	u16 product;
+ 	int i;
+ 	int dpyw, dpyh;
+ 	int panel_index;
+@@ -1095,13 +1214,25 @@ static int broadsheetfb_probe(struct platform_device *dev)
+ 	if (retval < 0)
+ 		goto err_free_irq;
+ 
+-	broadsheet_identify(par);
++	retval = broadsheet_identify(par, &product);
++	if (retval)
++		goto err_free_irq;
++
++	if (product == BS_PRODUCT_ISIS) {
++		retval = broadsheet_init_isis(par);
++		if (retval)
++			goto err_free_irq;
++
++		platform_set_drvdata(dev, info);
++		return 0;
++	}
+ 
+ 	broadsheet_init(par);
+ 
+ 	retval = register_framebuffer(info);
+ 	if (retval < 0)
+ 		goto err_free_irq;
++	par->framebuffer_registered = true;
+ 
+ 	platform_set_drvdata(dev, info);
+ 
+@@ -1138,8 +1269,11 @@ static void broadsheetfb_remove(struct platform_device *dev)
+ 	if (info) {
+ 		struct broadsheetfb_par *par = info->par;
+ 
+-		device_remove_file(info->device, &dev_attr_loadstore_waveform);
+-		unregister_framebuffer(info);
++		if (par->framebuffer_registered) {
++			device_remove_file(info->device,
++					   &dev_attr_loadstore_waveform);
++			unregister_framebuffer(info);
++		}
+ 		fb_deferred_io_cleanup(info);
+ 		par->board->cleanup(par);
+ 		fb_dealloc_cmap(&info->cmap);
+@@ -1163,3 +1297,4 @@ MODULE_AUTHOR("Jaya Kumar");
+ MODULE_LICENSE("GPL");
+ 
+ MODULE_FIRMWARE("broadsheet.wbf");
++MODULE_FIRMWARE(BS_ISIS_COMMAND_FIRMWARE);
+diff --git a/include/video/broadsheetfb.h b/include/video/broadsheetfb.h
+index 548d28f4ec67c8e5fc16cb252ab661f3eb5df073..5fc426776e16bb899dce9e206db2946a78f6c0ce 100644
+--- a/include/video/broadsheetfb.h
++++ b/include/video/broadsheetfb.h
+@@ -50,6 +50,7 @@ struct broadsheetfb_par {
+ 	u16 (*read_reg)(struct broadsheetfb_par *, u16 reg);
+ 	wait_queue_head_t waitq;
+ 	int panel_index;
++	bool framebuffer_registered;
+ 	struct mutex io_lock;
+ };
+ 

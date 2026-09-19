@@ -1,0 +1,474 @@
+From 61bdf1f10fd14071751e9d767cc909b2d8c4bc01 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 00:26:54 +0100
+Subject: [PATCH] fbdev: add Kindle 3 Broadsheet and Isis transport
+
+Replace the temporary EPDC identification client with a board backend that connects broadsheetfb to the i.MX35 IPU DI PIO API and the Kindle reset and ready GPIOs.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ drivers/dma/ipu/Makefile                 |   2 +-
+ drivers/dma/ipu/mx3_ipu_di_epdc_test.c   | 142 -------------
+ drivers/video/fbdev/Kconfig              |  11 +-
+ drivers/video/fbdev/Makefile             |   1 +
+ drivers/video/fbdev/kindle3_broadsheet.c | 253 +++++++++++++++++++++++
+ 5 files changed, 265 insertions(+), 144 deletions(-)
+ delete mode 100644 drivers/dma/ipu/mx3_ipu_di_epdc_test.c
+ create mode 100644 drivers/video/fbdev/kindle3_broadsheet.c
+
+diff --git a/drivers/dma/ipu/Makefile b/drivers/dma/ipu/Makefile
+index 18b73030581fbe7250c10c51c6e70074ba0f5932..cb046be87d343d330e0e444c49c45667e92683b1 100644
+--- a/drivers/dma/ipu/Makefile
++++ b/drivers/dma/ipu/Makefile
+@@ -1,2 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-y	+= ipu_irq.o ipu_idmac.o mx3_ipu_di.o mx3_ipu_di_epdc_test.o
++obj-y	+= ipu_irq.o ipu_idmac.o mx3_ipu_di.o
+diff --git a/drivers/dma/ipu/mx3_ipu_di_epdc_test.c b/drivers/dma/ipu/mx3_ipu_di_epdc_test.c
+deleted file mode 100644
+index a3187a4027b3e8d1abacafdcf5aed15bf3d12cbc..0000000000000000000000000000000000000000
+--- a/drivers/dma/ipu/mx3_ipu_di_epdc_test.c
++++ /dev/null
+@@ -1,142 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0-only
+-/* Minimal Kindle 3 EPDC identification client for MX3 IPU DI bring-up. */
+-
+-#include <linux/delay.h>
+-#include <linux/gpio/consumer.h>
+-#include <linux/jiffies.h>
+-#include <linux/module.h>
+-#include <linux/of.h>
+-#include <linux/platform_device.h>
+-
+-#include <linux/dma/mx3-ipu-di.h>
+-
+-#define EPDC_CMD_RD_REG		0x0010
+-#define EPDC_REG_PRODUCT_CODE	0x0002
+-#define EPDC_PRODUCT_BROADSHEET	0x0047
+-#define EPDC_PRODUCT_ISIS	0x004d
+-#define EPDC_READY_TIMEOUT_MS	5000
+-
+-static int epdc_wait_ready(struct gpio_desc *ready)
+-{
+-	unsigned long timeout = jiffies +
+-		msecs_to_jiffies(EPDC_READY_TIMEOUT_MS);
+-	int value;
+-
+-	do {
+-		value = gpiod_get_value_cansleep(ready);
+-		if (value < 0)
+-			return value;
+-		if (value)
+-			return 0;
+-		usleep_range(1000, 2000);
+-	} while (time_before(jiffies, timeout));
+-
+-	return -ETIMEDOUT;
+-}
+-
+-static int epdc_identify(struct device *dev, struct mx3_ipu_di_port *port,
+-			 struct gpio_desc *reset, struct gpio_desc *ready,
+-			 u32 *product)
+-{
+-	int ret;
+-
+-	ret = mx3_ipu_di_begin(port);
+-	if (ret)
+-		return ret;
+-
+-	/* Configure the bus before releasing the controller from reset. */
+-	msleep(100);
+-	gpiod_set_value_cansleep(reset, 0);
+-	msleep(400);
+-
+-	ret = epdc_wait_ready(ready);
+-	if (ret)
+-		goto out;
+-	ret = mx3_ipu_di_write_cmd(port, MX3_IPU_DI_MAPPING_COMMAND_BANK,
+-				   EPDC_CMD_RD_REG);
+-	if (ret)
+-		goto out;
+-
+-	ret = epdc_wait_ready(ready);
+-	if (ret)
+-		goto out;
+-	ret = mx3_ipu_di_write_data(port, MX3_IPU_DI_MAPPING_COMMAND_BANK,
+-				    EPDC_REG_PRODUCT_CODE);
+-	if (ret)
+-		goto out;
+-
+-	ret = epdc_wait_ready(ready);
+-	if (ret)
+-		goto out;
+-	ret = mx3_ipu_di_read_data(port, MX3_IPU_DI_MAPPING_COMMAND_BANK,
+-				   product);
+-
+-out:
+-	mx3_ipu_di_end(port);
+-	if (ret)
+-		dev_err(dev, "EPDC product-code transaction failed: %d\n", ret);
+-	return ret;
+-}
+-
+-static int epdc_test_probe(struct platform_device *pdev)
+-{
+-	struct device *dev = &pdev->dev;
+-	struct gpio_desc *reset, *ready;
+-	struct mx3_ipu_di_port *port;
+-	u32 product;
+-	int ret;
+-
+-	port = devm_mx3_ipu_di_get(dev);
+-	if (IS_ERR(port))
+-		return dev_err_probe(dev, PTR_ERR(port),
+-				     "failed to acquire IPU DI port\n");
+-
+-	reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+-	if (IS_ERR(reset))
+-		return dev_err_probe(dev, PTR_ERR(reset),
+-				     "failed to acquire reset GPIO\n");
+-
+-	ready = devm_gpiod_get(dev, "ready", GPIOD_IN);
+-	if (IS_ERR(ready))
+-		return dev_err_probe(dev, PTR_ERR(ready),
+-				     "failed to acquire ready GPIO\n");
+-
+-	ret = epdc_identify(dev, port, reset, ready, &product);
+-	if (ret)
+-		return ret;
+-
+-	switch (product) {
+-	case EPDC_PRODUCT_ISIS:
+-		dev_info(dev, "detected Epson Isis EPDC (product code %#06x)\n",
+-			 product);
+-		break;
+-	case EPDC_PRODUCT_BROADSHEET:
+-		dev_info(dev,
+-			 "detected Epson Broadsheet EPDC (product code %#06x)\n",
+-			 product);
+-		break;
+-	default:
+-		dev_warn(dev, "unknown EPDC product code %#06x\n", product);
+-		break;
+-	}
+-
+-	return 0;
+-}
+-
+-static const struct of_device_id epdc_test_of_match[] = {
+-	{ .compatible = "amazon,kindle3-epdc-detect" },
+-	{ }
+-};
+-MODULE_DEVICE_TABLE(of, epdc_test_of_match);
+-
+-static struct platform_driver epdc_test_driver = {
+-	.probe = epdc_test_probe,
+-	.driver = {
+-		.name = "kindle3-epdc-detect",
+-		.of_match_table = epdc_test_of_match,
+-	},
+-};
+-module_platform_driver(epdc_test_driver);
+-
+-MODULE_DESCRIPTION("Kindle 3 EPDC identification test");
+-MODULE_LICENSE("GPL");
+diff --git a/drivers/video/fbdev/Kconfig b/drivers/video/fbdev/Kconfig
+index ac9ac4287c6a1167e1200590e66d7c6d6351d4ac..9d1388c1a23ddd4f82b9eaf4dde05d29c8f56de6 100644
+--- a/drivers/video/fbdev/Kconfig
++++ b/drivers/video/fbdev/Kconfig
+@@ -1763,7 +1763,7 @@ config FB_PRE_INIT_FB
+ 
+ config FB_BROADSHEET
+ 	tristate "E-Ink Broadsheet/Epson S1D13521 controller support"
+-	depends on FB && (ARCH_PXA || COMPILE_TEST)
++	depends on FB && (ARCH_PXA || ARCH_MXC || COMPILE_TEST)
+ 	select FB_SYSMEM_HELPERS_DEFERRED
+ 	help
+ 	  This driver implements support for the E-Ink Broadsheet
+@@ -1771,6 +1771,15 @@ config FB_BROADSHEET
+ 	  and could also have been called by other names when coupled with
+ 	  a bridge adapter.
+ 
++config FB_BROADSHEET_KINDLE3
++	bool "Kindle 3 Broadsheet/Isis transport"
++	depends on FB_BROADSHEET=y && MX3_IPU && OF
++	help
++	  Connect the Broadsheet framebuffer driver to the Epson display
++	  controller on the Kindle 3 through the i.MX35 IPU DI DISP0 bus. This
++	  board backend provides the reset, ready and programmed-I/O operations
++	  required by the controller-independent framebuffer driver.
++
+ config FB_SIMPLE
+ 	tristate "Simple framebuffer support"
+ 	depends on FB
+diff --git a/drivers/video/fbdev/Makefile b/drivers/video/fbdev/Makefile
+index 36a18d958ba0d7db3638c36faf131243989a9776..adbaf2e33535f91263912e69503cba8896018f25 100644
+--- a/drivers/video/fbdev/Makefile
++++ b/drivers/video/fbdev/Makefile
+@@ -93,6 +93,7 @@ obj-$(CONFIG_FB_PMAGB_B)	  += pmagb-b-fb.o
+ obj-$(CONFIG_FB_MAXINE)		  += maxinefb.o
+ obj-$(CONFIG_FB_METRONOME)        += metronomefb.o
+ obj-$(CONFIG_FB_BROADSHEET)       += broadsheetfb.o
++obj-$(CONFIG_FB_BROADSHEET_KINDLE3) += kindle3_broadsheet.o
+ obj-$(CONFIG_FB_S1D13XXX)	  += s1d13xxxfb.o
+ obj-$(CONFIG_FB_SH7760)		  += sh7760fb.o
+ obj-$(CONFIG_FB_IMX)              += imxfb.o
+diff --git a/drivers/video/fbdev/kindle3_broadsheet.c b/drivers/video/fbdev/kindle3_broadsheet.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..5747ee3672cf0c97328b7da8e3af907bb48d26aa
+--- /dev/null
++++ b/drivers/video/fbdev/kindle3_broadsheet.c
+@@ -0,0 +1,253 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Amazon Kindle 3 transport for the Epson Broadsheet/Isis fbdev driver. */
++
++#include <linux/container_of.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include <linux/dma/mx3-ipu-di.h>
++#include <video/broadsheetfb.h>
++
++#define KINDLE3_EPDC_READY_TIMEOUT_MS	5000
++
++struct kindle3_broadsheet {
++	struct device *dev;
++	struct mx3_ipu_di_port *port;
++	struct gpio_desc *reset;
++	struct gpio_desc *ready;
++	struct platform_device *fbdev;
++	struct broadsheet_board board;
++	int io_error;
++};
++
++static struct kindle3_broadsheet *to_kindle3(struct broadsheetfb_par *par)
++{
++	return container_of(par->board, struct kindle3_broadsheet, board);
++}
++
++static int kindle3_wait_ready_gpio(struct kindle3_broadsheet *kindle)
++{
++	unsigned long timeout = jiffies +
++		msecs_to_jiffies(KINDLE3_EPDC_READY_TIMEOUT_MS);
++	int value;
++
++	do {
++		value = gpiod_get_value_cansleep(kindle->ready);
++		if (value < 0)
++			return value;
++		if (value)
++			return 0;
++		usleep_range(1000, 2000);
++	} while (time_before(jiffies, timeout));
++
++	return -ETIMEDOUT;
++}
++
++static void kindle3_record_io_error(struct kindle3_broadsheet *kindle,
++				    int error, const char *operation)
++{
++	if (!error || kindle->io_error)
++		return;
++
++	kindle->io_error = error;
++	dev_err(kindle->dev, "%s failed: %d\n", operation, error);
++}
++
++static int kindle3_broadsheet_wait_ready(struct broadsheetfb_par *par)
++{
++	struct kindle3_broadsheet *kindle = to_kindle3(par);
++	int ret;
++
++	if (kindle->io_error)
++		return kindle->io_error;
++
++	ret = kindle3_wait_ready_gpio(kindle);
++	kindle3_record_io_error(kindle, ret, "EPDC ready wait");
++	return ret;
++}
++
++static void kindle3_broadsheet_mmio_write(struct broadsheetfb_par *par,
++					  int type, u16 word)
++{
++	struct kindle3_broadsheet *kindle = to_kindle3(par);
++	int ret;
++
++	if (kindle->io_error)
++		return;
++
++	ret = kindle3_wait_ready_gpio(kindle);
++	if (ret)
++		goto out_error;
++
++	ret = mx3_ipu_di_begin(kindle->port);
++	if (ret)
++		goto out_error;
++
++	if (type == BS_MMIO_CMD)
++		ret = mx3_ipu_di_write_cmd(kindle->port,
++					   MX3_IPU_DI_MAPPING_COMMAND_BANK,
++					   word);
++	else if (type == BS_MMIO_DATA)
++		ret = mx3_ipu_di_write_data(kindle->port,
++					    MX3_IPU_DI_MAPPING_COMMAND_BANK,
++					    word);
++	else
++		ret = -EINVAL;
++
++	mx3_ipu_di_end(kindle->port);
++
++out_error:
++	kindle3_record_io_error(kindle, ret, "EPDC PIO write");
++}
++
++static u16 kindle3_broadsheet_mmio_read(struct broadsheetfb_par *par)
++{
++	struct kindle3_broadsheet *kindle = to_kindle3(par);
++	u32 word = 0xffff;
++	int ret;
++
++	if (kindle->io_error)
++		return word;
++
++	ret = kindle3_wait_ready_gpio(kindle);
++	if (ret)
++		goto out_error;
++
++	ret = mx3_ipu_di_begin(kindle->port);
++	if (ret)
++		goto out_error;
++
++	ret = mx3_ipu_di_read_data(kindle->port,
++				   MX3_IPU_DI_MAPPING_COMMAND_BANK, &word);
++	mx3_ipu_di_end(kindle->port);
++
++out_error:
++	kindle3_record_io_error(kindle, ret, "EPDC PIO read");
++	return word;
++}
++
++static int kindle3_broadsheet_init(struct broadsheetfb_par *par)
++{
++	struct kindle3_broadsheet *kindle = to_kindle3(par);
++	int ret;
++
++	kindle->io_error = 0;
++
++	/* Program the DI before releasing the display controller from reset. */
++	ret = mx3_ipu_di_begin(kindle->port);
++	if (ret)
++		return ret;
++	msleep(100);
++	gpiod_set_value_cansleep(kindle->reset, 0);
++	msleep(400);
++	mx3_ipu_di_end(kindle->port);
++
++	ret = kindle3_wait_ready_gpio(kindle);
++	if (ret)
++		return dev_err_probe(kindle->dev, ret,
++				     "EPDC did not become ready after reset\n");
++
++	dev_info(kindle->dev, "EPDC reset complete; DI DISP0 transport ready\n");
++	return 0;
++}
++
++static void kindle3_broadsheet_cleanup(struct broadsheetfb_par *par)
++{
++	struct kindle3_broadsheet *kindle = to_kindle3(par);
++
++	gpiod_set_value_cansleep(kindle->reset, 1);
++}
++
++static int kindle3_broadsheet_panel_type(void)
++{
++	return 6;
++}
++
++static int kindle3_broadsheet_setup_irq(struct fb_info *info)
++{
++	return 0;
++}
++
++static int kindle3_broadsheet_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct kindle3_broadsheet *kindle;
++	int ret;
++
++	kindle = devm_kzalloc(dev, sizeof(*kindle), GFP_KERNEL);
++	if (!kindle)
++		return -ENOMEM;
++
++	kindle->dev = dev;
++	kindle->port = devm_mx3_ipu_di_get(dev);
++	if (IS_ERR(kindle->port))
++		return dev_err_probe(dev, PTR_ERR(kindle->port),
++				     "failed to acquire IPU DI port\n");
++
++	kindle->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(kindle->reset))
++		return dev_err_probe(dev, PTR_ERR(kindle->reset),
++				     "failed to acquire reset GPIO\n");
++
++	kindle->ready = devm_gpiod_get(dev, "ready", GPIOD_IN);
++	if (IS_ERR(kindle->ready))
++		return dev_err_probe(dev, PTR_ERR(kindle->ready),
++				     "failed to acquire ready GPIO\n");
++
++	kindle->board.owner = THIS_MODULE;
++	kindle->board.init = kindle3_broadsheet_init;
++	kindle->board.wait_for_rdy = kindle3_broadsheet_wait_ready;
++	kindle->board.cleanup = kindle3_broadsheet_cleanup;
++	kindle->board.get_panel_type = kindle3_broadsheet_panel_type;
++	kindle->board.setup_irq = kindle3_broadsheet_setup_irq;
++	kindle->board.mmio_write = kindle3_broadsheet_mmio_write;
++	kindle->board.mmio_read = kindle3_broadsheet_mmio_read;
++
++	kindle->fbdev = platform_device_alloc("broadsheetfb",
++					       PLATFORM_DEVID_AUTO);
++	if (!kindle->fbdev)
++		return -ENOMEM;
++
++	kindle->fbdev->dev.parent = dev;
++	kindle->fbdev->dev.platform_data = &kindle->board;
++	ret = platform_device_add(kindle->fbdev);
++	if (ret) {
++		platform_device_put(kindle->fbdev);
++		return dev_err_probe(dev, ret,
++				     "failed to register broadsheetfb device\n");
++	}
++
++	platform_set_drvdata(pdev, kindle);
++	dev_info(dev, "registered Broadsheet/Isis fbdev transport on DI DISP0\n");
++	return 0;
++}
++
++static void kindle3_broadsheet_remove(struct platform_device *pdev)
++{
++	struct kindle3_broadsheet *kindle = platform_get_drvdata(pdev);
++
++	platform_device_unregister(kindle->fbdev);
++}
++
++static const struct of_device_id kindle3_broadsheet_of_match[] = {
++	{ .compatible = "amazon,kindle3-broadsheet" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, kindle3_broadsheet_of_match);
++
++static struct platform_driver kindle3_broadsheet_driver = {
++	.probe = kindle3_broadsheet_probe,
++	.remove = kindle3_broadsheet_remove,
++	.driver = {
++		.name = "kindle3-broadsheet",
++		.of_match_table = kindle3_broadsheet_of_match,
++	},
++};
++module_platform_driver(kindle3_broadsheet_driver);
++
++MODULE_DESCRIPTION("Kindle 3 Broadsheet/Isis transport over MX3 IPU DI");
++MODULE_LICENSE("GPL");
