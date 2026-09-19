@@ -324,6 +324,22 @@ def parser() -> argparse.ArgumentParser:
     subparsers.add_parser("env", help="print the effective resource environment")
     subparsers.add_parser("path", help="print the configured resource directory")
 
+    package_parser = subparsers.add_parser(
+        "package", help="inspect configured Buildroot packages"
+    )
+    package_subparsers = package_parser.add_subparsers(
+        dest="package_command", required=True
+    )
+    package_inspect = package_subparsers.add_parser(
+        "inspect", help="resolve a configured package's source and patch stack"
+    )
+    package_inspect.add_argument("buildroot_config")
+    package_inspect.add_argument("package")
+    package_inspect.add_argument("--repository")
+    package_inspect.add_argument("--revision")
+    package_inspect.add_argument("--root", type=Path)
+    package_inspect.add_argument("--json", action="store_true")
+
     for command, help_text in (
         ("repositories", "list Git repositories"),
         ("patches", "list patch artifacts"),
@@ -751,6 +767,40 @@ def main(arguments: list[str] | None = None) -> int:
             return 0
 
         manager = ResourceManager.load(settings)
+
+        if args.command == "package" and args.package_command == "inspect":
+            inspection = manager.inspect_buildroot_package(
+                args.buildroot_config,
+                args.package,
+                repository=args.repository,
+                revision=args.revision,
+            )
+            if args.json:
+                print(catalog_index.json_output(asdict(inspection)))
+            else:
+                print(
+                    f"{inspection.package} {inspection.version} "
+                    f"({inspection.site_method}: {inspection.site})"
+                )
+                if inspection.source_binding is None:
+                    print("Source binding: unresolved")
+                else:
+                    binding = inspection.source_binding
+                    print(
+                        f"Source binding: {binding.repository}:{binding.revision} "
+                        f"({binding.correspondence})"
+                    )
+                print("Prerequisite patches:")
+                for item in inspection.prerequisite_patches:
+                    print(f"  {item.path}")
+                print("Editable patches:")
+                for item in inspection.editable_patches:
+                    print(f"  {item.path}")
+                for stage in inspection.excluded_stages:
+                    print(f"Excluded: {stage}")
+                for warning in inspection.warnings:
+                    print(f"Warning: {warning}")
+            return 0
 
         if args.command in ("repositories", "repository", "patches", "patch", "revisions", "revision", "worktrees", "worktree"):
             if args.command == "repositories":

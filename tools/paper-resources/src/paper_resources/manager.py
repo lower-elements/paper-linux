@@ -9,7 +9,7 @@ from threading import RLock
 from typing import Any, Literal
 
 from . import (
-    artifacts, catalog_index, code_navigation, ctags_index, database,
+    artifacts, buildroot, catalog_index, code_navigation, ctags_index, database,
     git_history, git_resources, repository_index, source_search,
 )
 from .config import ResourceError, ResourceSettings
@@ -212,6 +212,25 @@ class ResourceManager:
                 sum(len(revision.get("worktrees", [])) for revision in repository.get("revisions", []))
                 for repository in self.repositories
             ),
+        )
+
+    def inspect_buildroot_package(
+        self,
+        buildroot_config: str,
+        package: str,
+        *,
+        repository: str | None = None,
+        revision: str | None = None,
+    ) -> buildroot.PackageInspection:
+        """Resolve a configured package without changing Buildroot or local state."""
+        return buildroot.inspect_package(
+            self.settings.manifest_path.parent,
+            self.settings.root,
+            self.repositories,
+            buildroot_config,
+            package,
+            repository=repository,
+            revision=revision,
         )
 
     def _document_info(self, document: dict[str, Any]) -> ResourceInfo:

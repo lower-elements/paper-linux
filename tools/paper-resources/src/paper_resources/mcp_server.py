@@ -15,7 +15,7 @@ from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from . import catalog_index, database
+from . import buildroot, catalog_index, database
 from .config import ResourceError, ResourceSettings
 from .manager import (
     CatalogInfo, PatchInfo, ResourceInfo, ResourceKind, ResourceManager,
@@ -94,6 +94,22 @@ def create_server(manager: ResourceManager) -> MCPServer:
     def get_catalog_info() -> CatalogInfo:
         """Return resolved catalog paths, extractor defaults, and resource counts."""
         return manager.catalog_info()
+
+    @server.tool(title="Inspect configured Buildroot package", annotations=READ_ONLY)
+    def inspect_buildroot_package(
+        buildroot_config: str,
+        package: str,
+        repository: str | None = None,
+        revision: str | None = None,
+    ) -> buildroot.PackageInspection:
+        """Resolve normal source, ordered patches, hooks, and optional Git binding."""
+        with domain_errors():
+            return manager.inspect_buildroot_package(
+                buildroot_config,
+                package,
+                repository=repository,
+                revision=revision,
+            )
 
     @server.tool(title="List resources", annotations=READ_ONLY)
     def list_resources(

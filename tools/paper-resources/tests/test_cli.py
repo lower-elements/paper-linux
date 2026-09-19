@@ -1827,6 +1827,7 @@ class PaperResourcesTest(unittest.TestCase):
                 names,
                 {
                     "get_catalog_info",
+                    "inspect_buildroot_package",
                     "list_resources",
                     "get_resource",
                     "search_documents",
