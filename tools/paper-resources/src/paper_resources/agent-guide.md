@@ -28,6 +28,9 @@ one relevant region.
   `search_hardware_references`.
 - Reference-document question: `search_documents`, followed by the relevant
   page or section resource.
+- Developing a configured Buildroot patch stack: start with
+  `inspect_buildroot_package`, then use the workspace operations below. Do not
+  treat a mutable workspace path as an immutable revision selector.
 
 Public source selectors are `repository`, `revision`, and repository-relative
 `path`. A configured `worktree_path` may be accepted as a convenience alias,
@@ -132,3 +135,39 @@ and filesystem setup. A human or authorized agent can use
 `just resource populate` and `just resource check`. Index updates are exposed
 separately and should be requested only when changing the shared local index is
 within the task's scope.
+
+## Package patch workspace loop
+
+Use `inspect_buildroot_package` first. Read its ordered prerequisite/editable
+patches, source binding kind, selected directories, excluded hooks, and
+warnings. If automatic Git source identity is not provable, supply both a
+repository and revision to `open_workspace`; archive-to-Git correspondence is
+explicit and must not be described as proven archive/tree equality.
+
+`open_workspace` creates immutable base/imported revisions and a mutable branch
+under the configured resource root. Inspect and edit that returned filesystem
+path with ordinary Git. Git is authoritative for HEAD, branch, index, worktree,
+notes, and interrupted operations. Existing source-reading tools address the
+named immutable local revisions, not uncommitted workspace contents.
+
+Before export:
+
+1. Use `get_workspace_status` and finish any rebase, merge, or other Git
+   operation. Keep the worktree and index clean.
+2. Preserve imported destination notes through normal amend/rebase. For a new
+   or split commit, call `annotate_workspace_commit` with an exact path inside
+   a selected writable patch directory when numbered anchors cannot infer it.
+3. Call `export_workspace` with `dry_run=true`. Resolve missing/conflicting
+   notes, layer ambiguity, numbering collisions, stale inputs, external file
+   edits, empty/merge commits, or missing patch headers before publishing.
+4. Publish with `dry_run=false`. Manually review and remove any reported
+   obsolete patch files; they remain in the Buildroot stack until removed.
+
+`attach_workspace` is never an implicit side effect. It makes the mutable
+checkout the configured package source and bypasses normal extraction,
+patching, and reported hooks. Use it only for an explicitly requested test,
+then `detach_workspace`. Follow the returned clean/rebuild advice because
+Buildroot's `rsync -au` can retain deleted files. `close_workspace` without
+force protects dirty or unexported work and changed patch outputs. Forced close
+may discard workspace-owned work but cannot override a conflicting attachment
+or remove an unrelated worktree.

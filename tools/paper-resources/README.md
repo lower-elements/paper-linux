@@ -26,6 +26,9 @@ just resource revisions linux
 just resource revision linux 2.6.26-rt-lab126
 just resource worktrees linux 2.6.26-rt-lab126
 just resource worktree linux 2.6.26-rt-lab126 default
+just resource package inspect kindle3_mainline linux \
+    --repository linux --revision 7.0.11
+just resource workspace list
 just resource compare linux 2.6.26 2.6.26-imx35-pdk
 just resource diff linux 2.6.26 2.6.26-imx35-pdk drivers/video/Kconfig
 just resource grep linux MAX8660 2.6.26-rt-lab126 7.0.11
@@ -84,7 +87,98 @@ a checkout; a worktree selector creates the requested checkout, while full or
 repository population creates every declared worktree. Existing compatible
 object stores are reused.
 
-### Comparing revisions
+## Buildroot package patch workspaces
+
+Package workspaces turn a configured Buildroot patch stack into an ordinary
+Git branch and worktree without changing the shared resource manifest. They
+reuse populated Paper Resources object stores and the existing SQLite database.
+Inspection and workspace MCP operations never fetch from the network; populate
+the required repository objects and download any declared Buildroot patch
+inputs first.
+
+Inspect the normal package recipe before opening a workspace:
+
+```sh
+just resource package inspect kindle3_mainline linux \
+    --repository linux --revision 7.0.11
+just resource workspace open kindle3_mainline linux display \
+    --repository linux --revision 7.0.11
+just resource workspace status linux display
+```
+
+The explicit binding is required when Buildroot downloads an archive while the
+resource catalog supplies a corresponding Git revision. Such a binding records
+a declared source correspondence; it does not claim that the archive and Git
+tree were independently proven equal. A successful open remembers the binding
+for the same normal-source fingerprint. A source or version change invalidates
+that reuse.
+
+Buildroot's evaluated Make metadata defines patch order. Downloaded and
+Buildroot-internal patches form an immutable prerequisite base. Every selected
+supported external patch becomes one editable commit, and a private notes ref
+records its exact project-relative `.patch` path. Amend, split, squash, reorder,
+and rebase with ordinary Git. Per-worktree Git configuration carries these
+notes through native amend and rebase operations; a squash with different
+destinations becomes an explicit annotation conflict rather than silently
+choosing one.
+
+Use annotation when a split or new commit needs an exact destination:
+
+```sh
+just resource workspace annotate linux display HEAD \
+    --patch-path board/amazon/kindle3/mainline/patches/linux/7.0.11/0008-example.patch
+just resource workspace export kindle3_mainline linux display --dry-run
+just resource workspace export kindle3_mainline linux display
+```
+
+Export covers every commit after the recorded base. It requires a clean,
+linear history; preserves unique explicit paths; allocates missing paths only
+where numbered anchors make the layer and order unambiguous; rejects empty
+commits, merges, unsafe paths, stale inputs, and external destination edits;
+and replays staged `git format-patch` output from the base before publishing.
+Dry-run performs all planning, formatting, and replay checks but changes no
+notes, patch files, or export state. Publishing journals individual atomic file
+replacements and recovers or safely rolls back interrupted operations.
+
+Obsolete managed patches are reported but never deleted. Other selected patch
+files outside the plan are also reported because Buildroot will still apply
+them; the replay check intentionally excludes both categories. Clean them up
+manually before claiming that the on-disk Buildroot stack matches the workspace.
+
+An explicit attachment adds a delimited manager-owned assignment to the
+configured `BR2_PACKAGE_OVERRIDE_FILE` and verifies its effective Make value:
+
+```sh
+just resource workspace attach kindle3_mainline linux display
+just resource workspace detach kindle3_mainline linux
+just resource workspace close kindle3_mainline linux display
+```
+
+Attachments shadow but do not rewrite an unmanaged assignment, and detachment
+restores the exact prior bytes and effective value. Buildroot's override uses
+`rsync -au` into a custom build directory and bypasses normal download,
+extraction, patching, and the preparation hooks reported by inspection.
+Deletions, history switches, and timestamps can therefore leave stale build
+files; use the returned rebuild/reconfigure commands and clean the package
+build directory when necessary. Detachment does not clean output artifacts,
+and validating exported patches requires a fresh normal patch/build cycle.
+
+Close without `--force` requires clean Git state and commits, notes, and patch
+outputs matching the last import/export snapshot. `--force` may discard only
+workspace-owned development work; it still refuses unsafe attachment
+restoration or an unrelated worktree path. Closing removes the owned worktree,
+branch, notes ref, and per-worktree configuration while retaining immutable
+local revisions for source reads and indexing.
+
+Version 1 deliberately supports Git-backed sources and flat alphabetical
+`.patch` directories. It reports but does not execute extraction or patch
+hooks, and rejects `series` files, recursive layouts, compressed patch forms,
+interleaved classifications, and other inputs it cannot reproduce honestly.
+It does not import tarballs, watch mutable workspaces, renumber patches, delete
+obsolete files, build packages, deploy images, or claim equivalence to a fully
+prepared Buildroot source tree.
+
+## Comparing revisions
 
 `compare` lists changed repository paths and their Git status without returning
 file contents. It defaults to 200 entries so a kernel-wide comparison cannot
@@ -398,6 +492,14 @@ is exposed as `find_revision_files`, `search_source_text`,
 `describe_file_index`, `show_file_history`, `search_revision_history`,
 `blame_file_lines`, and `find_blob_occurrences`; `search_hardware_references`
 federates document, tag, and source-text results.
+Package patch workflows are exposed with matching typed operations:
+`inspect_buildroot_package`, `open_workspace`, `list_workspaces`,
+`get_workspace_status`, `annotate_workspace_commit`, `export_workspace`,
+`attach_workspace`, `detach_workspace`, and `close_workspace`. Inspection,
+listing, and status are read-only. Other operations mutate only local resource,
+workspace, patch, or configured override state; close is marked destructive
+because `force=true` may discard workspace-owned changes. Network population
+remains CLI-only.
 `search_code_tags` can include source for at most 20 results to avoid an extra
 round trip when a query is already precise. It also exposes corresponding
 JSON resources. MCP resources use the following URI forms:

@@ -27,3 +27,12 @@ selected. Target-dependent patches belong in a layer.
 Use zero-padded numeric filenames, alphabetical application order, and an
 email-style header explaining what the patch does and why. Include upstream
 status and a `Signed-off-by` line. Do not add new `series` files.
+
+Paper Resources package workspaces are an alternative to the manual `diff -u`
+workflow. They import the complete configured external patch stack as Git
+commits, retain each exact destination in a workspace-specific Git note, and
+export the entire range with `git format-patch`. Export preserves explicit
+filenames, allocates only available numbered gaps, and never renumbers or
+deletes obsolete patches automatically. Remove reported obsolete files by hand
+after reviewing them. Commits must retain an explanatory message and a real
+`Signed-off-by` trailer; the exporter does not invent sign-offs or authorship.
