@@ -182,6 +182,56 @@ def latest_export(
     return export, paths
 
 
+def save_operation(
+    connection: sqlite3.Connection,
+    *,
+    operation_id: str,
+    workspace_id: str | None,
+    kind: str,
+    phase: str,
+    payload: Any,
+    error: str | None = None,
+) -> None:
+    timestamp = now()
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO workspace_operations(
+                id, workspace_id, operation_kind, phase, payload, error,
+                started_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                phase = excluded.phase,
+                payload = excluded.payload,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                operation_id, workspace_id, kind, phase, json_text(payload),
+                error, timestamp, timestamp,
+            ),
+        )
+
+
+def pending_operations(
+    connection: sqlite3.Connection, workspace_id: str
+) -> list[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT * FROM workspace_operations
+        WHERE workspace_id = ? ORDER BY started_at, id
+        """,
+        (workspace_id,),
+    ).fetchall()
+
+
+def delete_operation(connection: sqlite3.Connection, operation_id: str) -> None:
+    with connection:
+        connection.execute(
+            "DELETE FROM workspace_operations WHERE id = ?", (operation_id,)
+        )
+
+
 def _local_revision(row: sqlite3.Row) -> LocalRevision:
     return LocalRevision(
         repository_id=row["repository_id"],
@@ -354,32 +404,81 @@ def record_export(
     obsolete_paths: Iterable[str] = (),
 ) -> int:
     with connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO workspace_exports(
-                workspace_id, kind, tip_oid, notes_digest, verification,
-                obsolete_paths, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                workspace_id, kind, git_resources.oid_from_hex(tip), notes_digest,
-                verification, json_text(list(obsolete_paths)), now(),
-            ),
+        return _record_export(
+            connection, workspace_id=workspace_id, kind=kind, tip=tip,
+            notes_digest=notes_digest, verification=verification, paths=paths,
+            obsolete_paths=obsolete_paths,
         )
-        export_id = cursor.lastrowid
-        assert export_id is not None
-        connection.executemany(
+
+
+def _record_export(
+    connection: sqlite3.Connection,
+    *,
+    workspace_id: str,
+    kind: str,
+    tip: str,
+    notes_digest: str,
+    verification: str,
+    paths: Iterable[tuple[str, str, bytes]],
+    obsolete_paths: Iterable[str],
+) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO workspace_exports(
+            workspace_id, kind, tip_oid, notes_digest, verification,
+            obsolete_paths, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            workspace_id, kind, git_resources.oid_from_hex(tip), notes_digest,
+            verification, json_text(list(obsolete_paths)), now(),
+        ),
+    )
+    export_id = cursor.lastrowid
+    assert export_id is not None
+    connection.executemany(
+        """
+        INSERT INTO workspace_export_paths(
+            export_id, ordinal, commit_oid, path, content_sha256
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                export_id, ordinal, git_resources.oid_from_hex(commit),
+                path, digest,
+            )
+            for ordinal, (commit, path, digest) in enumerate(paths)
+        ],
+    )
+    return export_id
+
+
+def complete_export_operation(
+    connection: sqlite3.Connection,
+    *,
+    operation_id: str,
+    payload: Any,
+    workspace_id: str,
+    kind: str,
+    tip: str,
+    notes_digest: str,
+    verification: str,
+    paths: Iterable[tuple[str, str, bytes]],
+    obsolete_paths: Iterable[str],
+) -> int:
+    """Record an export and mark its journal complete in one transaction."""
+    with connection:
+        export_id = _record_export(
+            connection, workspace_id=workspace_id, kind=kind, tip=tip,
+            notes_digest=notes_digest, verification=verification, paths=paths,
+            obsolete_paths=obsolete_paths,
+        )
+        connection.execute(
             """
-            INSERT INTO workspace_export_paths(
-                export_id, ordinal, commit_oid, path, content_sha256
-            ) VALUES (?, ?, ?, ?, ?)
+            UPDATE workspace_operations
+            SET phase = 'complete', payload = ?, error = NULL, updated_at = ?
+            WHERE id = ?
             """,
-            [
-                (
-                    export_id, ordinal, git_resources.oid_from_hex(commit),
-                    path, digest,
-                )
-                for ordinal, (commit, path, digest) in enumerate(paths)
-            ],
+            (json_text(payload), now(), operation_id),
         )
     return export_id

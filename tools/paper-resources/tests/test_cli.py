@@ -1832,6 +1832,7 @@ class PaperResourcesTest(unittest.TestCase):
                     "list_workspaces",
                     "get_workspace_status",
                     "annotate_workspace_commit",
+                    "export_workspace",
                     "list_resources",
                     "get_resource",
                     "search_documents",

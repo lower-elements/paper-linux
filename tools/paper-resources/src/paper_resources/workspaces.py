@@ -8,13 +8,14 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
 from typing import Any, Iterable
 import uuid
 
-from . import buildroot, git_resources, workspace_store
+from . import buildroot, git_resources, patch_export, workspace_store
 from .config import ResourceError
 
 
@@ -77,6 +78,22 @@ class AnnotationResult:
     commit: str
     patch_path: str
     notes_ref: str
+
+
+@dataclass(frozen=True)
+class ExportWorkspaceResult:
+    package: str
+    name: str
+    dry_run: bool
+    tip: str
+    patches: tuple[patch_export.PlannedPatch, ...]
+    created_paths: tuple[str, ...]
+    updated_paths: tuple[str, ...]
+    obsolete_paths: tuple[str, ...]
+    other_selected_paths: tuple[str, ...]
+    synthesized_notes: tuple[tuple[str, str], ...]
+    warnings: tuple[str, ...]
+    verification: str
 
 
 def validate_component(value: str, label: str) -> str:
@@ -568,6 +585,12 @@ def get_workspace_status(
             (workspace.id,),
         )
     )
+    pending = workspace_store.pending_operations(connection, workspace.id)
+    if pending:
+        blockers.append(
+            "unresolved workspace operation(s): "
+            + ", ".join(f"{item['operation_kind']}:{item['phase']}" for item in pending)
+        )
     excluded = tuple(workspace.inspection.get("excluded_stages", []))
     if excluded:
         warnings.append("workspace omits reported Buildroot preparation hooks")
@@ -611,7 +634,7 @@ def annotate_workspace_commit(
         raise ResourceError("patch_path escapes the Paper Linux project") from error
     allowed = False
     for directory in workspace.inspection.get("patch_directories", []):
-        if directory.get("stage") != "editable":
+        if directory.get("stage") != "editable" or not directory.get("selected"):
             continue
         root = Path(directory["resolved_path"]).resolve()
         try:
@@ -626,4 +649,390 @@ def annotate_workspace_commit(
     return AnnotationResult(
         workspace.package, workspace.name, resolved_commit, relative,
         workspace.notes_ref,
+    )
+
+
+def _selected_editable_directories(
+    inspection: buildroot.PackageInspection,
+) -> tuple[buildroot.PatchDirectory, ...]:
+    return tuple(
+        item for item in inspection.patch_directories
+        if item.stage == "editable" and item.selected
+    )
+
+
+def _verify_export_inputs(
+    workspace: workspace_store.WorkspaceRecord,
+    current: buildroot.PackageInspection,
+) -> None:
+    recorded = workspace.inspection
+    if current.source_fingerprint != workspace.source_fingerprint:
+        raise ResourceError("normal package source changed; reopen the workspace")
+    current_prerequisites = [asdict(item) for item in current.prerequisite_patches]
+    if current_prerequisites != recorded.get("prerequisite_patches", []):
+        raise ResourceError("prerequisite patch inputs changed; reopen the workspace")
+    current_directories = [
+        (item.path, item.stage, item.selected)
+        for item in current.patch_directories
+    ]
+    recorded_directories = [
+        (item["path"], item["stage"], item["selected"])
+        for item in recorded.get("patch_directories", [])
+    ]
+    if current_directories != recorded_directories:
+        raise ResourceError("Buildroot patch-directory selection changed; reopen the workspace")
+    if (
+        list(current.pre_patch_hooks) != recorded.get("pre_patch_hooks", [])
+        or list(current.post_patch_hooks) != recorded.get("post_patch_hooks", [])
+    ):
+        raise ResourceError("Buildroot patch hook inputs changed; reopen the workspace")
+
+
+def _format_patch(checkout: Path, commit: str) -> bytes:
+    environment = os.environ.copy()
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    result = subprocess.run(
+        [
+            "git", "-C", str(checkout),
+            "-c", "format.signature=", "-c", "format.useAutoBase=false",
+            "format-patch", "-1", commit, "--stdout", "--no-signature",
+            "--no-notes", "--no-numbered", "--subject-prefix=PATCH",
+            "--full-index", "--binary",
+        ],
+        check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=environment,
+    )
+    if result.returncode:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ResourceError(f"cannot format commit {commit[:12]}: {detail}")
+    content = result.stdout
+    header = content.split(b"\n---\n", 1)[0]
+    missing: list[str] = []
+    for label, pattern in (
+        ("From", br"(?m)^From: .+"),
+        ("Subject", br"(?m)^Subject: .+"),
+        ("Signed-off-by", br"(?mi)^Signed-off-by: .+"),
+    ):
+        if re.search(pattern, header) is None:
+            missing.append(label)
+    if missing:
+        raise ResourceError(
+            f"commit {commit[:12]} cannot be exported: missing required "
+            f"project patch metadata ({', '.join(missing)}); amend the commit message"
+        )
+    return content
+
+
+def _replay_export(
+    repository_path: Path,
+    base: str,
+    tip: str,
+    patches: Iterable[bytes],
+) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="paper-workspace-replay-", dir=repository_path.parent
+    ) as temporary:
+        checkout = Path(temporary) / "checkout"
+        git_resources.run_git([
+            "--git-dir", str(repository_path), "worktree", "add", "--detach",
+            str(checkout), base,
+        ])
+        try:
+            for index, content in enumerate(patches, start=1):
+                result = _run_process(
+                    ["git", "-C", str(checkout), "apply", "--index", "-p1"],
+                    input_bytes=content, check=False,
+                )
+                if result.returncode:
+                    detail = result.stderr.decode("utf-8", errors="replace").strip()
+                    raise ResourceError(
+                        f"exported-series replay failed at patch {index}: {detail}"
+                    )
+            replay_tree = git_resources.run_git(
+                ["-C", str(checkout), "write-tree"], capture=True
+            )
+        finally:
+            git_resources.run_git([
+                "--git-dir", str(repository_path), "worktree", "remove", "--force",
+                str(checkout),
+            ])
+    tip_tree = git_resources.git_object(repository_path, f"{tip}^{{tree}}")
+    if replay_tree != tip_tree:
+        raise ResourceError(
+            "exported-series replay tree does not equal the workspace tip tree"
+        )
+
+
+def _sha256_hex(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _recover_export_operation(
+    connection: sqlite3.Connection,
+    workspace: workspace_store.WorkspaceRecord,
+    operation: sqlite3.Row,
+) -> None:
+    payload = json.loads(operation["payload"])
+    repository_path = Path(payload["repository_path"])
+    for note in reversed(payload.get("notes", [])):
+        current = _git_optional([
+            "--git-dir", str(repository_path), "notes",
+            f"--ref={workspace.notes_ref}", "show", note["commit"],
+        ])
+        if current == note["new"]:
+            if note["old"] is None:
+                _run_process([
+                    "git", "--git-dir", str(repository_path), "notes",
+                    f"--ref={workspace.notes_ref}", "remove", note["commit"],
+                ], check=False)
+            else:
+                _write_note(
+                    repository_path, workspace.notes_ref, note["commit"], note["old"]
+                )
+        elif current != note["old"]:
+            raise ResourceError(
+                f"cannot recover export: note for {note['commit'][:12]} changed externally"
+            )
+    for item in reversed(payload.get("files", [])):
+        destination = Path(item["destination"])
+        staged = Path(item["staged"])
+        backup = Path(item["backup"]) if item.get("backup") else None
+        if item.get("published"):
+            if not destination.is_file() or _sha256_hex(destination) != item["new_hash"]:
+                raise ResourceError(
+                    f"cannot recover export: destination changed externally: {destination}"
+                )
+            if backup is not None:
+                os.replace(backup, destination)
+            else:
+                destination.unlink()
+        elif backup is not None:
+            backup.unlink(missing_ok=True)
+        staged.unlink(missing_ok=True)
+    workspace_store.delete_operation(connection, operation["id"])
+
+
+def recover_workspace_operations(
+    connection: sqlite3.Connection, workspace: workspace_store.WorkspaceRecord
+) -> None:
+    for operation in workspace_store.pending_operations(connection, workspace.id):
+        if operation["operation_kind"] != "export":
+            raise ResourceError(
+                f"workspace has unresolved {operation['operation_kind']} operation "
+                f"{operation['id']}"
+            )
+        if operation["phase"] == "complete":
+            payload = json.loads(operation["payload"])
+            for item in payload.get("files", []):
+                Path(item["staged"]).unlink(missing_ok=True)
+                if item.get("backup"):
+                    Path(item["backup"]).unlink(missing_ok=True)
+            workspace_store.delete_operation(connection, operation["id"])
+        else:
+            _recover_export_operation(connection, workspace, operation)
+
+
+def export_workspace(
+    connection: sqlite3.Connection,
+    workspace: workspace_store.WorkspaceRecord,
+    current_inspection: buildroot.PackageInspection,
+    *,
+    dry_run: bool = False,
+) -> ExportWorkspaceResult:
+    recover_workspace_operations(connection, workspace)
+    _verify_export_inputs(workspace, current_inspection)
+    status = get_workspace_status(connection, workspace)
+    if status.blockers:
+        raise ResourceError("cannot export workspace: " + "; ".join(status.blockers))
+    assert status.head is not None
+    checkout = Path(workspace.path)
+    repository_path = Path(workspace.repository_path)
+    if not repository_path.is_absolute():
+        repository_path = checkout.parents[2] / repository_path
+    commits = _commit_range(checkout, workspace.export_base, status.head)
+    commit_inputs: list[patch_export.ExportCommit] = []
+    for commit in commits:
+        empty = _run_process([
+            "git", "-C", str(checkout), "diff-tree", "--quiet",
+            f"{commit}^", commit,
+        ], check=False)
+        if empty.returncode == 0:
+            raise ResourceError(f"empty commit is not exportable: {commit[:12]}")
+        subject = git_resources.run_git([
+            "-C", str(checkout), "show", "-s", "--format=%s", commit,
+        ], capture=True)
+        commit_inputs.append(patch_export.ExportCommit(
+            commit, subject, read_note(repository_path, workspace.notes_ref, commit)
+        ))
+    directories = _selected_editable_directories(current_inspection)
+    if not directories:
+        raise ResourceError("package has no selected editable patch directory")
+    existing: list[str] = []
+    for directory in directories:
+        root = Path(directory.resolved_path)
+        if root.is_dir():
+            existing.extend(
+                (Path(current_inspection.project_root) / item).relative_to(
+                    current_inspection.project_root
+                ).as_posix()
+                for item in sorted(root.glob("*.patch"))
+            )
+    latest = workspace_store.latest_export(connection, workspace.id)
+    managed_rows = latest[1] if latest is not None else []
+    managed = {row["path"]: row for row in managed_rows}
+    plan = patch_export.plan_export(
+        commit_inputs,
+        directories=[item.path for item in directories],
+        existing_paths=existing,
+        managed_paths=managed,
+    )
+    generated = {
+        item.path: _format_patch(checkout, item.commit) for item in plan.patches
+    }
+    _replay_export(
+        repository_path, workspace.export_base, status.head,
+        [generated[item.path] for item in plan.patches],
+    )
+    project_root = Path(current_inspection.project_root)
+    created: list[str] = []
+    updated: list[str] = []
+    for item in plan.patches:
+        destination = project_root / item.path
+        record = managed.get(item.path)
+        new_digest = hashlib.sha256(generated[item.path]).digest()
+        if record is None:
+            if destination.exists():
+                raise ResourceError(
+                    f"refusing to overwrite unrelated patch destination: {item.path}"
+                )
+            created.append(item.path)
+        else:
+            if not destination.is_file():
+                raise ResourceError(
+                    f"managed patch destination was removed externally: {item.path}"
+                )
+            current_digest = _path_hash(destination)
+            if current_digest != record["content_sha256"] and current_digest != new_digest:
+                raise ResourceError(
+                    f"managed patch destination changed externally: {item.path}"
+                )
+            updated.append(item.path)
+    synthesized = tuple(
+        (item.commit, item.path) for item in plan.patches if item.synthesized
+    )
+    if dry_run:
+        return ExportWorkspaceResult(
+            workspace.package, workspace.name, True, status.head, plan.patches,
+            tuple(created), tuple(updated), plan.obsolete_paths,
+            plan.other_selected_paths, synthesized, plan.warnings,
+            "exported-series replay equals workspace tip tree",
+        )
+
+    # Recheck the Git identities immediately before staging external writes.
+    rechecked = get_workspace_status(connection, workspace)
+    if rechecked.head != status.head or rechecked.blockers:
+        raise ResourceError("workspace changed while export was being planned; retry")
+    operation_id = uuid.uuid4().hex
+    payload: dict[str, Any] = {
+        "repository_path": str(repository_path), "files": [], "notes": [],
+    }
+    completed = False
+    try:
+        for item in plan.patches:
+            destination = project_root / item.path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            staged = destination.parent / f".{destination.name}.paper-{operation_id}.new"
+            backup = (
+                destination.parent / f".{destination.name}.paper-{operation_id}.bak"
+                if destination.exists() else None
+            )
+            with staged.open("xb") as handle:
+                handle.write(generated[item.path])
+                handle.flush()
+                os.fsync(handle.fileno())
+            staged.chmod(0o644)
+            if backup is not None:
+                shutil.copy2(destination, backup)
+            payload["files"].append({
+                "path": item.path, "destination": str(destination),
+                "staged": str(staged), "backup": str(backup) if backup else None,
+                "old_hash": _sha256_hex(destination) if destination.exists() else None,
+                "new_hash": hashlib.sha256(generated[item.path]).hexdigest(),
+                "published": False,
+            })
+        for commit, path in synthesized:
+            old = _git_optional([
+                "--git-dir", str(repository_path), "notes",
+                f"--ref={workspace.notes_ref}", "show", commit,
+            ])
+            payload["notes"].append({
+                "commit": commit, "old": old, "new": _note(path), "written": False,
+            })
+        workspace_store.save_operation(
+            connection, operation_id=operation_id, workspace_id=workspace.id,
+            kind="export", phase="prepared", payload=payload,
+        )
+        workspace_store.save_operation(
+            connection, operation_id=operation_id, workspace_id=workspace.id,
+            kind="export", phase="publishing", payload=payload,
+        )
+        for item in payload["files"]:
+            destination = Path(item["destination"])
+            current_hash = _sha256_hex(destination) if destination.exists() else None
+            if current_hash != item["old_hash"]:
+                raise ResourceError(
+                    f"patch destination changed before publish: {item['path']}"
+                )
+            os.replace(item["staged"], destination)
+            item["published"] = True
+            workspace_store.save_operation(
+                connection, operation_id=operation_id, workspace_id=workspace.id,
+                kind="export", phase="publishing", payload=payload,
+            )
+        for note in payload["notes"]:
+            _write_note(
+                repository_path, workspace.notes_ref, note["commit"], note["new"]
+            )
+            note["written"] = True
+            workspace_store.save_operation(
+                connection, operation_id=operation_id, workspace_id=workspace.id,
+                kind="export", phase="notes", payload=payload,
+            )
+        final_commits = _commit_range(checkout, workspace.export_base, status.head)
+        final_digest = notes_digest(repository_path, workspace.notes_ref, final_commits)
+        workspace_store.complete_export_operation(
+            connection, operation_id=operation_id, payload=payload,
+            workspace_id=workspace.id, kind="export", tip=status.head,
+            notes_digest=final_digest,
+            verification="exported-series replay equals workspace tip tree",
+            paths=[
+                (
+                    item.commit, item.path,
+                    hashlib.sha256(generated[item.path]).digest(),
+                )
+                for item in plan.patches
+            ],
+            obsolete_paths=plan.obsolete_paths,
+        )
+        completed = True
+        for item in payload["files"]:
+            if item["backup"]:
+                try:
+                    Path(item["backup"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        workspace_store.delete_operation(connection, operation_id)
+    except Exception as error:
+        if not completed:
+            workspace_store.save_operation(
+                connection, operation_id=operation_id, workspace_id=workspace.id,
+                kind="export", phase="failed", payload=payload, error=str(error),
+            )
+        raise
+    return ExportWorkspaceResult(
+        workspace.package, workspace.name, False, status.head, plan.patches,
+        tuple(created), tuple(updated), plan.obsolete_paths,
+        plan.other_selected_paths, synthesized, plan.warnings,
+        "exported-series replay equals workspace tip tree",
     )

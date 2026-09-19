@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import patch
 
 from paper_resources import (
-    buildroot, database, repository_index, workspace_store, workspaces,
+    buildroot, database, patch_export, repository_index, workspace_store,
+    workspaces,
 )
 from paper_resources.config import ResourceError, ResourceSettings
 from paper_resources.manager import ResourceManager
@@ -336,7 +337,8 @@ class WorkspaceOpenTest(unittest.TestCase):
         run_git(
             "-c", "user.name=Patch Author", "-c",
             "user.email=author@example.invalid", "-c", "commit.gpgSign=false",
-            "commit", "-m", message, cwd=self.source,
+            "commit", "-m", message, "-m",
+            "Signed-off-by: Patch Author <author@example.invalid>", cwd=self.source,
         )
 
     def test_open_imports_stack_and_native_rebase_keeps_isolated_notes(self) -> None:
@@ -411,6 +413,168 @@ class WorkspaceOpenTest(unittest.TestCase):
             "patches/foo/1.0/0009-renamed.patch",
         )
         self.assertEqual(result.patch_path, "patches/foo/1.0/0009-renamed.patch")
+
+    def test_export_amended_history_allocates_replays_and_publishes(self) -> None:
+        opened = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        checkout = Path(opened.status.path)
+        editor = self.root / "edit-todo.py"
+        editor.write_text(textwrap.dedent("""\
+            #!/usr/bin/env python3
+            from pathlib import Path
+            import sys
+            path = Path(sys.argv[1])
+            lines = path.read_text().splitlines()
+            lines[0] = lines[0].replace('pick ', 'edit ', 1)
+            path.write_text('\\n'.join(lines) + '\\n')
+            """), encoding="utf-8")
+        editor.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update({
+            "GIT_SEQUENCE_EDITOR": str(editor),
+            "GIT_COMMITTER_NAME": "Patch Author",
+            "GIT_COMMITTER_EMAIL": "author@example.invalid",
+        })
+        rebase = subprocess.run(
+            [
+                "git", "-c", "commit.gpgSign=false", "rebase", "-i",
+                opened.status.export_base,
+            ],
+            cwd=checkout, env=environment, check=False, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(rebase.returncode, 0, rebase.stderr)
+        self.assertTrue((checkout / ".git").is_file())
+        (checkout / "early.txt").write_text("early edit\n", encoding="utf-8")
+        run_git("add", "early.txt", cwd=checkout)
+        subprocess.run(
+            [
+                "git", "-c", "commit.gpgSign=false", "commit", "--amend",
+                "--no-edit",
+            ], cwd=checkout, env=environment, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "-c", "commit.gpgSign=false", "rebase", "--continue"],
+            cwd=checkout, env=environment, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        (checkout / "third.txt").write_text("third\n", encoding="utf-8")
+        run_git("add", "third.txt", cwd=checkout)
+        run_git(
+            "-c", "user.name=Patch Author", "-c",
+            "user.email=author@example.invalid", "-c", "commit.gpgSign=false",
+            "commit", "-m", "third editable", "-m",
+            "Signed-off-by: Patch Author <author@example.invalid>", cwd=checkout,
+        )
+        workspace = workspace_store.get_workspace(
+            self.connection, "foo", "display"
+        )
+        head = run_git("rev-parse", "HEAD", cwd=checkout)
+        self.assertEqual(
+            workspaces.read_note(self.repository_path, workspace.notes_ref, head), ()
+        )
+        dry_run = workspaces.export_workspace(
+            self.connection, workspace, self.inspection, dry_run=True
+        )
+        self.assertEqual(dry_run.created_paths, (
+            "patches/foo/1.0/0003-third-editable.patch",
+        ))
+        self.assertFalse(
+            (self.project / dry_run.created_paths[0]).exists()
+        )
+        self.assertEqual(
+            workspaces.read_note(self.repository_path, workspace.notes_ref, head), ()
+        )
+        exported = workspaces.export_workspace(
+            self.connection, workspace, self.inspection
+        )
+        self.assertFalse(exported.dry_run)
+        self.assertTrue((self.project / exported.created_paths[0]).is_file())
+        self.assertIn(
+            b"Signed-off-by: Patch Author <author@example.invalid>",
+            (self.project / exported.created_paths[0]).read_bytes(),
+        )
+        self.assertEqual(
+            workspaces.read_note(self.repository_path, workspace.notes_ref, head),
+            (exported.created_paths[0],),
+        )
+        status = workspaces.get_workspace_status(
+            self.connection, workspace
+        )
+        self.assertTrue(status.exported)
+
+
+class ExportPlannerTest(unittest.TestCase):
+    def commit(self, oid: str, note: str | None) -> patch_export.ExportCommit:
+        return patch_export.ExportCommit(
+            oid * 40, f"change {oid}", (note,) if note else ()
+        )
+
+    def plan(self, commits, existing=()):
+        return patch_export.plan_export(
+            commits, directories=("patches/foo",), existing_paths=existing,
+            managed_paths=existing,
+        )
+
+    def test_allocates_numbered_gaps_and_leading_trailing_runs(self) -> None:
+        plan = self.plan([
+            self.commit("a", "patches/foo/0005-five.patch"),
+            self.commit("b", None),
+            self.commit("c", "patches/foo/0007-seven.patch"),
+            self.commit("d", None),
+        ], existing=(
+            "patches/foo/0005-five.patch", "patches/foo/0007-seven.patch",
+        ))
+        self.assertEqual(
+            [item.path for item in plan.patches],
+            [
+                "patches/foo/0005-five.patch",
+                "patches/foo/0006-change-b.patch",
+                "patches/foo/0007-seven.patch",
+                "patches/foo/0008-change-d.patch",
+            ],
+        )
+        leading = self.plan([
+            self.commit("a", None),
+            self.commit("b", "patches/foo/0002-two.patch"),
+        ], existing=("patches/foo/0002-two.patch",))
+        self.assertEqual(leading.patches[0].path, "patches/foo/0001-change-a.patch")
+
+    def test_rejects_full_gap_unannotated_and_cross_layer_runs(self) -> None:
+        with self.assertRaisesRegex(ResourceError, "no ordered filename slots"):
+            self.plan([
+                self.commit("a", "patches/foo/0005-five.patch"),
+                self.commit("b", None),
+                self.commit("c", "patches/foo/0006-six.patch"),
+            ], existing=(
+                "patches/foo/0005-five.patch", "patches/foo/0006-six.patch",
+            ))
+        with self.assertRaisesRegex(ResourceError, "entirely unannotated"):
+            self.plan([self.commit("a", None)])
+        with self.assertRaisesRegex(ResourceError, "cannot infer patch layer"):
+            patch_export.plan_export(
+                [
+                    self.commit("a", "one/0001-one.patch"),
+                    self.commit("b", None),
+                    self.commit("c", "two/0001-two.patch"),
+                ],
+                directories=("one", "two"), existing_paths=(), managed_paths=(),
+            )
+
+    def test_duplicate_destination_splits_after_first_and_respects_occupancy(self) -> None:
+        plan = self.plan([
+            self.commit("a", "patches/foo/0005-five.patch"),
+            self.commit("b", "patches/foo/0005-five.patch"),
+        ], existing=("patches/foo/0005-five.patch",))
+        self.assertEqual(plan.patches[1].path, "patches/foo/0006-change-b.patch")
+        with self.assertRaisesRegex(ResourceError, "numeric patch prefix collision"):
+            self.plan(
+                [self.commit("a", "patches/foo/0005-new.patch")],
+                existing=("patches/foo/0005-old.patch",),
+            )
 
 
 if __name__ == "__main__":

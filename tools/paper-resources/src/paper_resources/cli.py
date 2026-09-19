@@ -379,6 +379,15 @@ def parser() -> argparse.ArgumentParser:
     workspace_annotate.add_argument("--patch-path", required=True)
     workspace_annotate.add_argument("--root", type=Path)
     workspace_annotate.add_argument("--json", action="store_true")
+    workspace_export = workspace_subparsers.add_parser(
+        "export", help="plan or publish the complete workspace commit range"
+    )
+    workspace_export.add_argument("buildroot_config")
+    workspace_export.add_argument("package")
+    workspace_export.add_argument("name")
+    workspace_export.add_argument("--dry-run", action="store_true")
+    workspace_export.add_argument("--root", type=Path)
+    workspace_export.add_argument("--json", action="store_true")
 
     for command, help_text in (
         ("repositories", "list Git repositories"),
@@ -856,6 +865,11 @@ def main(arguments: list[str] | None = None) -> int:
                 workspace_result = manager.get_workspace_status(
                     args.package, args.name
                 )
+            elif args.workspace_command == "export":
+                workspace_result = manager.export_workspace(
+                    args.buildroot_config, args.package, args.name,
+                    dry_run=args.dry_run,
+                )
             else:
                 workspace_result = manager.annotate_workspace_commit(
                     args.package, args.name, args.commit, args.patch_path
@@ -880,6 +894,12 @@ def main(arguments: list[str] | None = None) -> int:
                 print(f"Exported: {workspace_result.exported}")
                 for blocker in workspace_result.blockers:
                     print(f"Blocker: {blocker}")
+            elif args.workspace_command == "export":
+                print("dry-run" if workspace_result.dry_run else "exported")
+                for item in workspace_result.patches:
+                    print(f"{item.commit[:12]}\t{item.path}")
+                for warning in workspace_result.warnings:
+                    print(f"Warning: {warning}")
             else:
                 print(f"{workspace_result.commit}\t{workspace_result.patch_path}")
             return 0

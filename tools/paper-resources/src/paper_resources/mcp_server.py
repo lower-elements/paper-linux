@@ -159,6 +159,19 @@ def create_server(manager: ResourceManager) -> MCPServer:
                 package, name, commit, patch_path
             )
 
+    @server.tool(title="Export package patch workspace", annotations=LOCAL_WRITE)
+    def export_workspace(
+        buildroot_config: str,
+        package: str,
+        name: str,
+        dry_run: bool = False,
+    ) -> workspaces.ExportWorkspaceResult:
+        """Validate, replay, and optionally publish the complete commit range."""
+        with domain_errors():
+            return manager.export_workspace(
+                buildroot_config, package, name, dry_run=dry_run
+            )
+
     @server.tool(title="List resources", annotations=READ_ONLY)
     def list_resources(
         kind: ResourceKind | None = None,

@@ -360,6 +360,25 @@ class ResourceManager:
             connection, workspace, commit, patch_path
         )
 
+    def export_workspace(
+        self,
+        buildroot_config: str,
+        package: str,
+        name: str,
+        *,
+        dry_run: bool = False,
+    ) -> workspaces.ExportWorkspaceResult:
+        connection = self._database(create=True)
+        workspace = workspace_store.get_workspace(connection, package, name)
+        if workspace is None:
+            raise ResourceError(f"unknown workspace: {package}/{name}")
+        if workspace.project_root != str(self.settings.manifest_path.parent):
+            raise ResourceError("workspace belongs to a different Paper Linux root")
+        current = self.inspect_buildroot_package(buildroot_config, package)
+        return workspaces.export_workspace(
+            connection, workspace, current, dry_run=dry_run
+        )
+
     def _document_info(self, document: dict[str, Any]) -> ResourceInfo:
         path = self.settings.root / document["path"]
         return ResourceInfo(
