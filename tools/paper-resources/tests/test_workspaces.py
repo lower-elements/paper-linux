@@ -163,6 +163,28 @@ class WorkspacePersistenceTest(unittest.TestCase):
             ).fetchone()
         )
 
+    def test_schema_nine_migrates_attachment_restoration_metadata(self) -> None:
+        path = self.root / "version-nine.db"
+        connection = __import__("sqlite3").connect(path)
+        connection.executescript(
+            database.SCHEMA.replace(
+                "PRAGMA user_version = 10;", "PRAGMA user_version = 9;"
+            )
+        )
+        connection.executescript(
+            database.OPERATIONAL_SCHEMA.replace("    prior_effective TEXT,\n", "")
+        )
+        connection.close()
+        migrated = database.open_database(path, create=True)
+        self.addCleanup(migrated.close)
+        columns = {
+            row[1] for row in migrated.execute(
+                "PRAGMA table_info(workspace_attachments)"
+            )
+        }
+        self.assertIn("prior_effective", columns)
+        self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 10)
+
     def test_local_revisions_survive_manifest_catalog_synchronization(self) -> None:
         path = self.root / "resources.db"
         connection = database.open_database(path, create=True)
@@ -397,6 +419,33 @@ class WorkspaceOpenTest(unittest.TestCase):
         )
         self.assertTrue(second.status.exported)
 
+    def test_open_registration_failure_removes_checkout_and_live_refs(self) -> None:
+        with patch.object(
+            workspace_store, "record_export", side_effect=RuntimeError("injected")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "injected"):
+                workspaces.open_workspace(
+                    self.connection, self.inspection, self.repositories,
+                    self.resources, "failed",
+                )
+        self.assertIsNone(
+            workspace_store.get_workspace(self.connection, "foo", "failed")
+        )
+        self.assertFalse(
+            (self.resources / "workspaces/foo/failed").exists()
+        )
+        self.assertIsNone(
+            workspaces._git_optional([
+                "--git-dir", str(self.repository_path), "rev-parse", "--verify",
+                "refs/heads/workspace/foo/failed",
+            ])
+        )
+        notes = run_git(
+            "for-each-ref", "--format=%(refname)",
+            "refs/notes/paper-workspaces", cwd=self.repository_path,
+        )
+        self.assertEqual(notes, "")
+
     def test_annotation_rejects_paths_outside_selected_layers(self) -> None:
         opened = workspaces.open_workspace(
             self.connection, self.inspection, self.repositories,
@@ -506,6 +555,42 @@ class WorkspaceOpenTest(unittest.TestCase):
             self.connection, workspace
         )
         self.assertTrue(status.exported)
+        first_path = self.project / exported.patches[0].path
+        first_path.write_bytes(first_path.read_bytes() + b"external edit\n")
+        changed = first_path.read_bytes()
+        with self.assertRaisesRegex(ResourceError, "changed externally"):
+            workspaces.export_workspace(
+                self.connection, workspace, self.inspection
+            )
+        self.assertEqual(first_path.read_bytes(), changed)
+
+    def test_plain_diff_import_reports_synthetic_metadata(self) -> None:
+        path = self.root / "0001-plain-change.patch"
+        path.write_text(
+            "--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-old\n+new\n",
+            encoding="utf-8",
+        )
+        message, identity, content, warning = workspaces._mail_metadata(path)
+        self.assertEqual(message, "plain change")
+        self.assertEqual(identity["GIT_AUTHOR_NAME"], "Paper Resources")
+        self.assertIn(b"+++ b/file.txt", content)
+        self.assertIn("synthetic", warning)
+
+    def test_git_source_binding_matches_normalized_url_and_tag_ref(self) -> None:
+        repositories = [{
+            "id": "repo", "path": "git/repo.git",
+            "clone_url": "https://example.invalid/foo.git", "remotes": [],
+            "revisions": [{
+                "id": "v1", "commit": self.base_commit,
+                "tree": self.base_tree,
+                "source": {"remote": "origin", "ref": "refs/tags/v1"},
+            }],
+        }]
+        binding = buildroot._binding(
+            repositories, self.resources,
+            "https://example.invalid/foo", "v1", None, None,
+        )
+        self.assertEqual(binding.correspondence, "exact-git-source")
 
     def test_attach_repeat_detach_and_restore_unmanaged_contents(self) -> None:
         opened = workspaces.open_workspace(
@@ -687,6 +772,21 @@ class ExportPlannerTest(unittest.TestCase):
                 [self.commit("a", "patches/foo/0005-new.patch")],
                 existing=("patches/foo/0005-old.patch",),
             )
+
+    def test_reports_obsolete_files_without_deleting_or_planning_them(self) -> None:
+        plan = self.plan(
+            [self.commit("a", "patches/foo/0001-kept.patch")],
+            existing=(
+                "patches/foo/0001-kept.patch",
+                "patches/foo/0002-obsolete.patch",
+            ),
+        )
+        self.assertEqual(
+            plan.obsolete_paths, ("patches/foo/0002-obsolete.patch",)
+        )
+        self.assertEqual(
+            plan.other_selected_paths, ("patches/foo/0002-obsolete.patch",)
+        )
 
 
 if __name__ == "__main__":

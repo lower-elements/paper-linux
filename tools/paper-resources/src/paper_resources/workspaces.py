@@ -69,6 +69,7 @@ class OpenWorkspaceResult:
     created: bool
     status: WorkspaceStatus
     local_revisions: tuple[str, str]
+    warnings: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -182,11 +183,16 @@ def _fallback_subject(path: Path) -> str:
     return subject or "Imported patch"
 
 
-def _mail_metadata(path: Path) -> tuple[str, dict[str, str], bytes]:
+def _mail_metadata(
+    path: Path,
+) -> tuple[str, dict[str, str], bytes, str | None]:
     content = path.read_bytes()
     is_mail = bool(re.search(br"(?m)^Subject:\s+", content))
     if not is_mail:
-        return _fallback_subject(path), dict(_SYNTHETIC_IDENTITY), content
+        return (
+            _fallback_subject(path), dict(_SYNTHETIC_IDENTITY), content,
+            f"{path.name}: plain diff imported with a synthetic Paper Resources identity; add author, rationale, upstream status, and sign-off before export",
+        )
     with tempfile.TemporaryDirectory(prefix="paper-mailinfo-") as temporary:
         message_path = Path(temporary) / "message"
         patch_path = Path(temporary) / "patch"
@@ -211,12 +217,20 @@ def _mail_metadata(path: Path) -> tuple[str, dict[str, str], bytes]:
             identity["GIT_AUTHOR_EMAIL"] = email
         if date:
             identity["GIT_AUTHOR_DATE"] = date
-        return message, identity, patch_path.read_bytes()
+        warning = None
+        if not (author and email):
+            warning = (
+                f"{path.name}: mail patch lacks complete author metadata and was "
+                "imported with a synthetic Paper Resources identity"
+            )
+        return message, identity, patch_path.read_bytes(), warning
 
 
-def _apply_patch_commit(checkout: Path, parent: str, patch: buildroot.PatchInput) -> str:
+def _apply_patch_commit(
+    checkout: Path, parent: str, patch: buildroot.PatchInput
+) -> tuple[str, str | None]:
     patch_path = Path(patch.resolved_path)
-    message, identity, content = _mail_metadata(patch_path)
+    message, identity, content, warning = _mail_metadata(patch_path)
     with tempfile.NamedTemporaryFile(
         prefix="paper-workspace-patch-", suffix=".patch", delete=False
     ) as temporary:
@@ -239,7 +253,7 @@ def _apply_patch_commit(checkout: Path, parent: str, patch: buildroot.PatchInput
         environment=identity,
     )
     git_resources.run_git(["-C", str(checkout), "reset", "--hard", commit])
-    return commit
+    return commit, warning
 
 
 def _revision_id(package: str, fingerprint: str, stage: str) -> str:
@@ -256,7 +270,7 @@ def _protect_revision(repository_path: Path, revision_id: str, commit: str) -> N
 def _construct(
     inspection: buildroot.PackageInspection,
     repository_path: Path,
-) -> tuple[str, str, list[tuple[str, buildroot.PatchInput]]]:
+) -> tuple[str, str, list[tuple[str, buildroot.PatchInput]], list[str]]:
     binding = inspection.source_binding
     if binding is None:
         raise ResourceError(
@@ -264,6 +278,7 @@ def _construct(
         )
     base = binding.commit
     editable_commits: list[tuple[str, buildroot.PatchInput]] = []
+    warnings: list[str] = []
     temporary_parent = repository_path.parent
     with tempfile.TemporaryDirectory(
         prefix="paper-workspace-import-", dir=temporary_parent
@@ -275,10 +290,14 @@ def _construct(
         ])
         try:
             for patch in inspection.prerequisite_patches:
-                base = _apply_patch_commit(checkout, base, patch)
+                base, warning = _apply_patch_commit(checkout, base, patch)
+                if warning:
+                    warnings.append(warning)
             export_base = base
             for patch in inspection.editable_patches:
-                base = _apply_patch_commit(checkout, base, patch)
+                base, warning = _apply_patch_commit(checkout, base, patch)
+                if warning:
+                    warnings.append(warning)
                 editable_commits.append((base, patch))
             imported_tip = base
         finally:
@@ -286,7 +305,7 @@ def _construct(
                 "--git-dir", str(repository_path), "worktree", "remove", "--force",
                 str(checkout),
             ])
-    return export_base, imported_tip, editable_commits
+    return export_base, imported_tip, editable_commits, warnings
 
 
 def _note(patch_path: str) -> str:
@@ -399,12 +418,17 @@ def open_workspace(
             raise ResourceError(
                 f"workspace {package}/{name} already exists with a different origin"
             )
+        if existing.state != "ready":
+            raise ResourceError(
+                f"workspace {package}/{name} has an unresolved {existing.state} operation"
+            )
+        existing_status = get_workspace_status(connection, existing)
         return OpenWorkspaceResult(
-            False, get_workspace_status(connection, existing),
+            False, existing_status,
             (
                 _revision_id(package, inspection.input_fingerprint, "base"),
                 _revision_id(package, inspection.input_fingerprint, "imported"),
-            ),
+            ), existing_status.warnings,
         )
     binding = inspection.source_binding
     if binding is None:
@@ -428,7 +452,7 @@ def open_workspace(
     if git_resources.git_object(repository_path, notes_ref) is not None:
         raise ResourceError(f"workspace notes ref already exists: {notes_ref}")
 
-    export_base, imported_tip, editable_commits = _construct(
+    export_base, imported_tip, editable_commits, import_warnings = _construct(
         inspection, repository_path
     )
     base_revision = _revision_id(package, inspection.input_fingerprint, "base")
@@ -438,19 +462,72 @@ def open_workspace(
     base_tree = git_resources.git_object(repository_path, f"{export_base}^{{tree}}")
     imported_tree = git_resources.git_object(repository_path, f"{imported_tip}^{{tree}}")
     assert base_tree is not None and imported_tree is not None
-    _protect_revision(repository_path, base_revision, export_base)
-    _protect_revision(repository_path, imported_revision, imported_tip)
-    for commit, patch in editable_commits:
-        _write_note(repository_path, notes_ref, commit, _note(patch.path))
-
     checkout.parent.mkdir(parents=True, exist_ok=True)
     try:
+        for commit, patch in editable_commits:
+            _write_note(repository_path, notes_ref, commit, _note(patch.path))
         git_resources.run_git([
             "--git-dir", str(repository_path), "worktree", "add", "-b", branch,
             str(checkout), imported_tip,
         ])
         _configure_note_rewrites(repository_path, checkout, notes_ref)
+        _protect_revision(repository_path, base_revision, export_base)
+        _protect_revision(repository_path, imported_revision, imported_tip)
+
+        created = workspace_store.now()
+        for revision_id, commit, tree, parent, stage in (
+            (base_revision, export_base, base_tree, binding.commit, "export-base"),
+            (imported_revision, imported_tip, imported_tree, export_base, "imported-tip"),
+        ):
+            workspace_store.register_local_revision(
+                connection,
+                workspace_store.LocalRevision(
+                    binding.repository, repository["path"], revision_id, commit, tree,
+                    parent, f"{package} workspace {stage}", "Paper Resources", True,
+                    CONSTRUCTION_POLICY, inspection.input_fingerprint,
+                    {
+                        "kind": stage,
+                        "package": package,
+                        "buildroot_config": inspection.buildroot_config,
+                        "source_binding": asdict(binding),
+                        "patches": [
+                            asdict(item)
+                            for item in (
+                                inspection.prerequisite_patches
+                                if stage == "export-base"
+                                else inspection.editable_patches
+                            )
+                        ],
+                    },
+                    created,
+                ),
+            )
+        inspection_record = _inspection_dict(inspection)
+        inspection_record["import_warnings"] = import_warnings
+        workspace = workspace_store.WorkspaceRecord(
+            workspace_id, package, name, binding.repository, repository["path"],
+            str(checkout), branch, notes_ref, inspection.project_root,
+            inspection.buildroot_config, inspection.input_fingerprint,
+            inspection.source_fingerprint, export_base, imported_tip, "opening",
+            inspection_record, created, None,
+        )
+        workspace_store.create_workspace(connection, workspace)
+        digest = notes_digest(
+            repository_path, notes_ref, [commit for commit, _patch in editable_commits]
+        )
+        workspace_store.record_export(
+            connection, workspace_id=workspace_id, kind="import",
+            tip=imported_tip, notes_digest=digest, verification="imported-stack",
+            paths=[
+                (commit, patch.path, _path_hash(Path(patch.resolved_path)))
+                for commit, patch in editable_commits
+            ],
+        )
+        workspace_store.set_workspace_state(connection, workspace_id, "ready")
+        workspace = workspace_store.get_workspace_by_id(connection, workspace_id)
+        assert workspace is not None
     except Exception:
+        workspace_store.delete_failed_workspace(connection, workspace_id)
         if checkout.exists():
             try:
                 git_resources.run_git([
@@ -467,57 +544,9 @@ def open_workspace(
             "--git-dir", str(repository_path), "update-ref", "-d", notes_ref,
         ])
         raise
-
-    created = workspace_store.now()
-    for revision_id, commit, tree, parent, stage in (
-        (base_revision, export_base, base_tree, binding.commit, "export-base"),
-        (imported_revision, imported_tip, imported_tree, export_base, "imported-tip"),
-    ):
-        workspace_store.register_local_revision(
-            connection,
-            workspace_store.LocalRevision(
-                binding.repository, repository["path"], revision_id, commit, tree,
-                parent, f"{package} workspace {stage}", "Paper Resources", True,
-                CONSTRUCTION_POLICY, inspection.input_fingerprint,
-                {
-                    "kind": stage,
-                    "package": package,
-                    "buildroot_config": inspection.buildroot_config,
-                    "source_binding": asdict(binding),
-                    "patches": [
-                        asdict(item)
-                        for item in (
-                            inspection.prerequisite_patches
-                            if stage == "export-base"
-                            else inspection.editable_patches
-                        )
-                    ],
-                },
-                created,
-            ),
-        )
-    workspace = workspace_store.WorkspaceRecord(
-        workspace_id, package, name, binding.repository, repository["path"],
-        str(checkout), branch, notes_ref, inspection.project_root,
-        inspection.buildroot_config, inspection.input_fingerprint,
-        inspection.source_fingerprint, export_base, imported_tip, "ready",
-        _inspection_dict(inspection), created, None,
-    )
-    workspace_store.create_workspace(connection, workspace)
-    digest = notes_digest(
-        repository_path, notes_ref, [commit for commit, _patch in editable_commits]
-    )
-    workspace_store.record_export(
-        connection, workspace_id=workspace_id, kind="import",
-        tip=imported_tip, notes_digest=digest, verification="imported-stack",
-        paths=[
-            (commit, patch.path, _path_hash(Path(patch.resolved_path)))
-            for commit, patch in editable_commits
-        ],
-    )
     return OpenWorkspaceResult(
         True, get_workspace_status(connection, workspace),
-        (base_revision, imported_revision),
+        (base_revision, imported_revision), tuple(import_warnings),
     )
 
 
@@ -631,6 +660,7 @@ def get_workspace_status(
     excluded = tuple(workspace.inspection.get("excluded_stages", []))
     if excluded:
         warnings.append("workspace omits reported Buildroot preparation hooks")
+    warnings.extend(workspace.inspection.get("import_warnings", []))
     return WorkspaceStatus(
         workspace.id, workspace.package, workspace.name, workspace.path,
         workspace.repository_id, workspace.branch, workspace.notes_ref,
@@ -1285,8 +1315,11 @@ def attach_workspace(
     ]
     if shadowed:
         warnings.append("the managed block shadows a preexisting unmanaged override")
-    recorded_stack = [item["path"] for item in workspace.inspection.get("editable_patches", [])]
-    current_stack = [item.path for item in inspection.editable_patches]
+    recorded_stack = [
+        (item["path"], item["sha256"])
+        for item in workspace.inspection.get("editable_patches", [])
+    ]
+    current_stack = [(item.path, item.sha256) for item in inspection.editable_patches]
     differs = recorded_stack != current_stack
     if differs:
         warnings.append(

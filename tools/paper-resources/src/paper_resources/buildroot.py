@@ -164,6 +164,18 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _directory_inputs(path: Path) -> list[tuple[str, str]]:
+    if not path.is_dir():
+        return []
+    inputs: list[tuple[str, str]] = []
+    for item in sorted(path.rglob("*")):
+        if item.is_symlink():
+            inputs.append((item.relative_to(path).as_posix(), "symlink:" + os.readlink(item)))
+        elif item.is_file():
+            inputs.append((item.relative_to(path).as_posix(), _digest(item)))
+    return inputs
+
+
 def _git_revision(path: Path) -> str | None:
     try:
         return _run(
@@ -225,15 +237,25 @@ def _binding(
     if (repository_id is None) != (revision_id is None):
         raise ResourceError("repository and revision must be specified together")
 
+    def normalized_url(value: str) -> str:
+        value = value.strip().strip('"').rstrip("/")
+        return value.removesuffix(".git")
+
     candidates: list[tuple[dict[str, Any], dict[str, Any], str]] = []
     for repository in repositories:
-        urls = {repository.get("clone_url", "")}
-        urls.update(item.get("url", "") for item in repository.get("remotes", []))
+        urls = {normalized_url(repository.get("clone_url", ""))}
+        urls.update(
+            normalized_url(item.get("url", ""))
+            for item in repository.get("remotes", [])
+        )
         for revision in repository.get("revisions", []):
             source = revision.get("source") or {}
-            exact = site in urls and source_ref in {
-                source.get("ref", ""), revision.get("id", ""), revision.get("commit", "")
-            }
+            declared_ref = source.get("ref", "")
+            ref_matches = source_ref in {
+                declared_ref, revision.get("id", ""), revision.get("commit", "")
+            } or declared_ref.endswith("/" + source_ref)
+            normalized_site = normalized_url(site)
+            exact = bool(normalized_site) and normalized_site in urls and ref_matches
             if exact:
                 candidates.append((repository, revision, "exact-git-source"))
 
@@ -487,6 +509,7 @@ def inspect_package(
         "source": source_fingerprint,
         "buildroot_revision": _git_revision(buildroot_root),
         "config": hashlib.sha256((output / ".config").read_bytes()).hexdigest(),
+        "recipe_inputs": _directory_inputs(recipe_directory),
         "patches": [(item.path, item.stage, item.sha256) for item in patch_inputs],
         "directories": [
             (item.path, item.stage, item.exists, item.selected) for item in directories

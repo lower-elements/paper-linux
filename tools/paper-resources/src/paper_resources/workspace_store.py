@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
+from pathlib import Path
 import sqlite3
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from . import git_resources
 from .config import ResourceError
@@ -18,6 +22,25 @@ def now() -> str:
 
 def json_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+@contextmanager
+def operation_locks(root: Path, *keys: str) -> Iterator[None]:
+    """Serialize manager mutations without pretending to lock human Git use."""
+    directory = root / "locks" / "workspaces"
+    directory.mkdir(parents=True, exist_ok=True)
+    handles = []
+    try:
+        for key in sorted(set(keys)):
+            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+            handle = (directory / f"{digest}.lock").open("a+b")
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handles.append(handle)
+        yield
+    finally:
+        for handle in reversed(handles):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
 
 @dataclass(frozen=True)
@@ -157,6 +180,43 @@ def create_workspace(
                 workspace.state, json_text(workspace.inspection),
                 workspace.created_at, workspace.retired_at,
             ),
+        )
+
+
+def set_workspace_state(
+    connection: sqlite3.Connection, workspace_id: str, state: str
+) -> None:
+    with connection:
+        connection.execute(
+            "UPDATE workspaces SET state = ? WHERE id = ?", (state, workspace_id)
+        )
+
+
+def delete_failed_workspace(
+    connection: sqlite3.Connection, workspace_id: str
+) -> None:
+    """Remove only an incomplete workspace registration, retaining revisions."""
+    with connection:
+        export_ids = connection.execute(
+            "SELECT id FROM workspace_exports WHERE workspace_id = ?",
+            (workspace_id,),
+        ).fetchall()
+        connection.executemany(
+            "DELETE FROM workspace_export_paths WHERE export_id = ?",
+            [(row["id"],) for row in export_ids],
+        )
+        connection.execute(
+            "DELETE FROM workspace_exports WHERE workspace_id = ?", (workspace_id,)
+        )
+        connection.execute(
+            "DELETE FROM workspace_operations WHERE workspace_id = ?", (workspace_id,)
+        )
+        connection.execute(
+            "DELETE FROM workspace_attachments WHERE workspace_id = ?", (workspace_id,)
+        )
+        connection.execute(
+            "DELETE FROM workspaces WHERE id = ? AND state = 'opening'",
+            (workspace_id,),
         )
 
 

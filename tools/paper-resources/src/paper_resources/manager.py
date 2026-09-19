@@ -291,41 +291,46 @@ class ResourceManager:
         repository: str | None = None,
         revision: str | None = None,
     ) -> workspaces.OpenWorkspaceResult:
-        inspection = self.inspect_buildroot_package(
-            buildroot_config, package, repository=repository, revision=revision
-        )
-        connection = self._database(create=True)
-        if inspection.source_binding is None and repository is None:
-            saved = workspace_store.get_source_binding(
+        with workspace_store.operation_locks(
+            self.settings.root,
+            f"workspace:{package}:{name}",
+            f"config:{buildroot_config}:{package}",
+        ):
+            inspection = self.inspect_buildroot_package(
+                buildroot_config, package, repository=repository, revision=revision
+            )
+            connection = self._database(create=True)
+            if inspection.source_binding is None and repository is None:
+                saved = workspace_store.get_source_binding(
+                    connection,
+                    project_root=str(self.settings.manifest_path.parent),
+                    buildroot_config=buildroot_config,
+                    package=package,
+                    source_fingerprint=inspection.source_fingerprint,
+                )
+                if saved is not None:
+                    inspection = self.inspect_buildroot_package(
+                        buildroot_config, package,
+                        repository=saved[0], revision=saved[1],
+                    )
+            result = workspaces.open_workspace(
+                connection, inspection, self.repositories_by_id,
+                self.settings.root, name,
+            )
+            binding = inspection.source_binding
+            assert binding is not None
+            workspace_store.save_source_binding(
                 connection,
                 project_root=str(self.settings.manifest_path.parent),
                 buildroot_config=buildroot_config,
                 package=package,
                 source_fingerprint=inspection.source_fingerprint,
+                repository_id=binding.repository,
+                revision_id=binding.revision,
+                correspondence=binding.correspondence,
             )
-            if saved is not None:
-                inspection = self.inspect_buildroot_package(
-                    buildroot_config, package,
-                    repository=saved[0], revision=saved[1],
-                )
-        result = workspaces.open_workspace(
-            connection, inspection, self.repositories_by_id,
-            self.settings.root, name,
-        )
-        binding = inspection.source_binding
-        assert binding is not None
-        workspace_store.save_source_binding(
-            connection,
-            project_root=str(self.settings.manifest_path.parent),
-            buildroot_config=buildroot_config,
-            package=package,
-            source_fingerprint=inspection.source_fingerprint,
-            repository_id=binding.repository,
-            revision_id=binding.revision,
-            correspondence=binding.correspondence,
-        )
-        self._merge_local_revisions()
-        return result
+            self._merge_local_revisions()
+            return result
 
     def list_workspaces(
         self,
@@ -352,13 +357,16 @@ class ResourceManager:
     def annotate_workspace_commit(
         self, package: str, name: str, commit: str, patch_path: str
     ) -> workspaces.AnnotationResult:
-        connection = self._database(create=True)
-        workspace = workspace_store.get_workspace(connection, package, name)
-        if workspace is None:
-            raise ResourceError(f"unknown workspace: {package}/{name}")
-        return workspaces.annotate_workspace_commit(
-            connection, workspace, commit, patch_path
-        )
+        with workspace_store.operation_locks(
+            self.settings.root, f"workspace:{package}:{name}"
+        ):
+            connection = self._database(create=True)
+            workspace = workspace_store.get_workspace(connection, package, name)
+            if workspace is None:
+                raise ResourceError(f"unknown workspace: {package}/{name}")
+            return workspaces.annotate_workspace_commit(
+                connection, workspace, commit, patch_path
+            )
 
     def export_workspace(
         self,
@@ -368,37 +376,61 @@ class ResourceManager:
         *,
         dry_run: bool = False,
     ) -> workspaces.ExportWorkspaceResult:
-        connection = self._database(create=True)
-        workspace = workspace_store.get_workspace(connection, package, name)
-        if workspace is None:
-            raise ResourceError(f"unknown workspace: {package}/{name}")
-        if workspace.project_root != str(self.settings.manifest_path.parent):
-            raise ResourceError("workspace belongs to a different Paper Linux root")
-        current = self.inspect_buildroot_package(buildroot_config, package)
-        return workspaces.export_workspace(
-            connection, workspace, current, dry_run=dry_run
-        )
+        with workspace_store.operation_locks(
+            self.settings.root,
+            f"workspace:{package}:{name}",
+            f"config:{buildroot_config}:{package}",
+        ):
+            connection = self._database(create=True)
+            workspace = workspace_store.get_workspace(connection, package, name)
+            if workspace is None:
+                raise ResourceError(f"unknown workspace: {package}/{name}")
+            if workspace.project_root != str(self.settings.manifest_path.parent):
+                raise ResourceError("workspace belongs to a different Paper Linux root")
+            current = self.inspect_buildroot_package(buildroot_config, package)
+            return workspaces.export_workspace(
+                connection, workspace, current, dry_run=dry_run
+            )
 
     def attach_workspace(
         self, buildroot_config: str, package: str, name: str
     ) -> workspaces.AttachWorkspaceResult:
-        connection = self._database(create=True)
-        workspace = workspace_store.get_workspace(connection, package, name)
-        if workspace is None:
-            raise ResourceError(f"unknown workspace: {package}/{name}")
-        current = self.inspect_buildroot_package(buildroot_config, package)
-        return workspaces.attach_workspace(connection, workspace, current)
+        with workspace_store.operation_locks(
+            self.settings.root,
+            f"workspace:{package}:{name}",
+            f"config:{buildroot_config}:{package}",
+        ):
+            connection = self._database(create=True)
+            workspace = workspace_store.get_workspace(connection, package, name)
+            if workspace is None:
+                raise ResourceError(f"unknown workspace: {package}/{name}")
+            current = self.inspect_buildroot_package(buildroot_config, package)
+            return workspaces.attach_workspace(connection, workspace, current)
 
     def detach_workspace(
         self, buildroot_config: str, package: str
     ) -> workspaces.DetachWorkspaceResult:
         connection = self._database(create=True)
-        return workspaces.detach_workspace(
-            connection,
-            project_root=str(self.settings.manifest_path.parent),
-            buildroot_config=buildroot_config,
-            package=package,
+        attachment = workspace_store.get_attachment(
+            connection, str(self.settings.manifest_path.parent),
+            buildroot_config, package,
         )
+        keys = [f"config:{buildroot_config}:{package}"]
+        if attachment is not None:
+            owner = workspace_store.get_workspace_by_id(
+                connection, attachment["workspace_id"]
+            )
+            if owner is not None:
+                keys.append(f"workspace:{owner.package}:{owner.name}")
+        with workspace_store.operation_locks(
+            self.settings.root, *keys
+        ):
+            return workspaces.detach_workspace(
+                connection,
+                project_root=str(self.settings.manifest_path.parent),
+                buildroot_config=buildroot_config,
+                package=package,
+            )
 
     def close_workspace(
         self,
@@ -408,15 +440,20 @@ class ResourceManager:
         *,
         force: bool = False,
     ) -> workspaces.CloseWorkspaceResult:
-        connection = self._database(create=True)
-        workspace = workspace_store.get_workspace(connection, package, name)
-        if workspace is None:
-            raise ResourceError(f"unknown workspace: {package}/{name}")
-        if workspace.origin_config != buildroot_config:
-            raise ResourceError(
-                f"workspace originated from {workspace.origin_config}, not {buildroot_config}"
-            )
-        return workspaces.close_workspace(connection, workspace, force=force)
+        with workspace_store.operation_locks(
+            self.settings.root,
+            f"workspace:{package}:{name}",
+            f"config:{buildroot_config}:{package}",
+        ):
+            connection = self._database(create=True)
+            workspace = workspace_store.get_workspace(connection, package, name)
+            if workspace is None:
+                raise ResourceError(f"unknown workspace: {package}/{name}")
+            if workspace.origin_config != buildroot_config:
+                raise ResourceError(
+                    f"workspace originated from {workspace.origin_config}, not {buildroot_config}"
+                )
+            return workspaces.close_workspace(connection, workspace, force=force)
 
     def _document_info(self, document: dict[str, Any]) -> ResourceInfo:
         path = self.settings.root / document["path"]
