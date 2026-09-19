@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0b7f9b2c08fecc76c84449ce229294b05ececff8 Mon Sep 17 00:00:00 2001
 From: Michael Connor Buchan <mikey@blindcomputing.org>
 Date: Mon, 17 Aug 2026 14:15:00 +0100
 Subject: [PATCH] regulator: mc13892: use revision 2 VPLL voltage table
@@ -21,6 +21,7 @@ Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
  1 file changed, 12 insertions(+)
 
 diff --git a/drivers/regulator/mc13892-regulator.c b/drivers/regulator/mc13892-regulator.c
+index b29cf6ba6f12cedc753e07aad2c4b8df5ce66e65..5d89efaba80468cf9a32d7430ca29516a593c2e2 100644
 --- a/drivers/regulator/mc13892-regulator.c
 +++ b/drivers/regulator/mc13892-regulator.c
 @@ -18,6 +18,8 @@
@@ -56,5 +57,3 @@ diff --git a/drivers/regulator/mc13892-regulator.c b/drivers/regulator/mc13892-r
  	/* enable switch auto mode (on 2.0A silicon only) */
  	if ((val & 0x0000FFFF) == 0x45d0) {
  		ret = mc13xxx_reg_rmw(mc13892, MC13892_SWITCHERS4,
--- 
-2.51.0

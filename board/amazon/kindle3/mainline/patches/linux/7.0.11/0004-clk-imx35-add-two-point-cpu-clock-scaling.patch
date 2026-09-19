@@ -1,3 +1,4 @@
+From dd68a2acc1e1529092729c1eefa2071a206749b0 Mon Sep 17 00:00:00 2001
 From: Paper Linux Project <paperlinux@localhost>
 Date: Fri, 21 Aug 2026 23:30:00 +0100
 Subject: [PATCH] clk: imx35: add validated 256/512 MHz CPU rates
@@ -22,61 +23,12 @@ bootloader and is not managed by cpufreq in this first phase.
 
 Signed-off-by: Paper Linux Project <paperlinux@localhost>
 ---
---- a/drivers/clk/imx/clk-pllv1.c
-+++ b/drivers/clk/imx/clk-pllv1.c
-@@ -27,6 +27,9 @@
- 	enum imx_pllv1_type type;
- };
- 
-+#define IMX35_PLL_RATE_512MHZ	512000000
-+#define IMX35_PLL_REG_512MHZ	0x01df2f60
-+
- #define to_clk_pllv1(clk) (container_of(clk, struct clk_pllv1, clk))
- 
- static inline bool is_imx1_pllv1(struct clk_pllv1 *pll)
-@@ -107,8 +110,42 @@
- 	return ull;
- }
- 
-+static long clk_pllv1_round_rate(struct clk_hw *hw, unsigned long rate,
-+				 unsigned long *parent_rate)
-+{
-+	struct clk_pllv1 *pll = to_clk_pllv1(hw);
-+
-+	/*
-+	 * The i.MX35 production clock table uses this exact, measured PLL
-+	 * configuration for its 256 and 512 MHz CPU operating points.  Keep
-+	 * this initial support deliberately narrow instead of synthesizing
-+	 * unvalidated PLL settings for the other PLLv1 SoCs.
-+	 */
-+	if (pll->type == IMX_PLLV1_IMX35 && *parent_rate == 24000000 &&
-+	    rate == IMX35_PLL_RATE_512MHZ)
-+		return rate;
-+
-+	return -EINVAL;
-+}
-+
-+static int clk_pllv1_set_rate(struct clk_hw *hw, unsigned long rate,
-+			      unsigned long parent_rate)
-+{
-+	struct clk_pllv1 *pll = to_clk_pllv1(hw);
-+
-+	if (pll->type != IMX_PLLV1_IMX35 || parent_rate != 24000000 ||
-+	    rate != IMX35_PLL_RATE_512MHZ)
-+		return -EINVAL;
-+
-+	writel(IMX35_PLL_REG_512MHZ, pll->base);
-+
-+	return 0;
-+}
-+
- static const struct clk_ops clk_pllv1_ops = {
- 	.recalc_rate = clk_pllv1_recalc_rate,
-+	.round_rate = clk_pllv1_round_rate,
-+	.set_rate = clk_pllv1_set_rate,
- };
- 
- struct clk_hw *imx_clk_hw_pllv1(enum imx_pllv1_type type, const char *name,
+ drivers/clk/imx/clk-imx35.c | 190 +++++++++++++++++++++++++++++++-----
+ drivers/clk/imx/clk-pllv1.c |  37 +++++++
+ 2 files changed, 204 insertions(+), 23 deletions(-)
+
+diff --git a/drivers/clk/imx/clk-imx35.c b/drivers/clk/imx/clk-imx35.c
+index ff1ef87820c1c7eab720154bb4f5e111c40d8877..861a6a8f793aba30bad6bd96ad5fe474aba2a3ef 100644
 --- a/drivers/clk/imx/clk-imx35.c
 +++ b/drivers/clk/imx/clk-imx35.c
 @@ -5,10 +5,12 @@
@@ -107,7 +59,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  struct arm_ahb_div {
  	unsigned char arm, ahb, sel;
  };
-@@ -55,6 +65,155 @@
+@@ -55,6 +65,155 @@ static struct arm_ahb_div clk_consumer[] = {
  static char hsp_div_532[] = { 4, 8, 3, 0 };
  static char hsp_div_400[] = { 3, 6, 3, 0 };
  
@@ -263,7 +215,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  static struct clk_onecell_data clk_data;
  
  static const char *std_sel[] = {"ppll", "arm"};
-@@ -84,9 +243,8 @@
+@@ -84,9 +243,8 @@ static struct clk *clk[clk_max];
  static void __init _mx35_clocks_init(void)
  {
  	void __iomem *base;
@@ -274,7 +226,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  
  	base = ioremap(MX35_CCM_BASE_ADDR, SZ_4K);
  	BUG_ON(!base);
-@@ -108,27 +266,13 @@
+@@ -116,27 +274,13 @@ static void __init _mx35_clocks_init(void)
  	clk[mpll] = imx_clk_pllv1(IMX_PLLV1_IMX35, "mpll", "ckih", base + MX35_CCM_MPCTL);
  	clk[ppll] = imx_clk_pllv1(IMX_PLLV1_IMX35, "ppll", "ckih", base + MX35_CCM_PPCTL);
  
@@ -309,3 +261,60 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  	clk[ipg] = imx_clk_fixed_factor("ipg", "ahb", 1, 2);
  
  	clk[arm_per_div] = imx_clk_divider("arm_per_div", "arm", base + MX35_CCM_PDR4, 16, 6);
+diff --git a/drivers/clk/imx/clk-pllv1.c b/drivers/clk/imx/clk-pllv1.c
+index da5531e57da2a782950170e679b43171563384e0..1c1306923041977454134319b04fdd869b67c369 100644
+--- a/drivers/clk/imx/clk-pllv1.c
++++ b/drivers/clk/imx/clk-pllv1.c
+@@ -27,6 +27,9 @@ struct clk_pllv1 {
+ 	enum imx_pllv1_type type;
+ };
+ 
++#define IMX35_PLL_RATE_512MHZ	512000000
++#define IMX35_PLL_REG_512MHZ	0x01df2f60
++
+ #define to_clk_pllv1(clk) (container_of(clk, struct clk_pllv1, clk))
+ 
+ static inline bool is_imx1_pllv1(struct clk_pllv1 *pll)
+@@ -107,8 +110,42 @@ static unsigned long clk_pllv1_recalc_rate(struct clk_hw *hw,
+ 	return ull;
+ }
+ 
++static long clk_pllv1_round_rate(struct clk_hw *hw, unsigned long rate,
++				 unsigned long *parent_rate)
++{
++	struct clk_pllv1 *pll = to_clk_pllv1(hw);
++
++	/*
++	 * The i.MX35 production clock table uses this exact, measured PLL
++	 * configuration for its 256 and 512 MHz CPU operating points.  Keep
++	 * this initial support deliberately narrow instead of synthesizing
++	 * unvalidated PLL settings for the other PLLv1 SoCs.
++	 */
++	if (pll->type == IMX_PLLV1_IMX35 && *parent_rate == 24000000 &&
++	    rate == IMX35_PLL_RATE_512MHZ)
++		return rate;
++
++	return -EINVAL;
++}
++
++static int clk_pllv1_set_rate(struct clk_hw *hw, unsigned long rate,
++			      unsigned long parent_rate)
++{
++	struct clk_pllv1 *pll = to_clk_pllv1(hw);
++
++	if (pll->type != IMX_PLLV1_IMX35 || parent_rate != 24000000 ||
++	    rate != IMX35_PLL_RATE_512MHZ)
++		return -EINVAL;
++
++	writel(IMX35_PLL_REG_512MHZ, pll->base);
++
++	return 0;
++}
++
+ static const struct clk_ops clk_pllv1_ops = {
+ 	.recalc_rate = clk_pllv1_recalc_rate,
++	.round_rate = clk_pllv1_round_rate,
++	.set_rate = clk_pllv1_set_rate,
+ };
+ 
+ struct clk_hw *imx_clk_hw_pllv1(enum imx_pllv1_type type, const char *name,

@@ -1,4 +1,4 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From c8712ca95bea56bce077e74321cd74a99618393b Mon Sep 17 00:00:00 2001
 From: Michael Connor Buchan <mikey@blindcomputing.org>
 Date: Sun, 16 Aug 2026 23:00:00 +0100
 Subject: [PATCH] Input: mc13783-pwrbutton: add MC13892 and DT support
@@ -21,11 +21,31 @@ otherwise valid button events.
 Upstream: Not submitted
 Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
 ---
- drivers/input/misc/Kconfig              |   6 +-
- drivers/input/misc/mc13783-pwrbutton.c | 213 ++++++++++++++++++------
+ drivers/input/misc/Kconfig             |   6 +-
+ drivers/input/misc/mc13783-pwrbutton.c | 213 ++++++++++++++++++++-----
  2 files changed, 173 insertions(+), 46 deletions(-)
 
+diff --git a/drivers/input/misc/Kconfig b/drivers/input/misc/Kconfig
+index 94a753fcb64fa5ee1b3ec8b61e31492d9401b515..c5a87db3bc048be6aae4b9e52227193efe4c7c3e 100644
+--- a/drivers/input/misc/Kconfig
++++ b/drivers/input/misc/Kconfig
+@@ -305,11 +305,11 @@ config INPUT_MAX8997_HAPTIC
+ 	  module will be called max8997-haptic.
+ 
+ config INPUT_MC13783_PWRBUTTON
+-	tristate "MC13783 ON buttons"
++	tristate "MC13783 and MC13892 ON buttons"
+ 	depends on MFD_MC13XXX
+ 	help
+-	  Support the ON buttons of MC13783 PMIC as an input device
+-	  reporting power button status.
++	  Support the ON buttons of MC13783 and MC13892 PMICs as an input
++	  device reporting power button status.
+ 
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called mc13783-pwrbutton.
 diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783-pwrbutton.c
+index cb781ce967ca2290dc850094bbe23b271a97da13..7be7a89838e0b1055194450c5c5f60fd635de8e8 100644
 --- a/drivers/input/misc/mc13783-pwrbutton.c
 +++ b/drivers/input/misc/mc13783-pwrbutton.c
 @@ -24,6 +24,7 @@
@@ -36,7 +56,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  #include <linux/platform_device.h>
  #include <linux/mfd/mc13783.h>
  #include <linux/sched.h>
-@@ -37,6 +38,7 @@
+@@ -37,6 +38,7 @@ struct mc13783_pwrb {
  #define MC13783_PWRB_B3_POL_INVERT	(1 << 2)
  	int flags;
  	unsigned short keymap[3];
@@ -44,7 +64,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  };
  
  #define MC13783_REG_INTERRUPT_SENSE_1		5
-@@ -52,29 +54,130 @@
+@@ -52,29 +54,130 @@ struct mc13783_pwrb {
  #define MC13783_POWER_CONTROL_2_ON2BRSTEN	(1 << 2)
  #define MC13783_POWER_CONTROL_2_ON3BRSTEN	(1 << 3)
  
@@ -181,7 +201,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  		val = val & MC13783_IRQSENSE1_ONOFD3S ? 1 : 0;
  		if (priv->flags & MC13783_PWRB_B3_POL_INVERT)
  			val ^= 1;
-@@ -87,19 +190,39 @@
+@@ -87,19 +190,39 @@ static irqreturn_t button_irq(int irq, void *_priv)
  	return IRQ_HANDLED;
  }
  
@@ -224,7 +244,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  	}
  
  	pwr = input_allocate_device();
-@@ -115,16 +238,16 @@
+@@ -115,16 +238,16 @@ static int mc13783_pwrbutton_probe(struct platform_device *pdev)
  		goto free_input_dev;
  	}
  
@@ -245,7 +265,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  		priv->keymap[0] = pdata->b1on_key;
  		if (pdata->b1on_key != KEY_RESERVED)
  			__set_bit(pdata->b1on_key, pwr->keybit);
-@@ -136,14 +259,19 @@
+@@ -136,14 +259,19 @@ static int mc13783_pwrbutton_probe(struct platform_device *pdev)
  			reg |= MC13783_POWER_CONTROL_2_ON1BRSTEN;
  
  		err = mc13xxx_irq_request(mc13783, MC13783_IRQ_ONOFD1,
@@ -266,7 +286,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  		priv->keymap[1] = pdata->b2on_key;
  		if (pdata->b2on_key != KEY_RESERVED)
  			__set_bit(pdata->b2on_key, pwr->keybit);
-@@ -155,14 +283,19 @@
+@@ -155,14 +283,19 @@ static int mc13783_pwrbutton_probe(struct platform_device *pdev)
  			reg |= MC13783_POWER_CONTROL_2_ON2BRSTEN;
  
  		err = mc13xxx_irq_request(mc13783, MC13783_IRQ_ONOFD2,
@@ -288,7 +308,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  		priv->keymap[2] = pdata->b3on_key;
  		if (pdata->b3on_key != KEY_RESERVED)
  			__set_bit(pdata->b3on_key, pwr->keybit);
-@@ -174,19 +307,23 @@
+@@ -174,19 +307,23 @@ static int mc13783_pwrbutton_probe(struct platform_device *pdev)
  			reg |= MC13783_POWER_CONTROL_2_ON3BRSTEN;
  
  		err = mc13xxx_irq_request(mc13783, MC13783_IRQ_ONOFD3,
@@ -317,7 +337,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  	pwr->dev.parent = &pdev->dev;
  
  	pwr->keycode = priv->keymap;
-@@ -207,16 +344,8 @@
+@@ -207,16 +344,8 @@ static int mc13783_pwrbutton_probe(struct platform_device *pdev)
  free_irq:
  	mc13xxx_lock(mc13783);
  
@@ -336,7 +356,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  
  free_priv:
  	mc13xxx_unlock(mc13783);
-@@ -231,28 +360,26 @@
+@@ -231,28 +360,26 @@ static int mc13783_pwrbutton_probe(struct platform_device *pdev)
  static void mc13783_pwrbutton_remove(struct platform_device *pdev)
  {
  	struct mc13783_pwrb *priv = platform_get_drvdata(pdev);
@@ -374,7 +394,7 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
  	.driver		= {
  		.name	= "mc13783-pwrbutton",
  	},
-@@ -261,6 +388,6 @@
+@@ -261,6 +388,6 @@ static struct platform_driver mc13783_pwrbutton_driver = {
  module_platform_driver(mc13783_pwrbutton_driver);
  
  MODULE_ALIAS("platform:mc13783-pwrbutton");
@@ -382,23 +402,3 @@ diff --git a/drivers/input/misc/mc13783-pwrbutton.c b/drivers/input/misc/mc13783
 +MODULE_DESCRIPTION("MC13xxx Power Button");
  MODULE_LICENSE("GPL v2");
  MODULE_AUTHOR("Philippe Retornaz");
-diff --git a/drivers/input/misc/Kconfig b/drivers/input/misc/Kconfig
---- a/drivers/input/misc/Kconfig
-+++ b/drivers/input/misc/Kconfig
-@@ -305,11 +305,11 @@
- 	  module will be called max8997-haptic.
- 
- config INPUT_MC13783_PWRBUTTON
--	tristate "MC13783 ON buttons"
-+	tristate "MC13783 and MC13892 ON buttons"
- 	depends on MFD_MC13XXX
- 	help
--	  Support the ON buttons of MC13783 PMIC as an input device
--	  reporting power button status.
-+	  Support the ON buttons of MC13783 and MC13892 PMICs as an input
-+	  device reporting power button status.
- 
- 	  To compile this driver as a module, choose M here: the module
- 	  will be called mc13783-pwrbutton.
--- 
-2.51.0

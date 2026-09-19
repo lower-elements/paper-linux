@@ -1,3 +1,4 @@
+From e4942c6fd5d2eccf1bf492170ad3b92419f45b30 Mon Sep 17 00:00:00 2001
 From: Paper Linux Maintainers <paper-linux@example.invalid>
 Date: Sat, 22 Aug 2026 00:00:00 +0100
 Subject: [PATCH] regulator: mc13892: preserve overlapping switcher range
@@ -20,12 +21,14 @@ slots unchanged.
 
 Signed-off-by: Paper Linux Maintainers <paper-linux@example.invalid>
 ---
- drivers/regulator/mc13892-regulator.c | 25 +++++++++++++++++++++----
- 1 file changed, 21 insertions(+), 4 deletions(-)
+ drivers/regulator/mc13892-regulator.c | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
 
+diff --git a/drivers/regulator/mc13892-regulator.c b/drivers/regulator/mc13892-regulator.c
+index 5d89efaba80468cf9a32d7430ca29516a593c2e2..511b3e74783092aa1855cc1aa3ec8c673b243709 100644
 --- a/drivers/regulator/mc13892-regulator.c
 +++ b/drivers/regulator/mc13892-regulator.c
-@@ -445,7 +445,7 @@
+@@ -445,7 +445,7 @@ static int mc13892_sw_regulator_set_voltage_sel(struct regulator_dev *rdev,
  {
  	struct mc13xxx_regulator_priv *priv = rdev_get_drvdata(rdev);
  	int volt, mask, id = rdev_get_id(rdev);
@@ -34,7 +37,7 @@ Signed-off-by: Paper Linux Maintainers <paper-linux@example.invalid>
  	int ret;
  
  	volt = rdev->desc->volt_table[selector];
-@@ -466,10 +466,28 @@
+@@ -466,10 +466,28 @@ static int mc13892_sw_regulator_set_voltage_sel(struct regulator_dev *rdev,
  	 * thing more readable and we do far less work.
  	 */
  
@@ -64,7 +67,7 @@ Signed-off-by: Paper Linux Maintainers <paper-linux@example.invalid>
  			reg_value -= MC13892_SWxHI_SEL_OFFSET;
  			reg_value |= MC13892_SWITCHERS0_SWxHI;
  		} else {
-@@ -477,9 +495,10 @@
+@@ -477,9 +495,10 @@ static int mc13892_sw_regulator_set_voltage_sel(struct regulator_dev *rdev,
  		}
  	}
  
@@ -76,5 +79,3 @@ Signed-off-by: Paper Linux Maintainers <paper-linux@example.invalid>
  	mc13xxx_unlock(priv->mc13xxx);
  
  	return ret;
--- 
-2.51.0

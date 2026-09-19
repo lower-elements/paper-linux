@@ -1,4 +1,6 @@
+From e644fda10adb14162a1c3497648477357da0e441 Mon Sep 17 00:00:00 2001
 From: Paper Linux <paper-linux@localhost>
+Date: Sat, 1 Jan 2000 00:00:00 +0000
 Subject: [PATCH] dma: restore MX3 IPU driver with DT binding
 
 Restore the last upstream MX3 IPU DMA/IRQ driver and add an OF match table
@@ -8,10 +10,26 @@ This is carried for Kindle 3 bring-up; the ADC/DI smart-display support is
 not included yet.
 
 Signed-off-by: Paper Linux <paper-linux@localhost>
+---
+ drivers/dma/Kconfig          |   19 +
+ drivers/dma/Makefile         |    1 +
+ drivers/dma/ipu/Makefile     |    2 +
+ drivers/dma/ipu/ipu_idmac.c  | 1809 ++++++++++++++++++++++++++++++++++
+ drivers/dma/ipu/ipu_intern.h |  173 ++++
+ drivers/dma/ipu/ipu_irq.c    |  367 +++++++
+ include/linux/dma/ipu-dma.h  |  174 ++++
+ 7 files changed, 2545 insertions(+)
+ create mode 100644 drivers/dma/ipu/Makefile
+ create mode 100644 drivers/dma/ipu/ipu_idmac.c
+ create mode 100644 drivers/dma/ipu/ipu_intern.h
+ create mode 100644 drivers/dma/ipu/ipu_irq.c
+ create mode 100644 include/linux/dma/ipu-dma.h
 
+diff --git a/drivers/dma/Kconfig b/drivers/dma/Kconfig
+index 66cda7cc9f7ab92e198d80cc5f0fb6420b937088..b5a85c4f449245d4252cc9032910ffedc4e2d3fd 100644
 --- a/drivers/dma/Kconfig
 +++ b/drivers/dma/Kconfig
-@@ -513,6 +513,25 @@
+@@ -513,6 +513,25 @@ config MXS_DMA
  	  Support the MXS DMA engine. This engine including APBH-DMA
  	  and APBX-DMA is integrated into some Freescale chips.
  
@@ -37,9 +55,11 @@ Signed-off-by: Paper Linux <paper-linux@localhost>
  config NBPFAXI_DMA
  	tristate "Renesas Type-AXI NBPF DMA support"
  	select DMA_ENGINE
+diff --git a/drivers/dma/Makefile b/drivers/dma/Makefile
+index a54d7688392b1a0e956fa5d23633507f52f017d9..3dabc53146030fb87641669be0512f017dd8a6ef 100644
 --- a/drivers/dma/Makefile
 +++ b/drivers/dma/Makefile
-@@ -62,6 +62,7 @@
+@@ -62,6 +62,7 @@ obj-$(CONFIG_MPC512X_DMA) += mpc512x_dma.o
  obj-$(CONFIG_MV_XOR) += mv_xor.o
  obj-$(CONFIG_MV_XOR_V2) += mv_xor_v2.o
  obj-$(CONFIG_MXS_DMA) += mxs-dma.o
@@ -47,11 +67,17 @@ Signed-off-by: Paper Linux <paper-linux@localhost>
  obj-$(CONFIG_NBPFAXI_DMA) += nbpfaxi.o
  obj-$(CONFIG_OWL_DMA) += owl-dma.o
  obj-$(CONFIG_PCH_DMA) += pch_dma.o
+diff --git a/drivers/dma/ipu/Makefile b/drivers/dma/ipu/Makefile
+new file mode 100644
+index 0000000000000000000000000000000000000000..c79ff116daf610e184f3912600437bb18fb82b10
 --- /dev/null
 +++ b/drivers/dma/ipu/Makefile
 @@ -0,0 +1,2 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +obj-y	+= ipu_irq.o ipu_idmac.o
+diff --git a/drivers/dma/ipu/ipu_idmac.c b/drivers/dma/ipu/ipu_idmac.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..d11ce27ac50465a396c406b4dbf8690f8fb6c42b
 --- /dev/null
 +++ b/drivers/dma/ipu/ipu_idmac.c
 @@ -0,0 +1,1809 @@
@@ -1864,6 +1890,9 @@ Signed-off-by: Paper Linux <paper-linux@localhost>
 +MODULE_DESCRIPTION("IPU core driver");
 +MODULE_AUTHOR("Guennadi Liakhovetski <lg@denx.de>");
 +MODULE_ALIAS("platform:ipu-core");
+diff --git a/drivers/dma/ipu/ipu_intern.h b/drivers/dma/ipu/ipu_intern.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7ec1dec3edfd98b1f801161e35b48f4f8c8a16d
 --- /dev/null
 +++ b/drivers/dma/ipu/ipu_intern.h
 @@ -0,0 +1,173 @@
@@ -2040,6 +2069,9 @@ Signed-off-by: Paper Linux <paper-linux@localhost>
 +extern int ipu_irq_unmap(unsigned int source);
 +
 +#endif
+diff --git a/drivers/dma/ipu/ipu_irq.c b/drivers/dma/ipu/ipu_irq.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..97d9a6f04f2a2b201e9df71e6ad9afe450ad135d
 --- /dev/null
 +++ b/drivers/dma/ipu/ipu_irq.c
 @@ -0,0 +1,367 @@
@@ -2410,6 +2442,9 @@ Signed-off-by: Paper Linux <paper-linux@localhost>
 +		irq_set_chip_data(irq, NULL);
 +	}
 +}
+diff --git a/include/linux/dma/ipu-dma.h b/include/linux/dma/ipu-dma.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..6969391580d28eccb49189c5be112315e31b3b33
 --- /dev/null
 +++ b/include/linux/dma/ipu-dma.h
 @@ -0,0 +1,174 @@

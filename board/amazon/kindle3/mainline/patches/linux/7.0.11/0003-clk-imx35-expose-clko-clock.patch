@@ -1,3 +1,4 @@
+From c6bda67c01919ba4f11fb488fd9f6978186fa47f Mon Sep 17 00:00:00 2001
 From: Paper Linux contributors <paperlinux@localhost>
 Date: Mon, 17 Aug 2026 00:00:00 +0100
 Subject: [PATCH] clk: imx35: expose the CLKO gate
@@ -16,6 +17,8 @@ Signed-off-by: Paper Linux contributors <paperlinux@localhost>
  drivers/clk/imx/clk-imx35.c | 10 +++++++++-
  1 file changed, 9 insertions(+), 1 deletion(-)
 
+diff --git a/drivers/clk/imx/clk-imx35.c b/drivers/clk/imx/clk-imx35.c
+index 3b6fdb4e0be784ca039efab6dcdb06251c1deb8e..ff1ef87820c1c7eab720154bb4f5e111c40d8877 100644
 --- a/drivers/clk/imx/clk-imx35.c
 +++ b/drivers/clk/imx/clk-imx35.c
 @@ -76,7 +76,7 @@ enum mx35_clks {
@@ -42,5 +45,3 @@ Signed-off-by: Paper Linux contributors <paperlinux@localhost>
  	clk[mpll] = imx_clk_pllv1(IMX_PLLV1_IMX35, "mpll", "ckih", base + MX35_CCM_MPCTL);
  	clk[ppll] = imx_clk_pllv1(IMX_PLLV1_IMX35, "ppll", "ckih", base + MX35_CCM_PPCTL);
  
--- 
-2.51.0

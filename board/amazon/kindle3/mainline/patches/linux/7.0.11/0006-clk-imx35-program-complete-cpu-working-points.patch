@@ -1,3 +1,4 @@
+From c28c70eccb5afe8829d791ec5b40079f3eb59e43 Mon Sep 17 00:00:00 2001
 From: Paper Linux Project <paperlinux@localhost>
 Date: Sat, 22 Aug 2026 16:00:00 +0100
 Subject: [PATCH] clk: imx35: program complete CPU working points
@@ -15,9 +16,14 @@ walker because it is now part of the atomic CPU working-point change.
 
 Signed-off-by: Paper Linux Project <paperlinux@localhost>
 ---
+ drivers/clk/imx/clk-imx35.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/clk/imx/clk-imx35.c b/drivers/clk/imx/clk-imx35.c
+index 861a6a8f793aba30bad6bd96ad5fe474aba2a3ef..6e81d050f944df1ff8c35d584f041172c4e4fae5 100644
 --- a/drivers/clk/imx/clk-imx35.c
 +++ b/drivers/clk/imx/clk-imx35.c
-@@ -31,8 +31,10 @@
+@@ -31,6 +31,8 @@
  #define MX35_CCM_CGR2		0x34
  #define MX35_CCM_CGR3		0x38
  
@@ -26,9 +32,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  #define MX35_PDR0_CONSUMER_SHIFT	16
  #define MX35_PDR0_CONSUMER_MASK	GENMASK(19, 16)
  #define MX35_CONSUMER_512MHZ	0
- #define MX35_CONSUMER_256MHZ	2
- #define MX35_MPLL_RATE		512000000
-@@ -133,15 +135,15 @@
+@@ -133,15 +135,15 @@ static int imx35_arm_set_rate(struct clk_hw *hw, unsigned long rate,
  {
  	struct imx35_consumer_clk *consumer = to_imx35_consumer_clk(hw);
  	unsigned long flags;
@@ -47,7 +51,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  		break;
  	default:
  		return -EINVAL;
-@@ -160,9 +162,6 @@
+@@ -160,9 +162,6 @@ static int imx35_arm_set_rate(struct clk_hw *hw, unsigned long rate,
  	}
  
  	spin_lock_irqsave(&imx_ccm_lock, flags);
@@ -57,7 +61,7 @@ Signed-off-by: Paper Linux Project <paperlinux@localhost>
  	writel(pdr0, consumer->base + MXC_CCM_PDR0);
  	spin_unlock_irqrestore(&imx_ccm_lock, flags);
  
-@@ -284,7 +283,12 @@
+@@ -284,7 +283,12 @@ static void __init _mx35_clocks_init(void)
  	clk[ipg] = imx_clk_fixed_factor("ipg", "ahb", 1, 2);
  
  	clk[arm_per_div] = imx_clk_divider("arm_per_div", "arm", base + MX35_CCM_PDR4, 16, 6);
