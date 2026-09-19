@@ -1,0 +1,172 @@
+From 28994c000d16242a86a3a9604fe333a41b2520db Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sat, 19 Sep 2026 17:50:45 +0100
+Subject: [PATCH] dma: mx3-ipu: add Kindle EPDC detection client
+
+Add a temporary device-tree consumer that resets the display controller and reads its product-code register through the PIO API.
+
+Report Isis, Broadsheet, or an unknown returned value in the kernel log so initial ADC/DI operation can be verified on hardware.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ drivers/dma/ipu/Makefile               |   2 +-
+ drivers/dma/ipu/mx3_ipu_di_epdc_test.c | 142 +++++++++++++++++++++++++
+ 2 files changed, 143 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/dma/ipu/mx3_ipu_di_epdc_test.c
+
+diff --git a/drivers/dma/ipu/Makefile b/drivers/dma/ipu/Makefile
+index cb046be87d343d330e0e444c49c45667e92683b1..18b73030581fbe7250c10c51c6e70074ba0f5932 100644
+--- a/drivers/dma/ipu/Makefile
++++ b/drivers/dma/ipu/Makefile
+@@ -1,2 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-y	+= ipu_irq.o ipu_idmac.o mx3_ipu_di.o
++obj-y	+= ipu_irq.o ipu_idmac.o mx3_ipu_di.o mx3_ipu_di_epdc_test.o
+diff --git a/drivers/dma/ipu/mx3_ipu_di_epdc_test.c b/drivers/dma/ipu/mx3_ipu_di_epdc_test.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3187a4027b3e8d1abacafdcf5aed15bf3d12cbc
+--- /dev/null
++++ b/drivers/dma/ipu/mx3_ipu_di_epdc_test.c
+@@ -0,0 +1,142 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Minimal Kindle 3 EPDC identification client for MX3 IPU DI bring-up. */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include <linux/dma/mx3-ipu-di.h>
++
++#define EPDC_CMD_RD_REG		0x0010
++#define EPDC_REG_PRODUCT_CODE	0x0002
++#define EPDC_PRODUCT_BROADSHEET	0x0047
++#define EPDC_PRODUCT_ISIS	0x004d
++#define EPDC_READY_TIMEOUT_MS	5000
++
++static int epdc_wait_ready(struct gpio_desc *ready)
++{
++	unsigned long timeout = jiffies +
++		msecs_to_jiffies(EPDC_READY_TIMEOUT_MS);
++	int value;
++
++	do {
++		value = gpiod_get_value_cansleep(ready);
++		if (value < 0)
++			return value;
++		if (value)
++			return 0;
++		usleep_range(1000, 2000);
++	} while (time_before(jiffies, timeout));
++
++	return -ETIMEDOUT;
++}
++
++static int epdc_identify(struct device *dev, struct mx3_ipu_di_port *port,
++			 struct gpio_desc *reset, struct gpio_desc *ready,
++			 u32 *product)
++{
++	int ret;
++
++	ret = mx3_ipu_di_begin(port);
++	if (ret)
++		return ret;
++
++	/* Configure the bus before releasing the controller from reset. */
++	msleep(100);
++	gpiod_set_value_cansleep(reset, 0);
++	msleep(400);
++
++	ret = epdc_wait_ready(ready);
++	if (ret)
++		goto out;
++	ret = mx3_ipu_di_write_cmd(port, MX3_IPU_DI_MAPPING_COMMAND_BANK,
++				   EPDC_CMD_RD_REG);
++	if (ret)
++		goto out;
++
++	ret = epdc_wait_ready(ready);
++	if (ret)
++		goto out;
++	ret = mx3_ipu_di_write_data(port, MX3_IPU_DI_MAPPING_COMMAND_BANK,
++				    EPDC_REG_PRODUCT_CODE);
++	if (ret)
++		goto out;
++
++	ret = epdc_wait_ready(ready);
++	if (ret)
++		goto out;
++	ret = mx3_ipu_di_read_data(port, MX3_IPU_DI_MAPPING_COMMAND_BANK,
++				   product);
++
++out:
++	mx3_ipu_di_end(port);
++	if (ret)
++		dev_err(dev, "EPDC product-code transaction failed: %d\n", ret);
++	return ret;
++}
++
++static int epdc_test_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct gpio_desc *reset, *ready;
++	struct mx3_ipu_di_port *port;
++	u32 product;
++	int ret;
++
++	port = devm_mx3_ipu_di_get(dev);
++	if (IS_ERR(port))
++		return dev_err_probe(dev, PTR_ERR(port),
++				     "failed to acquire IPU DI port\n");
++
++	reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(reset))
++		return dev_err_probe(dev, PTR_ERR(reset),
++				     "failed to acquire reset GPIO\n");
++
++	ready = devm_gpiod_get(dev, "ready", GPIOD_IN);
++	if (IS_ERR(ready))
++		return dev_err_probe(dev, PTR_ERR(ready),
++				     "failed to acquire ready GPIO\n");
++
++	ret = epdc_identify(dev, port, reset, ready, &product);
++	if (ret)
++		return ret;
++
++	switch (product) {
++	case EPDC_PRODUCT_ISIS:
++		dev_info(dev, "detected Epson Isis EPDC (product code %#06x)\n",
++			 product);
++		break;
++	case EPDC_PRODUCT_BROADSHEET:
++		dev_info(dev,
++			 "detected Epson Broadsheet EPDC (product code %#06x)\n",
++			 product);
++		break;
++	default:
++		dev_warn(dev, "unknown EPDC product code %#06x\n", product);
++		break;
++	}
++
++	return 0;
++}
++
++static const struct of_device_id epdc_test_of_match[] = {
++	{ .compatible = "amazon,kindle3-epdc-detect" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, epdc_test_of_match);
++
++static struct platform_driver epdc_test_driver = {
++	.probe = epdc_test_probe,
++	.driver = {
++		.name = "kindle3-epdc-detect",
++		.of_match_table = epdc_test_of_match,
++	},
++};
++module_platform_driver(epdc_test_driver);
++
++MODULE_DESCRIPTION("Kindle 3 EPDC identification test");
++MODULE_LICENSE("GPL");
