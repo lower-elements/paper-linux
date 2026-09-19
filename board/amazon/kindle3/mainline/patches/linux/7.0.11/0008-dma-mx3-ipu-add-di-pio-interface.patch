@@ -1,0 +1,686 @@
+From 7cd90b34cb7f5b0545d8adc042303838829a9224 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sat, 19 Sep 2026 17:50:03 +0100
+Subject: [PATCH] dma: mx3-ipu: add asynchronous display PIO interface
+
+Add an explicitly locked, instance-based programmed-I/O API for the MX3 asynchronous display ports.
+
+Keep command/data phase selection independent from the mapping bank, configure the initial Kindle DISP0 wiring, and reference-count the DI enable shared by SDC and PIO consumers.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ drivers/dma/ipu/Makefile       |   2 +-
+ drivers/dma/ipu/ipu_idmac.c    |  36 ++-
+ drivers/dma/ipu/ipu_intern.h   |  31 ++-
+ drivers/dma/ipu/mx3_ipu_di.c   | 413 +++++++++++++++++++++++++++++++++
+ include/linux/dma/mx3-ipu-di.h |  52 +++++
+ 5 files changed, 528 insertions(+), 6 deletions(-)
+ create mode 100644 drivers/dma/ipu/mx3_ipu_di.c
+ create mode 100644 include/linux/dma/mx3-ipu-di.h
+
+diff --git a/drivers/dma/ipu/Makefile b/drivers/dma/ipu/Makefile
+index c79ff116daf610e184f3912600437bb18fb82b10..cb046be87d343d330e0e444c49c45667e92683b1 100644
+--- a/drivers/dma/ipu/Makefile
++++ b/drivers/dma/ipu/Makefile
+@@ -1,2 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-y	+= ipu_irq.o ipu_idmac.o
++obj-y	+= ipu_irq.o ipu_idmac.o mx3_ipu_di.o
+diff --git a/drivers/dma/ipu/ipu_idmac.c b/drivers/dma/ipu/ipu_idmac.c
+index d11ce27ac50465a396c406b4dbf8690f8fb6c42b..4b3b4b3c048c07fd1301d3d43844ca88fa91f36f 100644
+--- a/drivers/dma/ipu/ipu_idmac.c
++++ b/drivers/dma/ipu/ipu_idmac.c
+@@ -20,6 +20,7 @@
+ #include <linux/io.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/of_platform.h>
+ #include <linux/dma/ipu-dma.h>
+ 
+ #include "../dmaengine.h"
+@@ -584,7 +585,7 @@ static uint32_t ipu_channel_conf_mask(enum ipu_channel channel)
+ 		break;
+ 	case IDMAC_SDC_0:
+ 	case IDMAC_SDC_1:
+-		mask = IPU_CONF_SDC_EN | IPU_CONF_DI_EN;
++		mask = IPU_CONF_SDC_EN;
+ 		break;
+ 	default:
+ 		mask = 0;
+@@ -980,6 +981,7 @@ static int ipu_init_channel(struct idmac *idmac, struct idmac_channel *ichan)
+ 	case IDMAC_SDC_0:
+ 	case IDMAC_SDC_1:
+ 		n_desc = 4;
++		mx3_ipu_di_get(ipu);
+ 		break;
+ 	default:
+ 		break;
+@@ -1044,6 +1046,8 @@ static void ipu_uninit_channel(struct idmac *idmac, struct idmac_channel *ichan)
+ 		break;
+ 	case IDMAC_SDC_0:
+ 	case IDMAC_SDC_1:
++		mx3_ipu_di_put(ipu);
++		break;
+ 	default:
+ 		break;
+ 	}
+@@ -1671,13 +1675,14 @@ static void ipu_idmac_exit(struct ipu *ipu)
+ 
+ static int __init ipu_probe(struct platform_device *pdev)
+ {
+-	struct resource *mem_ipu, *mem_ic;
++	struct resource *mem_ipu, *mem_ic, *mem_di;
+ 	int ret;
+ 
+ 	spin_lock_init(&ipu_data.lock);
+ 
+ 	mem_ipu	= platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	mem_ic	= platform_get_resource(pdev, IORESOURCE_MEM, 1);
++	mem_di	= platform_get_resource(pdev, IORESOURCE_MEM, 2);
+ 	if (!mem_ipu || !mem_ic)
+ 		return -EINVAL;
+ 
+@@ -1713,6 +1718,16 @@ static int __init ipu_probe(struct platform_device *pdev)
+ 		goto err_ioremap_ic;
+ 	}
+ 
++	/* ADC/DI is optional so existing users of the restored IDMAC still bind. */
++	if (mem_di) {
++		ipu_data.reg_di = devm_ioremap_resource(&pdev->dev, mem_di);
++		if (IS_ERR(ipu_data.reg_di)) {
++			ret = PTR_ERR(ipu_data.reg_di);
++			ipu_data.reg_di = NULL;
++			goto err_clk_get;
++		}
++	}
++
+ 	/* Get IPU clock */
+ 	ipu_data.ipu_clk = clk_get(&pdev->dev, NULL);
+ 	if (IS_ERR(ipu_data.ipu_clk)) {
+@@ -1743,13 +1758,24 @@ static int __init ipu_probe(struct platform_device *pdev)
+ 		goto err_idmac_init;
+ 
+ 	tasklet_setup(&ipu_data.tasklet, ipu_gc_tasklet);
++	mx3_ipu_di_init(&ipu_data);
+ 
+ 	ipu_data.dev = &pdev->dev;
+ 
++	if (pdev->dev.of_node) {
++		ret = of_platform_populate(pdev->dev.of_node, NULL, NULL,
++					   &pdev->dev);
++		if (ret)
++			goto err_populate;
++	}
++
+ 	dev_dbg(ipu_data.dev, "IPU initialized\n");
+ 
+ 	return 0;
+ 
++err_populate:
++	tasklet_kill(&ipu_data.tasklet);
++	ipu_idmac_exit(&ipu_data);
+ err_idmac_init:
+ err_attach_irq:
+ 	ipu_irq_detach_irq(&ipu_data, pdev);
+@@ -1769,6 +1795,7 @@ static void ipu_remove(struct platform_device *pdev)
+ {
+ 	struct ipu *ipu = platform_get_drvdata(pdev);
+ 
++	of_platform_depopulate(&pdev->dev);
+ 	ipu_idmac_exit(ipu);
+ 	ipu_irq_detach_irq(ipu, pdev);
+ 	clk_disable_unprepare(ipu->ipu_clk);
+@@ -1787,8 +1814,9 @@ static const struct of_device_id ipu_dt_ids[] = {
+ MODULE_DEVICE_TABLE(of, ipu_dt_ids);
+ 
+ /*
+- * We need two MEM resources - with IPU-common and Image Converter registers,
+- * including PF_CONF and IDMAC_* registers, and two IRQs - function and error
++ * The first two MEM resources contain IPU-common and Image Converter/IDMAC
++ * registers.  A third optional resource contains the ADC and DI registers.
++ * The two IRQs are the function and error interrupts.
+  */
+ static struct platform_driver ipu_platform_driver = {
+ 	.driver = {
+diff --git a/drivers/dma/ipu/ipu_intern.h b/drivers/dma/ipu/ipu_intern.h
+index e7ec1dec3edfd98b1f801161e35b48f4f8c8a16d..34cc443f7f013c17222c5e7da8dd7608b27e4814 100644
+--- a/drivers/dma/ipu/ipu_intern.h
++++ b/drivers/dma/ipu/ipu_intern.h
+@@ -10,8 +10,12 @@
+ #define _IPU_INTERN_H_
+ 
+ #include <linux/dmaengine.h>
+-#include <linux/platform_device.h>
+ #include <linux/interrupt.h>
++#include <linux/mutex.h>
++#include <linux/platform_device.h>
++#include <linux/sched.h>
++
++#define MX3_IPU_DI_NUM_ASYNC_PORTS	3
+ 
+ /* IPU Common registers */
+ #define IPU_CONF		0x00
+@@ -146,9 +150,27 @@ struct idmac {
+ 	struct dma_device	dma;
+ };
+ 
++struct ipu;
++
++struct mx3_ipu_di_port {
++	struct mx3_ipu_di	*di;
++	unsigned int		id;
++	bool			claimed;
++	bool			configured;
++};
++
++struct mx3_ipu_di {
++	struct ipu		*ipu;
++	struct mutex		claim_lock;
++	struct mutex		xfer_lock;
++	struct task_struct	*owner;
++	struct mx3_ipu_di_port	ports[MX3_IPU_DI_NUM_ASYNC_PORTS];
++};
++
+ struct ipu {
+ 	void __iomem		*reg_ipu;
+ 	void __iomem		*reg_ic;
++	void __iomem		*reg_di;
+ 	unsigned int		irq_fn;		/* IPU Function IRQ to the CPU */
+ 	unsigned int		irq_err;	/* IPU Error IRQ to the CPU */
+ 	unsigned int		irq_base;	/* Beginning of the IPU IRQ range */
+@@ -159,6 +181,9 @@ struct ipu {
+ 	struct idmac		idmac;
+ 	struct idmac_channel	channel[IPU_CHANNELS_NUM];
+ 	struct tasklet_struct	tasklet;
++	struct mx3_ipu_di	di;
++	unsigned int		di_users;
++	unsigned int		adc_users;
+ };
+ 
+ #define to_idmac(d) container_of(d, struct idmac, dma)
+@@ -170,4 +195,8 @@ extern bool ipu_irq_status(uint32_t irq);
+ extern int ipu_irq_map(unsigned int source);
+ extern int ipu_irq_unmap(unsigned int source);
+ 
++void mx3_ipu_di_init(struct ipu *ipu);
++void mx3_ipu_di_get(struct ipu *ipu);
++void mx3_ipu_di_put(struct ipu *ipu);
++
+ #endif
+diff --git a/drivers/dma/ipu/mx3_ipu_di.c b/drivers/dma/ipu/mx3_ipu_di.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd8d04150118f7166ae5cedd7f29cc4d26d63cd7
+--- /dev/null
++++ b/drivers/dma/ipu/mx3_ipu_di.c
+@@ -0,0 +1,413 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Programmed-I/O support for the asynchronous display ports in the MX3 IPU.
++ *
++ * The initial panel setup deliberately mirrors the fixed 16-bit DISP0 setup
++ * used by the Kindle 3 vendor kernel.  The public transfer API keeps mapping
++ * selection separate from command/data signalling so that configuration can
++ * be made data driven later without changing consumers.
++ */
++
++#include <linux/clk.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/io.h>
++#include <linux/math64.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/spinlock.h>
++#include <linux/time64.h>
++
++#include <linux/dma/ipu-dma.h>
++#include <linux/dma/mx3-ipu-di.h>
++
++#include "ipu_intern.h"
++
++/* Registers are relative to the ADC/DI resource beginning at IPU + 0xe0. */
++#define ADC_DISP0_CONF		0x14
++#define ADC_DISP0_SS		0x20
++#define ADC_DISP_VSYNC		0x40
++#define DI_DISP_IF_CONF		0x44
++#define DI_DISP_SIG_POL		0x48
++#define DI_HSP_CLK_PER		0x54
++#define DI_DISP0_TIME_CONF_1	0x58
++#define DI_DISP0_TIME_CONF_2	0x5c
++#define DI_DISP0_TIME_CONF_3	0x60
++#define DI_DISP0_DB0_MAP	0x80
++#define DI_DISP0_DB1_MAP	0x84
++#define DI_DISP0_DB2_MAP	0x88
++#define DI_DISP0_CB0_MAP	0x8c
++#define DI_DISP0_CB1_MAP	0x90
++#define DI_DISP0_CB2_MAP	0x94
++#define DI_DISP_ACC_CC		0xd4
++#define DI_DISP_LLA_CONF	0xd8
++#define DI_DISP_LLA_DATA	0xdc
++
++#define DI_CONF_DISP0_EN	BIT(0)
++#define DI_CONF_DISP0_MASK	GENMASK(4, 0)
++#define DI_CONF_DISP0_SYS80_TYPE2 BIT(1)
++
++#define DI_LLA_MAP_COMMAND	BIT(4)
++#define DI_LLA_PORT_SHIFT	1
++#define DI_LLA_DATA_PHASE	BIT(0)
++
++#define KINDLE_SCREEN_WIDTH	800
++#define KINDLE_SCREEN_HEIGHT	600
++#define KINDLE_SCREEN_STRIDE	800
++#define KINDLE_HSP_CLK_PER	0x00100010
++#define KINDLE_READ_CYCLE_NS	110
++#define KINDLE_READ_UP_NS	1
++#define KINDLE_READ_DOWN_NS	100
++#define KINDLE_READ_LATCH_NS	110
++#define KINDLE_PIXEL_CLK_HZ	5000000
++#define KINDLE_WRITE_CYCLE_NS	83
++#define KINDLE_WRITE_UP_NS	1
++#define KINDLE_WRITE_DOWN_NS	72
++
++static u32 ipu_di_readl(struct ipu *ipu, unsigned int reg)
++{
++	return readl(ipu->reg_di + reg);
++}
++
++static void ipu_di_writel(struct ipu *ipu, u32 value, unsigned int reg)
++{
++	writel(value, ipu->reg_di + reg);
++}
++
++static void ipu_update_conf(struct ipu *ipu, u32 set, u32 clear)
++{
++	u32 conf;
++
++	lockdep_assert_held(&ipu->lock);
++	conf = readl(ipu->reg_ipu + IPU_CONF);
++	conf &= ~clear;
++	conf |= set;
++	writel(conf, ipu->reg_ipu + IPU_CONF);
++}
++
++void mx3_ipu_di_get(struct ipu *ipu)
++{
++	lockdep_assert_held(&ipu->lock);
++
++	if (ipu->di_users++ == 0)
++		ipu_update_conf(ipu, IPU_CONF_DI_EN, 0);
++}
++
++void mx3_ipu_di_put(struct ipu *ipu)
++{
++	lockdep_assert_held(&ipu->lock);
++
++	if (WARN_ON(!ipu->di_users))
++		return;
++	if (--ipu->di_users == 0)
++		ipu_update_conf(ipu, 0, IPU_CONF_DI_EN);
++}
++
++static void __ipu_adc_get(struct ipu *ipu)
++{
++	lockdep_assert_held(&ipu->lock);
++
++	if (ipu->adc_users++ == 0)
++		ipu_update_conf(ipu, IPU_CONF_ADC_EN, 0);
++}
++
++static void __ipu_adc_put(struct ipu *ipu)
++{
++	lockdep_assert_held(&ipu->lock);
++
++	if (WARN_ON(!ipu->adc_users))
++		return;
++	if (--ipu->adc_users == 0)
++		ipu_update_conf(ipu, 0, IPU_CONF_ADC_EN);
++}
++
++static u32 ipu_di_timing(u32 cycle_ns, u32 up_ns, u32 down_ns,
++			 unsigned long rate)
++{
++	u32 cycle = div_u64((u64)cycle_ns * rate * 16, NSEC_PER_SEC);
++	u32 up = div_u64((u64)up_ns * rate * 4, NSEC_PER_SEC);
++	u32 down = div_u64((u64)down_ns * rate * 4, NSEC_PER_SEC);
++
++	return cycle | (up << 12) | (down << 22);
++}
++
++static int ipu_di_configure_kindle(struct mx3_ipu_di_port *port)
++{
++	struct ipu *ipu = port->di->ipu;
++	unsigned long flags, rate;
++	u32 conf, pol, acc, read_timing, read_latch, write_timing;
++
++	/* Only the Kindle's DISP0 wiring is described by this first profile. */
++	if (port->id != 0)
++		return -EOPNOTSUPP;
++
++	rate = clk_get_rate(ipu->ipu_clk);
++	if (!rate)
++		return -EINVAL;
++
++	write_timing = ipu_di_timing(KINDLE_WRITE_CYCLE_NS,
++				     KINDLE_WRITE_UP_NS,
++				     KINDLE_WRITE_DOWN_NS, rate);
++	read_timing = ipu_di_timing(KINDLE_READ_CYCLE_NS,
++				    KINDLE_READ_UP_NS,
++				    KINDLE_READ_DOWN_NS, rate);
++	read_latch = div_u64((u64)KINDLE_READ_LATCH_NS * rate * 4,
++			     NSEC_PER_SEC) << 16;
++	read_latch |= div_u64((u64)rate * 16, KINDLE_PIXEL_CLK_HZ);
++
++	spin_lock_irqsave(&ipu->lock, flags);
++
++	ipu_di_writel(ipu, KINDLE_HSP_CLK_PER, DI_HSP_CLK_PER);
++	ipu_di_writel(ipu, write_timing, DI_DISP0_TIME_CONF_1);
++	ipu_di_writel(ipu, read_timing, DI_DISP0_TIME_CONF_2);
++	ipu_di_writel(ipu, read_latch, DI_DISP0_TIME_CONF_3);
++
++	/* RGB565 data mapping from Freescale's 16-bit ADC setup. */
++	ipu_di_writel(ipu, 0x0004003f, DI_DISP0_DB0_MAP);
++	ipu_di_writel(ipu, 0x000a000f, DI_DISP0_DB1_MAP);
++	ipu_di_writel(ipu, 0x000f003f, DI_DISP0_DB2_MAP);
++
++	/* Raw 16-bit command mapping from the same setup. */
++	ipu_di_writel(ipu, 0x00070000, DI_DISP0_CB0_MAP);
++	ipu_di_writel(ipu, 0x000f0000, DI_DISP0_CB1_MAP);
++	ipu_di_writel(ipu, 0x0000ffff, DI_DISP0_CB2_MAP);
++
++	/* One bus cycle for both mapping banks on DISP0. */
++	acc = ipu_di_readl(ipu, DI_DISP_ACC_CC) & ~GENMASK(3, 0);
++	ipu_di_writel(ipu, acc, DI_DISP_ACC_CC);
++
++	/* XY addressing, 800-word stride, and the Kindle panel dimensions. */
++	ipu_di_writel(ipu, (2 << 12) | (KINDLE_SCREEN_STRIDE - 1),
++		      ADC_DISP0_CONF);
++	ipu_di_writel(ipu, ((KINDLE_SCREEN_HEIGHT - 1) << 16) |
++		      (KINDLE_SCREEN_WIDTH - 1), ADC_DISP0_SS);
++	ipu_di_writel(ipu, ipu_di_readl(ipu, ADC_DISP_VSYNC) & ~0x003f0003,
++		      ADC_DISP_VSYNC);
++
++	/* All Kindle bus signals are active high in the vendor configuration. */
++	pol = ipu_di_readl(ipu, DI_DISP_SIG_POL) & ~0x2000003f;
++	ipu_di_writel(ipu, pol, DI_DISP_SIG_POL);
++
++	conf = ipu_di_readl(ipu, DI_DISP_IF_CONF) & ~DI_CONF_DISP0_MASK;
++	conf |= DI_CONF_DISP0_SYS80_TYPE2 | DI_CONF_DISP0_EN;
++	ipu_di_writel(ipu, conf, DI_DISP_IF_CONF);
++
++	spin_unlock_irqrestore(&ipu->lock, flags);
++
++	dev_dbg(ipu->dev, "DI DISP0 configured for Kindle EPDC PIO at %lu Hz\n",
++		rate);
++	return 0;
++}
++
++void mx3_ipu_di_init(struct ipu *ipu)
++{
++	unsigned int i;
++
++	ipu->di.ipu = ipu;
++	mutex_init(&ipu->di.claim_lock);
++	mutex_init(&ipu->di.xfer_lock);
++	for (i = 0; i < MX3_IPU_DI_NUM_ASYNC_PORTS; i++) {
++		ipu->di.ports[i].di = &ipu->di;
++		ipu->di.ports[i].id = i;
++	}
++}
++
++static void mx3_ipu_di_release_port(void *data)
++{
++	struct mx3_ipu_di_port *port = data;
++
++	mutex_lock(&port->di->claim_lock);
++	port->claimed = false;
++	mutex_unlock(&port->di->claim_lock);
++}
++
++struct mx3_ipu_di_port *devm_mx3_ipu_di_get(struct device *consumer)
++{
++	struct mx3_ipu_di_port *port;
++	struct ipu *ipu;
++	u32 id;
++	int ret;
++
++	if (!consumer->parent || !consumer->of_node)
++		return ERR_PTR(-EINVAL);
++
++	ipu = dev_get_drvdata(consumer->parent);
++	if (!ipu)
++		return ERR_PTR(-EPROBE_DEFER);
++	if (!ipu->reg_di)
++		return ERR_PTR(-ENODEV);
++
++	ret = of_property_read_u32(consumer->of_node, "reg", &id);
++	if (ret)
++		return ERR_PTR(ret);
++	if (id >= MX3_IPU_DI_NUM_ASYNC_PORTS)
++		return ERR_PTR(-EINVAL);
++
++	port = &ipu->di.ports[id];
++	mutex_lock(&ipu->di.claim_lock);
++	if (port->claimed) {
++		mutex_unlock(&ipu->di.claim_lock);
++		return ERR_PTR(-EBUSY);
++	}
++	port->claimed = true;
++	mutex_unlock(&ipu->di.claim_lock);
++
++	ret = devm_add_action_or_reset(consumer, mx3_ipu_di_release_port, port);
++	if (ret)
++		return ERR_PTR(ret);
++
++	return port;
++}
++EXPORT_SYMBOL_GPL(devm_mx3_ipu_di_get);
++
++int mx3_ipu_di_begin(struct mx3_ipu_di_port *port)
++{
++	struct ipu *ipu;
++	unsigned long flags;
++	int ret;
++
++	if (!port || !port->claimed)
++		return -EINVAL;
++
++	ret = mutex_lock_interruptible(&port->di->xfer_lock);
++	if (ret)
++		return ret;
++
++	ipu = port->di->ipu;
++	spin_lock_irqsave(&ipu->lock, flags);
++	mx3_ipu_di_get(ipu);
++	__ipu_adc_get(ipu);
++	spin_unlock_irqrestore(&ipu->lock, flags);
++
++	if (!port->configured) {
++		ret = ipu_di_configure_kindle(port);
++		if (ret)
++			goto err_disable;
++		port->configured = true;
++	}
++
++	port->di->owner = current;
++	return 0;
++
++err_disable:
++	spin_lock_irqsave(&ipu->lock, flags);
++	__ipu_adc_put(ipu);
++	mx3_ipu_di_put(ipu);
++	spin_unlock_irqrestore(&ipu->lock, flags);
++	mutex_unlock(&port->di->xfer_lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(mx3_ipu_di_begin);
++
++void mx3_ipu_di_end(struct mx3_ipu_di_port *port)
++{
++	struct ipu *ipu;
++	unsigned long flags;
++
++	if (WARN_ON(!port || port->di->owner != current))
++		return;
++
++	ipu = port->di->ipu;
++	port->di->owner = NULL;
++
++	spin_lock_irqsave(&ipu->lock, flags);
++	__ipu_adc_put(ipu);
++	mx3_ipu_di_put(ipu);
++	spin_unlock_irqrestore(&ipu->lock, flags);
++	mutex_unlock(&port->di->xfer_lock);
++}
++EXPORT_SYMBOL_GPL(mx3_ipu_di_end);
++
++static int ipu_di_validate_xfer(struct mx3_ipu_di_port *port,
++				enum mx3_ipu_di_mapping mapping)
++{
++	if (!port || port->di->owner != current)
++		return -EPERM;
++	if (mapping != MX3_IPU_DI_MAPPING_DATA_BANK &&
++	    mapping != MX3_IPU_DI_MAPPING_COMMAND_BANK)
++		return -EINVAL;
++	return 0;
++}
++
++static u32 ipu_di_lla_conf(struct mx3_ipu_di_port *port,
++			   enum mx3_ipu_di_mapping mapping, bool data)
++{
++	return (port->id << DI_LLA_PORT_SHIFT) |
++	       (mapping == MX3_IPU_DI_MAPPING_COMMAND_BANK ?
++		DI_LLA_MAP_COMMAND : 0) |
++	       (data ? DI_LLA_DATA_PHASE : 0);
++}
++
++static int ipu_di_write_buf(struct mx3_ipu_di_port *port,
++			    enum mx3_ipu_di_mapping mapping, bool data,
++			    const u32 *words, size_t count)
++{
++	struct ipu *ipu;
++	size_t i;
++	int ret;
++
++	ret = ipu_di_validate_xfer(port, mapping);
++	if (ret)
++		return ret;
++	if (!count)
++		return 0;
++	if (!words)
++		return -EINVAL;
++
++	for (i = 0; i < count; i++)
++		if (words[i] & ~GENMASK(15, 0))
++			return -ERANGE;
++
++	ipu = port->di->ipu;
++	ipu_di_writel(ipu, ipu_di_lla_conf(port, mapping, data),
++		      DI_DISP_LLA_CONF);
++	for (i = 0; i < count; i++)
++		ipu_di_writel(ipu, words[i], DI_DISP_LLA_DATA);
++
++	return 0;
++}
++
++int mx3_ipu_di_write_cmd_buf(struct mx3_ipu_di_port *port,
++			     enum mx3_ipu_di_mapping mapping,
++			     const u32 *words, size_t count)
++{
++	return ipu_di_write_buf(port, mapping, false, words, count);
++}
++EXPORT_SYMBOL_GPL(mx3_ipu_di_write_cmd_buf);
++
++int mx3_ipu_di_write_data_buf(struct mx3_ipu_di_port *port,
++			      enum mx3_ipu_di_mapping mapping,
++			      const u32 *words, size_t count)
++{
++	return ipu_di_write_buf(port, mapping, true, words, count);
++}
++EXPORT_SYMBOL_GPL(mx3_ipu_di_write_data_buf);
++
++int mx3_ipu_di_read_data_buf(struct mx3_ipu_di_port *port,
++			     enum mx3_ipu_di_mapping mapping,
++			     u32 *words, size_t count)
++{
++	struct ipu *ipu;
++	size_t i;
++	int ret;
++
++	ret = ipu_di_validate_xfer(port, mapping);
++	if (ret)
++		return ret;
++	if (!count)
++		return 0;
++	if (!words)
++		return -EINVAL;
++
++	ipu = port->di->ipu;
++	ipu_di_writel(ipu, ipu_di_lla_conf(port, mapping, true),
++		      DI_DISP_LLA_CONF);
++	for (i = 0; i < count; i++)
++		words[i] = ipu_di_readl(ipu, DI_DISP_LLA_DATA) & GENMASK(15, 0);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(mx3_ipu_di_read_data_buf);
++
++MODULE_DESCRIPTION("i.MX3 IPU asynchronous display PIO support");
++MODULE_LICENSE("GPL");
+diff --git a/include/linux/dma/mx3-ipu-di.h b/include/linux/dma/mx3-ipu-di.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2dd2b1152cf8157ebf63142d7e647b46a3b35378
+--- /dev/null
++++ b/include/linux/dma/mx3-ipu-di.h
+@@ -0,0 +1,52 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_DMA_MX3_IPU_DI_H
++#define _LINUX_DMA_MX3_IPU_DI_H
++
++#include <linux/types.h>
++
++struct device;
++struct mx3_ipu_di_port;
++
++/* The two independently programmable DI mapping banks. */
++enum mx3_ipu_di_mapping {
++	MX3_IPU_DI_MAPPING_DATA_BANK = 0,
++	MX3_IPU_DI_MAPPING_COMMAND_BANK = 1,
++};
++
++struct mx3_ipu_di_port *devm_mx3_ipu_di_get(struct device *consumer);
++
++int mx3_ipu_di_begin(struct mx3_ipu_di_port *port);
++void mx3_ipu_di_end(struct mx3_ipu_di_port *port);
++
++int mx3_ipu_di_write_cmd_buf(struct mx3_ipu_di_port *port,
++			     enum mx3_ipu_di_mapping mapping,
++			     const u32 *words, size_t count);
++int mx3_ipu_di_write_data_buf(struct mx3_ipu_di_port *port,
++			      enum mx3_ipu_di_mapping mapping,
++			      const u32 *words, size_t count);
++int mx3_ipu_di_read_data_buf(struct mx3_ipu_di_port *port,
++			     enum mx3_ipu_di_mapping mapping,
++			     u32 *words, size_t count);
++
++static inline int mx3_ipu_di_write_cmd(struct mx3_ipu_di_port *port,
++				       enum mx3_ipu_di_mapping mapping,
++				       u32 word)
++{
++	return mx3_ipu_di_write_cmd_buf(port, mapping, &word, 1);
++}
++
++static inline int mx3_ipu_di_write_data(struct mx3_ipu_di_port *port,
++					enum mx3_ipu_di_mapping mapping,
++					u32 word)
++{
++	return mx3_ipu_di_write_data_buf(port, mapping, &word, 1);
++}
++
++static inline int mx3_ipu_di_read_data(struct mx3_ipu_di_port *port,
++				       enum mx3_ipu_di_mapping mapping,
++				       u32 *word)
++{
++	return mx3_ipu_di_read_data_buf(port, mapping, word, 1);
++}
++
++#endif
