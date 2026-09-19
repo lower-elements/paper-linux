@@ -379,6 +379,45 @@ class ResourceManager:
             connection, workspace, current, dry_run=dry_run
         )
 
+    def attach_workspace(
+        self, buildroot_config: str, package: str, name: str
+    ) -> workspaces.AttachWorkspaceResult:
+        connection = self._database(create=True)
+        workspace = workspace_store.get_workspace(connection, package, name)
+        if workspace is None:
+            raise ResourceError(f"unknown workspace: {package}/{name}")
+        current = self.inspect_buildroot_package(buildroot_config, package)
+        return workspaces.attach_workspace(connection, workspace, current)
+
+    def detach_workspace(
+        self, buildroot_config: str, package: str
+    ) -> workspaces.DetachWorkspaceResult:
+        connection = self._database(create=True)
+        return workspaces.detach_workspace(
+            connection,
+            project_root=str(self.settings.manifest_path.parent),
+            buildroot_config=buildroot_config,
+            package=package,
+        )
+
+    def close_workspace(
+        self,
+        buildroot_config: str,
+        package: str,
+        name: str,
+        *,
+        force: bool = False,
+    ) -> workspaces.CloseWorkspaceResult:
+        connection = self._database(create=True)
+        workspace = workspace_store.get_workspace(connection, package, name)
+        if workspace is None:
+            raise ResourceError(f"unknown workspace: {package}/{name}")
+        if workspace.origin_config != buildroot_config:
+            raise ResourceError(
+                f"workspace originated from {workspace.origin_config}, not {buildroot_config}"
+            )
+        return workspaces.close_workspace(connection, workspace, force=force)
+
     def _document_info(self, document: dict[str, Any]) -> ResourceInfo:
         path = self.settings.root / document["path"]
         return ResourceInfo(

@@ -232,6 +232,142 @@ def delete_operation(connection: sqlite3.Connection, operation_id: str) -> None:
         )
 
 
+def get_attachment(
+    connection: sqlite3.Connection,
+    project_root: str,
+    buildroot_config: str,
+    package: str,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT * FROM workspace_attachments
+        WHERE project_root = ? AND buildroot_config = ? AND package = ?
+        """,
+        (project_root, buildroot_config, package),
+    ).fetchone()
+
+
+def save_attachment(
+    connection: sqlite3.Connection,
+    *,
+    project_root: str,
+    buildroot_config: str,
+    package: str,
+    workspace_id: str,
+    override_path: str,
+    block_id: str,
+    managed_block: bytes,
+    file_created: bool,
+    prior_effective: str | None = None,
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            INSERT INTO workspace_attachments(
+                project_root, buildroot_config, package, workspace_id,
+                override_path, block_id, managed_block, file_created,
+                prior_effective, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                project_root, buildroot_config, package, workspace_id,
+                override_path, block_id, managed_block, int(file_created),
+                prior_effective, now(),
+            ),
+        )
+
+
+def delete_attachment(
+    connection: sqlite3.Connection,
+    project_root: str,
+    buildroot_config: str,
+    package: str,
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            DELETE FROM workspace_attachments
+            WHERE project_root = ? AND buildroot_config = ? AND package = ?
+            """,
+            (project_root, buildroot_config, package),
+        )
+
+
+def retire_workspace(connection: sqlite3.Connection, workspace_id: str) -> None:
+    with connection:
+        connection.execute(
+            """
+            UPDATE workspaces SET state = 'closed', retired_at = ? WHERE id = ?
+            """,
+            (now(), workspace_id),
+        )
+
+
+def complete_attachment_operation(
+    connection: sqlite3.Connection,
+    *,
+    operation_id: str,
+    payload: Any,
+    attach: bool,
+    project_root: str,
+    buildroot_config: str,
+    package: str,
+    workspace_id: str,
+    override_path: str,
+    block_id: str,
+    managed_block: bytes,
+    file_created: bool,
+    prior_effective: str | None,
+) -> None:
+    with connection:
+        if attach:
+            connection.execute(
+                """
+                INSERT INTO workspace_attachments(
+                    project_root, buildroot_config, package, workspace_id,
+                    override_path, block_id, managed_block, file_created,
+                    prior_effective, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_root, buildroot_config, package, workspace_id,
+                    override_path, block_id, managed_block, int(file_created),
+                    prior_effective, now(),
+                ),
+            )
+        else:
+            connection.execute(
+                """
+                DELETE FROM workspace_attachments
+                WHERE project_root = ? AND buildroot_config = ? AND package = ?
+                """,
+                (project_root, buildroot_config, package),
+            )
+        connection.execute(
+            """
+            UPDATE workspace_operations
+            SET phase = 'complete', payload = ?, error = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (json_text(payload), now(), operation_id),
+        )
+
+
+def complete_close_operation(
+    connection: sqlite3.Connection, workspace_id: str, operation_id: str
+) -> None:
+    with connection:
+        connection.execute(
+            """
+            UPDATE workspaces SET state = 'closed', retired_at = ? WHERE id = ?
+            """,
+            (now(), workspace_id),
+        )
+        connection.execute(
+            "DELETE FROM workspace_operations WHERE id = ?", (operation_id,)
+        )
+
+
 def _local_revision(row: sqlite3.Row) -> LocalRevision:
     return LocalRevision(
         repository_id=row["repository_id"],

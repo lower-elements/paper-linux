@@ -388,6 +388,30 @@ def parser() -> argparse.ArgumentParser:
     workspace_export.add_argument("--dry-run", action="store_true")
     workspace_export.add_argument("--root", type=Path)
     workspace_export.add_argument("--json", action="store_true")
+    workspace_attach = workspace_subparsers.add_parser(
+        "attach", help="attach a workspace as a Buildroot source override"
+    )
+    workspace_attach.add_argument("buildroot_config")
+    workspace_attach.add_argument("package")
+    workspace_attach.add_argument("name")
+    workspace_attach.add_argument("--root", type=Path)
+    workspace_attach.add_argument("--json", action="store_true")
+    workspace_detach = workspace_subparsers.add_parser(
+        "detach", help="remove only the manager-owned source override"
+    )
+    workspace_detach.add_argument("buildroot_config")
+    workspace_detach.add_argument("package")
+    workspace_detach.add_argument("--root", type=Path)
+    workspace_detach.add_argument("--json", action="store_true")
+    workspace_close = workspace_subparsers.add_parser(
+        "close", help="detach and retire a package patch workspace"
+    )
+    workspace_close.add_argument("buildroot_config")
+    workspace_close.add_argument("package")
+    workspace_close.add_argument("name")
+    workspace_close.add_argument("--force", action="store_true")
+    workspace_close.add_argument("--root", type=Path)
+    workspace_close.add_argument("--json", action="store_true")
 
     for command, help_text in (
         ("repositories", "list Git repositories"),
@@ -870,6 +894,19 @@ def main(arguments: list[str] | None = None) -> int:
                     args.buildroot_config, args.package, args.name,
                     dry_run=args.dry_run,
                 )
+            elif args.workspace_command == "attach":
+                workspace_result = manager.attach_workspace(
+                    args.buildroot_config, args.package, args.name
+                )
+            elif args.workspace_command == "detach":
+                workspace_result = manager.detach_workspace(
+                    args.buildroot_config, args.package
+                )
+            elif args.workspace_command == "close":
+                workspace_result = manager.close_workspace(
+                    args.buildroot_config, args.package, args.name,
+                    force=args.force,
+                )
             else:
                 workspace_result = manager.annotate_workspace_commit(
                     args.package, args.name, args.commit, args.patch_path
@@ -900,6 +937,20 @@ def main(arguments: list[str] | None = None) -> int:
                     print(f"{item.commit[:12]}\t{item.path}")
                 for warning in workspace_result.warnings:
                     print(f"Warning: {warning}")
+            elif args.workspace_command in ("attach", "detach"):
+                print(workspace_result.override_file or "no managed override")
+                for warning in workspace_result.warnings:
+                    print(f"Warning: {warning}")
+                for command in workspace_result.rebuild_commands:
+                    print(f"Next: {command}")
+            elif args.workspace_command == "close":
+                print(f"closed {workspace_result.package}/{workspace_result.name}")
+                if workspace_result.discarded_development_work:
+                    print("Discarded workspace-owned development work")
+                print(
+                    "Retained immutable revisions: "
+                    + ", ".join(workspace_result.retained_revisions)
+                )
             else:
                 print(f"{workspace_result.commit}\t{workspace_result.patch_path}")
             return 0

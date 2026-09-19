@@ -36,6 +36,12 @@ LOCAL_WRITE = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
+DESTRUCTIVE_LOCAL_WRITE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
 
 
 def agent_guide() -> str:
@@ -170,6 +176,38 @@ def create_server(manager: ResourceManager) -> MCPServer:
         with domain_errors():
             return manager.export_workspace(
                 buildroot_config, package, name, dry_run=dry_run
+            )
+
+    @server.tool(title="Attach package patch workspace", annotations=LOCAL_WRITE)
+    def attach_workspace(
+        buildroot_config: str, package: str, name: str
+    ) -> workspaces.AttachWorkspaceResult:
+        """Add and verify a manager-owned Buildroot source override block."""
+        with domain_errors():
+            return manager.attach_workspace(buildroot_config, package, name)
+
+    @server.tool(title="Detach package patch workspace", annotations=LOCAL_WRITE)
+    def detach_workspace(
+        buildroot_config: str, package: str
+    ) -> workspaces.DetachWorkspaceResult:
+        """Remove only an unchanged manager-owned source override block."""
+        with domain_errors():
+            return manager.detach_workspace(buildroot_config, package)
+
+    @server.tool(
+        title="Close package patch workspace",
+        annotations=DESTRUCTIVE_LOCAL_WRITE,
+    )
+    def close_workspace(
+        buildroot_config: str,
+        package: str,
+        name: str,
+        force: bool = False,
+    ) -> workspaces.CloseWorkspaceResult:
+        """Detach outputs and remove only the owned worktree, branch, and notes."""
+        with domain_errors():
+            return manager.close_workspace(
+                buildroot_config, package, name, force=force
             )
 
     @server.tool(title="List resources", annotations=READ_ONLY)

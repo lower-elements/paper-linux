@@ -7,10 +7,10 @@ import sqlite3
 
 
 MINIMUM_SQLITE_VERSION = (3, 45, 0)
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;
 
 CREATE TABLE repositories (
     id TEXT PRIMARY KEY,
@@ -380,6 +380,7 @@ CREATE TABLE IF NOT EXISTS workspace_attachments (
     block_id TEXT NOT NULL,
     managed_block BLOB NOT NULL,
     file_created INTEGER NOT NULL CHECK(file_created IN (0, 1)),
+    prior_effective TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (project_root, buildroot_config, package)
 ) STRICT, WITHOUT ROWID;
@@ -455,6 +456,12 @@ def open_database(path: Path, *, create: bool) -> sqlite3.Connection:
         elif version == 8:
             with connection:
                 connection.executescript(OPERATIONAL_SCHEMA)
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        elif version == 9:
+            with connection:
+                connection.execute(
+                    "ALTER TABLE workspace_attachments ADD COLUMN prior_effective TEXT"
+                )
                 connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         elif version != SCHEMA_VERSION:
             raise DatabaseError(

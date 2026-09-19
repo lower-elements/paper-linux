@@ -521,3 +521,19 @@ def inspect_package(
         excluded_stages=tuple(excluded),
         warnings=tuple(warnings),
     )
+
+
+def effective_source_override(
+    project_root: Path, buildroot_config: str, variable_prefix: str
+) -> str | None:
+    """Query one effective override without parsing its Make include file."""
+    if not _CONFIGURATION.fullmatch(buildroot_config):
+        raise ResourceError(f"invalid Buildroot configuration name: {buildroot_config}")
+    if not re.fullmatch(r"[A-Z0-9_]+", variable_prefix):
+        raise ResourceError(f"invalid Buildroot variable prefix: {variable_prefix}")
+    output = (project_root.resolve() / "output" / buildroot_config).resolve()
+    if not (output / "Makefile").is_file():
+        raise ResourceError(f"Buildroot configuration is not available: {output}")
+    name = f"{variable_prefix}_OVERRIDE_SRCDIR"
+    variables = _make_json(output, "show-vars", [f"VARS={name}"])
+    return _expanded(variables, name) or None

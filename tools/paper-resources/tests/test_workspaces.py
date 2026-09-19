@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from paper_resources import (
@@ -137,7 +138,7 @@ class WorkspacePersistenceTest(unittest.TestCase):
         path = self.root / "resources.db"
         connection = __import__("sqlite3").connect(path)
         connection.executescript(
-            database.SCHEMA.replace("PRAGMA user_version = 9;", "PRAGMA user_version = 8;")
+            database.SCHEMA.replace("PRAGMA user_version = 10;", "PRAGMA user_version = 8;")
         )
         connection.execute(
             """
@@ -152,7 +153,7 @@ class WorkspacePersistenceTest(unittest.TestCase):
 
         migrated = database.open_database(path, create=True)
         self.addCleanup(migrated.close)
-        self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 9)
+        self.assertEqual(migrated.execute("PRAGMA user_version").fetchone()[0], 10)
         self.assertEqual(
             migrated.execute("SELECT id FROM documents").fetchone()[0], "kept"
         )
@@ -505,6 +506,117 @@ class WorkspaceOpenTest(unittest.TestCase):
             self.connection, workspace
         )
         self.assertTrue(status.exported)
+
+    def test_attach_repeat_detach_and_restore_unmanaged_contents(self) -> None:
+        opened = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        workspace = workspace_store.get_workspace(
+            self.connection, "foo", "display"
+        )
+        override = Path(self.inspection.override_file)
+        override.parent.mkdir(parents=True)
+        original = b"FOO_OVERRIDE_SRCDIR = /user/source"
+        override.write_bytes(original)
+        inspection = replace(self.inspection, effective_override="/user/source")
+        with patch.object(
+            buildroot, "effective_source_override", return_value=workspace.path
+        ):
+            attached = workspaces.attach_workspace(
+                self.connection, workspace, inspection
+            )
+            repeated = workspaces.attach_workspace(
+                self.connection, workspace, inspection
+            )
+        self.assertTrue(attached.attached)
+        self.assertTrue(attached.shadowed_unmanaged_override)
+        self.assertFalse(repeated.attached)
+        self.assertTrue(override.read_bytes().startswith(original + b"\n"))
+        with patch.object(
+            buildroot, "effective_source_override", return_value="/user/source"
+        ):
+            detached = workspaces.detach_workspace(
+                self.connection, project_root=str(self.project),
+                buildroot_config="test_board", package="foo", workspace=workspace,
+            )
+        self.assertTrue(detached.detached)
+        self.assertEqual(override.read_bytes(), original)
+        repeated_detach = workspaces.detach_workspace(
+            self.connection, project_root=str(self.project),
+            buildroot_config="test_board", package="foo", workspace=workspace,
+        )
+        self.assertFalse(repeated_detach.detached)
+
+    def test_detach_rejects_manual_block_edit_and_close_preserves_workspace(self) -> None:
+        opened = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        workspace = workspace_store.get_workspace(
+            self.connection, "foo", "display"
+        )
+        with patch.object(
+            buildroot, "effective_source_override", return_value=workspace.path
+        ):
+            workspaces.attach_workspace(
+                self.connection, workspace, self.inspection
+            )
+        override = Path(self.inspection.override_file)
+        override.write_bytes(override.read_bytes().replace(b"OVERRIDE_SRCDIR", b"BROKEN"))
+        with self.assertRaisesRegex(ResourceError, "changed"):
+            workspaces.close_workspace(self.connection, workspace, force=True)
+        self.assertTrue(Path(opened.status.path).is_dir())
+        self.assertIsNotNone(
+            workspace_store.get_workspace(self.connection, "foo", "display")
+        )
+
+    def test_close_refuses_dirty_without_force_and_force_discards_only_worktree(self) -> None:
+        opened = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        workspace = workspace_store.get_workspace(
+            self.connection, "foo", "display"
+        )
+        checkout = Path(opened.status.path)
+        (checkout / "untracked.txt").write_text("work\n", encoding="utf-8")
+        with self.assertRaisesRegex(ResourceError, "cannot close"):
+            workspaces.close_workspace(self.connection, workspace)
+        closed = workspaces.close_workspace(
+            self.connection, workspace, force=True
+        )
+        self.assertTrue(closed.discarded_development_work)
+        self.assertFalse(checkout.exists())
+        self.assertIsNone(
+            workspace_store.get_workspace(self.connection, "foo", "display")
+        )
+        self.assertIsNone(
+            workspaces._git_optional([
+                "--git-dir", str(self.repository_path), "rev-parse", "--verify",
+                f"refs/heads/{closed.removed_branch}",
+            ])
+        )
+        for revision in closed.retained_revisions:
+            self.assertIsNotNone(
+                workspaces._git_optional([
+                    "--git-dir", str(self.repository_path), "rev-parse", "--verify",
+                    f"refs/paper-resources/revisions/{revision}",
+                ])
+            )
+
+    def test_untouched_import_closes_without_force(self) -> None:
+        opened = workspaces.open_workspace(
+            self.connection, self.inspection, self.repositories,
+            self.resources, "display",
+        )
+        workspace = workspace_store.get_workspace(
+            self.connection, "foo", "display"
+        )
+        self.assertTrue(opened.status.exported)
+        closed = workspaces.close_workspace(self.connection, workspace)
+        self.assertFalse(closed.force)
+        self.assertFalse(closed.discarded_development_work)
 
 
 class ExportPlannerTest(unittest.TestCase):

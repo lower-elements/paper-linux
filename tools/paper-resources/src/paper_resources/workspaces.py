@@ -96,6 +96,43 @@ class ExportWorkspaceResult:
     verification: str
 
 
+@dataclass(frozen=True)
+class AttachWorkspaceResult:
+    attached: bool
+    package: str
+    name: str
+    buildroot_config: str
+    override_file: str
+    workspace_path: str
+    shadowed_unmanaged_override: bool
+    differing_patch_stack: bool
+    warnings: tuple[str, ...]
+    rebuild_commands: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DetachWorkspaceResult:
+    detached: bool
+    package: str
+    buildroot_config: str
+    override_file: str | None
+    warnings: tuple[str, ...]
+    rebuild_commands: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CloseWorkspaceResult:
+    package: str
+    name: str
+    path: str
+    force: bool
+    detached_outputs: tuple[str, ...]
+    discarded_development_work: bool
+    retained_revisions: tuple[str, str]
+    removed_branch: str
+    removed_notes_ref: str
+
+
 def validate_component(value: str, label: str) -> str:
     if not _COMPONENT.fullmatch(value) or value in {".", ".."}:
         raise ResourceError(f"invalid workspace {label}: {value!r}")
@@ -768,6 +805,38 @@ def _sha256_hex(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _optional_sha256(path: Path) -> str | None:
+    return _sha256_hex(path) if path.is_file() else None
+
+
+def _recover_file_operation(
+    connection: sqlite3.Connection, operation: sqlite3.Row
+) -> None:
+    payload = json.loads(operation["payload"])
+    item = payload["file"]
+    destination = Path(item["destination"])
+    staged = Path(item["staged"])
+    backup = Path(item["backup"]) if item.get("backup") else None
+    if item.get("published"):
+        remove_destination = item.get("remove_destination", False)
+        current_hash = _optional_sha256(destination)
+        if remove_destination and current_hash is None:
+            pass
+        elif current_hash != item["new_hash"]:
+            raise ResourceError(
+                f"cannot recover {operation['operation_kind']}: override file "
+                f"changed externally: {destination}"
+            )
+        if backup is None:
+            destination.unlink(missing_ok=True)
+        else:
+            os.replace(backup, destination)
+    elif backup is not None:
+        backup.unlink(missing_ok=True)
+    staged.unlink(missing_ok=True)
+    workspace_store.delete_operation(connection, operation["id"])
+
+
 def _recover_export_operation(
     connection: sqlite3.Connection,
     workspace: workspace_store.WorkspaceRecord,
@@ -818,6 +887,16 @@ def recover_workspace_operations(
 ) -> None:
     for operation in workspace_store.pending_operations(connection, workspace.id):
         if operation["operation_kind"] != "export":
+            if operation["operation_kind"] in {"attach", "detach"}:
+                if operation["phase"] == "complete":
+                    payload = json.loads(operation["payload"])
+                    Path(payload["file"]["staged"]).unlink(missing_ok=True)
+                    if payload["file"].get("backup"):
+                        Path(payload["file"]["backup"]).unlink(missing_ok=True)
+                    workspace_store.delete_operation(connection, operation["id"])
+                else:
+                    _recover_file_operation(connection, operation)
+                continue
             raise ResourceError(
                 f"workspace has unresolved {operation['operation_kind']} operation "
                 f"{operation['id']}"
@@ -1035,4 +1114,431 @@ def export_workspace(
         tuple(created), tuple(updated), plan.obsolete_paths,
         plan.other_selected_paths, synthesized, plan.warnings,
         "exported-series replay equals workspace tip tree",
+    )
+
+
+def _make_path_value(path: str) -> str:
+    if not path.startswith("/"):
+        raise ResourceError("workspace override path must be absolute")
+    if any(character in path for character in "\n\r\t\x00#$\\"):
+        raise ResourceError(
+            "workspace path contains characters unsupported by Buildroot Make overrides"
+        )
+    return path.replace(" ", "\\ ")
+
+
+def _managed_block(
+    block_id: str, variable_prefix: str, workspace_path: str, needs_separator: bool
+) -> bytes:
+    separator = "\n" if needs_separator else ""
+    text = (
+        f"{separator}# >>> paper-resources workspace {block_id}\n"
+        f"{variable_prefix}_OVERRIDE_SRCDIR = {_make_path_value(workspace_path)}\n"
+        f"# <<< paper-resources workspace {block_id}\n"
+    )
+    return text.encode("utf-8")
+
+
+def _publish_override_change(
+    connection: sqlite3.Connection,
+    workspace: workspace_store.WorkspaceRecord,
+    *,
+    kind: str,
+    destination: Path,
+    new_content: bytes,
+) -> tuple[str, dict[str, Any]]:
+    operation_id = uuid.uuid4().hex
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staged = destination.parent / f".{destination.name}.paper-{operation_id}.new"
+    backup = (
+        destination.parent / f".{destination.name}.paper-{operation_id}.bak"
+        if destination.exists() else None
+    )
+    with staged.open("xb") as handle:
+        handle.write(new_content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if destination.exists():
+        staged.chmod(destination.stat().st_mode & 0o777)
+        assert backup is not None
+        shutil.copy2(destination, backup)
+    else:
+        staged.chmod(0o644)
+    payload = {"file": {
+        "destination": str(destination), "staged": str(staged),
+        "backup": str(backup) if backup else None,
+        "old_hash": _optional_sha256(destination),
+        "new_hash": hashlib.sha256(new_content).hexdigest(),
+        "published": False,
+    }}
+    workspace_store.save_operation(
+        connection, operation_id=operation_id, workspace_id=workspace.id,
+        kind=kind, phase="prepared", payload=payload,
+    )
+    if _optional_sha256(destination) != payload["file"]["old_hash"]:
+        raise ResourceError(f"override file changed before {kind}: {destination}")
+    os.replace(staged, destination)
+    payload["file"]["published"] = True
+    workspace_store.save_operation(
+        connection, operation_id=operation_id, workspace_id=workspace.id,
+        kind=kind, phase="published", payload=payload,
+    )
+    return operation_id, payload
+
+
+def _finish_file_operation(
+    connection: sqlite3.Connection, operation_id: str, payload: dict[str, Any]
+) -> None:
+    item = payload["file"]
+    if item.get("backup"):
+        try:
+            Path(item["backup"]).unlink(missing_ok=True)
+        except OSError:
+            return
+    workspace_store.delete_operation(connection, operation_id)
+
+
+def attach_workspace(
+    connection: sqlite3.Connection,
+    workspace: workspace_store.WorkspaceRecord,
+    inspection: buildroot.PackageInspection,
+) -> AttachWorkspaceResult:
+    recover_workspace_operations(connection, workspace)
+    if inspection.source_fingerprint != workspace.source_fingerprint:
+        raise ResourceError(
+            "destination configuration resolves a different normal package source"
+        )
+    project_root = Path(workspace.project_root)
+    existing = workspace_store.get_attachment(
+        connection, workspace.project_root, inspection.buildroot_config,
+        inspection.package,
+    )
+    commands = (
+        f"just build {inspection.buildroot_config} {inspection.package}-rebuild",
+        f"just build {inspection.buildroot_config} {inspection.package}-reconfigure",
+    )
+    if existing is not None:
+        if existing["workspace_id"] != workspace.id:
+            raise ResourceError(
+                "a different manager-owned workspace is attached; detach it first"
+            )
+        override = Path(existing["override_path"])
+        content = override.read_bytes() if override.is_file() else b""
+        block = bytes(existing["managed_block"])
+        if content.count(block) != 1:
+            raise ResourceError("managed override block was changed manually")
+        effective = buildroot.effective_source_override(
+            project_root, inspection.buildroot_config, inspection.variable_prefix
+        )
+        if effective != workspace.path:
+            raise ResourceError("recorded attachment is not the effective Buildroot override")
+        return AttachWorkspaceResult(
+            False, workspace.package, workspace.name,
+            inspection.buildroot_config, str(override), workspace.path,
+            existing["prior_effective"] is not None, False, (), commands,
+        )
+    override = Path(inspection.override_file)
+    original_exists = override.is_file()
+    original = override.read_bytes() if original_exists else b""
+    block_id = uuid.uuid4().hex
+    block = _managed_block(
+        block_id, inspection.variable_prefix, workspace.path,
+        bool(original and not original.endswith(b"\n")),
+    )
+    if block in original or b"# >>> paper-resources workspace " in original and (
+        f"{inspection.variable_prefix}_OVERRIDE_SRCDIR".encode() in original
+    ):
+        raise ResourceError("override file already contains an unrecorded manager block")
+    shadowed = inspection.effective_override is not None
+    operation_id, payload = _publish_override_change(
+        connection, workspace, kind="attach", destination=override,
+        new_content=original + block,
+    )
+    try:
+        effective = buildroot.effective_source_override(
+            project_root, inspection.buildroot_config, inspection.variable_prefix
+        )
+        if effective != workspace.path:
+            raise ResourceError(
+                f"managed override was not effective (Buildroot reports {effective!r})"
+            )
+        workspace_store.complete_attachment_operation(
+            connection, operation_id=operation_id, payload=payload, attach=True,
+            project_root=workspace.project_root,
+            buildroot_config=inspection.buildroot_config,
+            package=inspection.package, workspace_id=workspace.id,
+            override_path=str(override), block_id=block_id,
+            managed_block=block, file_created=not original_exists,
+            prior_effective=inspection.effective_override,
+        )
+    except Exception:
+        operation = next(
+            item for item in workspace_store.pending_operations(connection, workspace.id)
+            if item["id"] == operation_id
+        )
+        _recover_file_operation(connection, operation)
+        raise
+    _finish_file_operation(connection, operation_id, payload)
+    warnings = [
+        "Buildroot rsync -au may retain deleted files or timestamp effects; clean the package build directory when needed",
+        "workspace attachment bypasses normal download, extraction, patching, and omitted preparation hooks",
+    ]
+    if shadowed:
+        warnings.append("the managed block shadows a preexisting unmanaged override")
+    recorded_stack = [item["path"] for item in workspace.inspection.get("editable_patches", [])]
+    current_stack = [item.path for item in inspection.editable_patches]
+    differs = recorded_stack != current_stack
+    if differs:
+        warnings.append(
+            "destination configuration has a different patch stack; attachment uses the workspace as-is"
+        )
+    return AttachWorkspaceResult(
+        True, workspace.package, workspace.name, inspection.buildroot_config,
+        str(override), workspace.path, shadowed, differs, tuple(warnings), commands,
+    )
+
+
+def detach_workspace(
+    connection: sqlite3.Connection,
+    *,
+    project_root: str,
+    buildroot_config: str,
+    package: str,
+    workspace: workspace_store.WorkspaceRecord | None = None,
+) -> DetachWorkspaceResult:
+    attachment = workspace_store.get_attachment(
+        connection, project_root, buildroot_config, package
+    )
+    commands = (
+        f"just build {buildroot_config} {package}-dirclean",
+        f"just build {buildroot_config} {package}",
+    )
+    if attachment is None:
+        return DetachWorkspaceResult(False, package, buildroot_config, None, (), commands)
+    if workspace is None:
+        workspace = workspace_store.get_workspace_by_id(
+            connection, attachment["workspace_id"]
+        )
+    if workspace is None:
+        raise ResourceError("attachment refers to an unavailable workspace record")
+    recover_workspace_operations(connection, workspace)
+    override = Path(attachment["override_path"])
+    if not override.is_file():
+        raise ResourceError("managed override file was removed externally")
+    content = override.read_bytes()
+    block = bytes(attachment["managed_block"])
+    if content.count(block) != 1:
+        raise ResourceError("managed override block was changed manually")
+    restored = content.replace(block, b"", 1)
+    operation_id, payload = _publish_override_change(
+        connection, workspace, kind="detach", destination=override,
+        new_content=restored,
+    )
+    try:
+        if not restored and attachment["file_created"]:
+            if _sha256_hex(override) != hashlib.sha256(restored).hexdigest():
+                raise ResourceError("override file changed before removing empty owned file")
+            override.unlink()
+            payload["file"]["remove_destination"] = True
+            workspace_store.save_operation(
+                connection, operation_id=operation_id, workspace_id=workspace.id,
+                kind="detach", phase="published", payload=payload,
+            )
+        effective = buildroot.effective_source_override(
+            Path(project_root), buildroot_config,
+            package.replace("-", "_").upper(),
+        )
+        if effective != attachment["prior_effective"]:
+            raise ResourceError(
+                f"detached override did not restore the prior effective value "
+                f"(expected {attachment['prior_effective']!r}, got {effective!r})"
+            )
+        workspace_store.complete_attachment_operation(
+            connection, operation_id=operation_id, payload=payload, attach=False,
+            project_root=project_root, buildroot_config=buildroot_config,
+            package=package, workspace_id=workspace.id,
+            override_path=str(override), block_id=attachment["block_id"],
+            managed_block=block, file_created=bool(attachment["file_created"]),
+            prior_effective=attachment["prior_effective"],
+        )
+    except Exception:
+        operation = next(
+            item for item in workspace_store.pending_operations(connection, workspace.id)
+            if item["id"] == operation_id
+        )
+        _recover_file_operation(connection, operation)
+        raise
+    _finish_file_operation(connection, operation_id, payload)
+    return DetachWorkspaceResult(
+        True, package, buildroot_config, str(override),
+        (
+            "detaching does not clean build outputs; validate exported patches with a fresh normal patch/build cycle",
+        ),
+        commands,
+    )
+
+
+def _verify_attachment_block(attachment: sqlite3.Row) -> None:
+    override = Path(attachment["override_path"])
+    if not override.is_file():
+        raise ResourceError(
+            f"cannot close workspace: managed override was removed: {override}"
+        )
+    block = bytes(attachment["managed_block"])
+    if override.read_bytes().count(block) != 1:
+        raise ResourceError(
+            f"cannot close workspace: managed override block changed: {override}"
+        )
+
+
+def _common_git_directory(checkout: Path) -> Path | None:
+    value = _git_optional([
+        "-C", str(checkout), "rev-parse", "--path-format=absolute",
+        "--git-common-dir",
+    ])
+    return Path(value).resolve() if value else None
+
+
+def _registered_worktree_paths(repository_path: Path) -> set[Path]:
+    value = git_resources.run_git([
+        "--git-dir", str(repository_path), "worktree", "list", "--porcelain",
+    ], capture=True)
+    return {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in value.splitlines() if line.startswith("worktree ")
+    }
+
+
+def close_workspace(
+    connection: sqlite3.Connection,
+    workspace: workspace_store.WorkspaceRecord,
+    *,
+    force: bool = False,
+) -> CloseWorkspaceResult:
+    pending = workspace_store.pending_operations(connection, workspace.id)
+    close_operation = next(
+        (item for item in pending if item["operation_kind"] == "close"), None
+    )
+    for operation in pending:
+        if operation is close_operation:
+            continue
+        if operation["operation_kind"] == "export":
+            if operation["phase"] == "complete":
+                workspace_store.delete_operation(connection, operation["id"])
+            else:
+                _recover_export_operation(connection, workspace, operation)
+        elif operation["operation_kind"] in {"attach", "detach"}:
+            if operation["phase"] == "complete":
+                workspace_store.delete_operation(connection, operation["id"])
+            else:
+                _recover_file_operation(connection, operation)
+        else:
+            raise ResourceError(
+                f"workspace has unresolved {operation['operation_kind']} operation"
+            )
+    repository_path = Path(workspace.repository_path)
+    checkout = Path(workspace.path)
+    if not repository_path.is_absolute():
+        repository_path = checkout.parents[2] / repository_path
+    detached: list[str] = []
+    discarded = False
+    if close_operation is None:
+        status = get_workspace_status(connection, workspace)
+        if not force:
+            reasons = list(status.blockers)
+            if not status.exported:
+                reasons.append("workspace commits, notes, or patch outputs are not exported")
+            if status.changed_export_paths:
+                reasons.append(
+                    "recorded patch outputs changed: "
+                    + ", ".join(status.changed_export_paths)
+                )
+            if reasons:
+                raise ResourceError("cannot close workspace: " + "; ".join(reasons))
+        discarded = force and (not status.exported or not status.clean)
+        attachments = connection.execute(
+            """
+            SELECT * FROM workspace_attachments
+            WHERE workspace_id = ? ORDER BY buildroot_config, package
+            """,
+            (workspace.id,),
+        ).fetchall()
+        # Preflight every restoration before changing any attachment.
+        for attachment in attachments:
+            _verify_attachment_block(attachment)
+        for attachment in attachments:
+            result = detach_workspace(
+                connection, project_root=attachment["project_root"],
+                buildroot_config=attachment["buildroot_config"],
+                package=attachment["package"], workspace=workspace,
+            )
+            if result.detached:
+                detached.append(
+                    f"{attachment['buildroot_config']}:{attachment['package']}"
+                )
+        operation_id = uuid.uuid4().hex
+        payload = {
+            "force": force, "detached": detached,
+            "discarded": discarded, "phase": "prepared",
+        }
+        workspace_store.save_operation(
+            connection, operation_id=operation_id, workspace_id=workspace.id,
+            kind="close", phase="prepared", payload=payload,
+        )
+        phase = "prepared"
+    else:
+        operation_id = close_operation["id"]
+        payload = json.loads(close_operation["payload"])
+        force = bool(payload["force"])
+        detached = list(payload.get("detached", []))
+        discarded = bool(payload.get("discarded", False))
+        phase = close_operation["phase"]
+
+    if phase == "prepared":
+        common = _common_git_directory(checkout)
+        registered = _registered_worktree_paths(repository_path)
+        if common is None and checkout.resolve() not in registered:
+            # A previous attempt removed the worktree before persisting phase.
+            pass
+        elif common != repository_path.resolve():
+            raise ResourceError(
+                "refusing to remove a path not owned by the recorded shared repository"
+            )
+        else:
+            git_resources.run_git([
+                "--git-dir", str(repository_path), "worktree", "remove", "--force",
+                str(checkout),
+            ])
+        payload["phase"] = "worktree-removed"
+        workspace_store.save_operation(
+            connection, operation_id=operation_id, workspace_id=workspace.id,
+            kind="close", phase="worktree-removed", payload=payload,
+        )
+        phase = "worktree-removed"
+    if phase == "worktree-removed":
+        git_resources.run_git([
+            "--git-dir", str(repository_path), "update-ref", "-d",
+            f"refs/heads/{workspace.branch}",
+        ])
+        git_resources.run_git([
+            "--git-dir", str(repository_path), "update-ref", "-d",
+            workspace.notes_ref,
+        ])
+        payload["phase"] = "refs-removed"
+        workspace_store.save_operation(
+            connection, operation_id=operation_id, workspace_id=workspace.id,
+            kind="close", phase="refs-removed", payload=payload,
+        )
+    workspace_store.complete_close_operation(
+        connection, workspace.id, operation_id
+    )
+    fingerprint = workspace.input_fingerprint
+    return CloseWorkspaceResult(
+        workspace.package, workspace.name, workspace.path, force,
+        tuple(detached), discarded,
+        (
+            _revision_id(workspace.package, fingerprint, "base"),
+            _revision_id(workspace.package, fingerprint, "imported"),
+        ),
+        workspace.branch, workspace.notes_ref,
     )
