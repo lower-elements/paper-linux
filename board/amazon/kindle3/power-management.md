@@ -486,6 +486,10 @@ GPOs as unconditional user-controlled regulators.
 
 ## Display power
 
+Detailed Papyrus/TPS65180 register snapshots and stock-firmware sequencing
+observations are recorded in
+[`papyrus-stock.md`](papyrus-stock.md).
+
 The stock system exposed a Papyrus device at I2C address `0x48`. The vendor
 driver is `drivers/video/eink/broadsheet/broadsheet_papyrus.c`; it manages
 panel power sequencing, power-good state, temperature and VCOM. The inspected
