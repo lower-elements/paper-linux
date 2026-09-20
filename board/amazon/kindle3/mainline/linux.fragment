@@ -77,3 +77,7 @@ CONFIG_CPUFREQ_DT=y
 # transitions are being validated.  The i.MX watchdog remains enabled and
 # recovers a hard lockup; this only makes its state visible in sysfs.
 CONFIG_WATCHDOG_SYSFS=y
+
+# Feed the kernel CRNG from the i.MX35 RNGC after its hardware self-test.
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_IMX_RNGC=y

@@ -1,0 +1,59 @@
+From 43824f28e2bebe00470994b5894533da0ababc64 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 00:34:59 +0100
+Subject: [PATCH] hwrng: imx-rngc: add i.MX35 support
+
+Describe the i.MX35 RNGC and permit the existing driver to bind to it, so validated hardware entropy can feed the kernel CRNG.
+
+Upstream: not submitted
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ arch/arm/boot/dts/nxp/imx/imx35.dtsi | 7 +++++++
+ drivers/char/hw_random/Kconfig       | 2 +-
+ drivers/char/hw_random/imx-rngc.c    | 1 +
+ 3 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/nxp/imx/imx35.dtsi b/arch/arm/boot/dts/nxp/imx/imx35.dtsi
+index 111d7c0331f504723ef160235eca1381eab0524f..380cce7c24959759d83fbadb4444fc582d853fc0 100644
+--- a/arch/arm/boot/dts/nxp/imx/imx35.dtsi
++++ b/arch/arm/boot/dts/nxp/imx/imx35.dtsi
+@@ -231,6 +231,13 @@ gpio3: gpio@53fa4000 {
+ 				#interrupt-cells = <2>;
+ 			};
+ 
++			rngc: rng@53fb0000 {
++				compatible = "fsl,imx35-rngc";
++				reg = <0x53fb0000 0x4000>;
++				interrupts = <22>;
++				clocks = <&clks 61>;
++			};
++
+ 			esdhc1: mmc@53fb4000 {
+ 				compatible = "fsl,imx35-esdhc";
+ 				reg = <0x53fb4000 0x4000>;
+diff --git a/drivers/char/hw_random/Kconfig b/drivers/char/hw_random/Kconfig
+index 492a2a61a65be8bd9e46b0a70f3e43703973512e..ca9ebf6cef98074d94b7adb4b3532de7ce595230 100644
+--- a/drivers/char/hw_random/Kconfig
++++ b/drivers/char/hw_random/Kconfig
+@@ -270,7 +270,7 @@ config HW_RANDOM_MXC_RNGA
+ config HW_RANDOM_IMX_RNGC
+ 	tristate "Freescale i.MX RNGC Random Number Generator"
+ 	depends on HAS_IOMEM
+-	depends on SOC_IMX25 || SOC_IMX6SL || SOC_IMX6SLL || SOC_IMX6UL || COMPILE_TEST
++	depends on SOC_IMX25 || SOC_IMX35 || SOC_IMX6SL || SOC_IMX6SLL || SOC_IMX6UL || COMPILE_TEST
+ 	default HW_RANDOM
+ 	help
+ 	  This driver provides kernel-side support for the Random Number
+diff --git a/drivers/char/hw_random/imx-rngc.c b/drivers/char/hw_random/imx-rngc.c
+index 241664a9b5d9ac7244f15cbe5d5302ca3787ebea..4da29eefdc4b0882d5ab049b9459ec50e4a86256 100644
+--- a/drivers/char/hw_random/imx-rngc.c
++++ b/drivers/char/hw_random/imx-rngc.c
+@@ -349,6 +349,7 @@ static const struct dev_pm_ops imx_rngc_pm_ops = {
+ 
+ static const struct of_device_id imx_rngc_dt_ids[] = {
+ 	{ .compatible = "fsl,imx25-rngb" },
++	{ .compatible = "fsl,imx35-rngc" },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, imx_rngc_dt_ids);
