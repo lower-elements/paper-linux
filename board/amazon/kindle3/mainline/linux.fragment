@@ -81,3 +81,6 @@ CONFIG_WATCHDOG_SYSFS=y
 # Feed the kernel CRNG from the i.MX35 RNGC after its hardware self-test.
 CONFIG_HW_RANDOM=y
 CONFIG_HW_RANDOM_IMX_RNGC=y
+
+# Enable the TI E-ink PMIC driver, which we've patched to support the TPS65180 family
+CONFIG_REGULATOR_TPS65185=y
