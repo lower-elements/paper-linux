@@ -231,6 +231,13 @@
 		>;
 	};
 
+	pinctrl_papyrus: papyrusgrp {
+		fsl,pins = <
+			/* Papyrus PGOOD: 1.8 V input, hysteresis, 100 kOhm pull-up. */
+			MX35_PAD_STXFS5__GPIO1_3			0x2060
+		>;
+	};
+
 	pinctrl_spi1: spi1grp {
 		fsl,pins = <
 			MX35_PAD_CSPI1_MOSI__CSPI1_MOSI	0x21c0
@@ -275,6 +282,19 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_i2c2>;
 	status = "okay";
+
+	/*
+	 * Observe the stock Papyrus state without enabling its upstream supply,
+	 * changing output GPIOs, enabling interrupts, or registering regulators.
+	 */
+	papyrus: pmic@48 {
+		compatible = "ti,tps65180";
+		reg = <0x48>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_papyrus>;
+		pwr-good-gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+		ti,probe-only;
+	};
 
 	wm8960: audio-codec@1a {
 		compatible = "wlf,wm8960";
