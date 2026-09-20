@@ -38,6 +38,15 @@
       "sha256": "da5e8961406a6bea880e2c47f7c3fa88c2f03101b9e332a879f5195e367d6ffb"
     },
     {
+      "id": "ti-tps65185-datasheet-g",
+      "description": "TPS65185/TPS651851 e-paper display PMIC data sheet, revision G",
+      "tags": ["display", "power", "tps65185"],
+      "path": "documents/power/TPS65185-TPS651851-datasheet-revG.pdf",
+      "extractor": "pdftotext-layout",
+      "url": "https://www.ti.com/lit/ds/symlink/tps65185.pdf",
+      "sha256": "e2b79f7fc9c3d19c88387bffa7de95811b244f449e7666be877b08f92210c718"
+    },
+    {
       "id": "cirrus-class-d-audio-design-tips",
       "description": "Cirrus Logic class-D audio design guidance",
       "tags": ["audio", "kindle3"],
