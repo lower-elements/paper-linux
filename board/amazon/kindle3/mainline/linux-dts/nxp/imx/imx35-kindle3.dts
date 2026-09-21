@@ -283,17 +283,20 @@
 	pinctrl-0 = <&pinctrl_i2c2>;
 	status = "okay";
 
-	/*
-	 * Observe the stock Papyrus state without enabling its upstream supply,
-	 * changing output GPIOs, enabling interrupts, or registering regulators.
-	 */
 	papyrus: pmic@48 {
 		compatible = "ti,tps65180";
 		reg = <0x48>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_papyrus>;
 		pwr-good-gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
-		ti,probe-only;
+		/* VIN is powered by board wiring; its upstream rail is unidentified. */
+		ti,vin-not-controlled;
+
+		regulators {
+			papyrus_vcom: vcom {
+				regulator-name = "vcom";
+			};
+		};
 	};
 
 	wm8960: audio-codec@1a {
@@ -329,6 +332,34 @@
 			pinctrl-0 = <&pinctrl_ipu_di_epdc>;
 			reset-gpios = <&gpio2 17 GPIO_ACTIVE_LOW>;
 			ready-gpios = <&gpio3 24 GPIO_ACTIVE_HIGH>;
+
+			i2c-bus {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				panel_eeprom: eeprom@50 {
+					compatible = "atmel,24c02";
+					reg = <0x50>;
+					read-only;
+
+					nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						panel_vcom: vcom@10 {
+							reg = <0x10 0x5>;
+						};
+					};
+				};
+			};
+
+			panel {
+				compatible = "amazon,kindle3-eink-panel";
+				vcom-supply = <&papyrus_vcom>;
+				nvmem-cells = <&panel_vcom>;
+				nvmem-cell-names = "vcom";
+			};
 		};
 	};
 };
