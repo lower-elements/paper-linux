@@ -84,3 +84,6 @@ CONFIG_HW_RANDOM_IMX_RNGC=y
 
 # Enable the TI E-ink PMIC driver, which we've patched to support the TPS65180 family
 CONFIG_REGULATOR_TPS65185=y
+
+# The panel-identification EEPROM is read through Isis's restricted I2C proxy.
+CONFIG_EEPROM_AT24=y
