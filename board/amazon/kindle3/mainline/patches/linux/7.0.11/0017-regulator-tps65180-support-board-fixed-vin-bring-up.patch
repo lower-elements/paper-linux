@@ -1,0 +1,92 @@
+From f4670dfc5fbb6dd0b83c9c5634cdbec445775d1c Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 15:16:15 +0100
+Subject: [PATCH] regulator: tps65180: support board-fixed VIN bring-up
+
+Allow boards to declare that VIN is powered outside Linux regulator control, tolerate the absent optional supply, and log the TPS65180 state during normal probe.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ .../bindings/regulator/ti,tps65185.yaml       | 15 +++++++++++++--
+ drivers/regulator/tps65185.c                  | 19 ++++++++++++++++---
+ 2 files changed, 29 insertions(+), 5 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml b/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
+index e81c720e9fb81552797ac0c36bedd1c306827385..26a0dbe365073ae95d3a295314bec5ca47127312 100644
+--- a/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
++++ b/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
+@@ -43,6 +43,12 @@ properties:
+ 
+   vin-supply: true
+ 
++  ti,vin-not-controlled:
++    type: boolean
++    description:
++      VIN is powered by board wiring that is not represented by a Linux
++      regulator.  The driver will not require or enable a VIN supply.
++
+   ti,probe-only:
+     type: boolean
+     description:
+@@ -73,8 +79,13 @@ allOf:
+         - ti,probe-only
+     then: {}
+     else:
+-      required:
+-        - vin-supply
++      if:
++        not:
++          required:
++            - ti,vin-not-controlled
++      then:
++        required:
++          - vin-supply
+   - if:
+       properties:
+         compatible:
+diff --git a/drivers/regulator/tps65185.c b/drivers/regulator/tps65185.c
+index cb62417ae9ad3f77125f1541305b28d7dac0aca2..c8f10f201737daee26c9d8955fae9b903ca696c1 100644
+--- a/drivers/regulator/tps65185.c
++++ b/drivers/regulator/tps65185.c
+@@ -160,7 +160,7 @@ static int tps6518x_log_state(struct tps65185_data *data)
+ 		if (ret)
+ 			return ret;
+ 
+-		dev_info(data->dev, "probe-only %s (0x%02x) = 0x%02x\n",
++		dev_info(data->dev, "%s (0x%02x) = 0x%02x\n",
+ 			 snapshot[i].name, snapshot[i].reg, val);
+ 	}
+ 
+@@ -630,10 +630,18 @@ static int tps65185_probe(struct i2c_client *client)
+ 				     PTR_ERR(data->vcom_ctrl_gpio),
+ 				     "failed to get vcm ctrl gpio\n");
+ 
+-	ret = devm_regulator_get_enable(&client->dev, "vin");
++	/* Some boards wire VIN to an always-powered rail that Linux does not
++	 * control.  Do not invent a regulator consumer for those boards. */
++	if (device_property_read_bool(&client->dev, "ti,vin-not-controlled")) {
++		ret = devm_regulator_get_enable_optional(&client->dev, "vin");
++		if (ret == -ENODEV)
++			ret = 0;
++	} else {
++		ret = devm_regulator_get_enable(&client->dev, "vin");
++	}
+ 	if (ret)
+ 		return dev_err_probe(&client->dev, ret,
+-				     "failed to get vin regulator\n");
++				     "failed to get VIN supply\n");
+ 
+ 	ret = regmap_read(data->regmap, TPS65185_REG_REVID, &val);
+ 	if (ret)
+@@ -647,6 +655,11 @@ static int tps65185_probe(struct i2c_client *client)
+ 	dev_info(&client->dev, "%s detected, revision 0x%02x\n",
+ 		 data->chip->name, val);
+ 
++	ret = tps6518x_log_state(data);
++	if (ret)
++		return dev_err_probe(&client->dev, ret,
++				     "failed to read PMIC state\n");
++
+ 	if (data->chip->vpos_tracking_mask) {
+ 		ret = regmap_read(data->regmap, data->chip->vpos_tracking_reg,
+ 				  &val);

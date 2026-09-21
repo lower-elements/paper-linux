@@ -1,0 +1,73 @@
+From f609a48edc222022eb4f0f1e9f7518799e63a057 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 13:25:05 +0100
+Subject: [PATCH] dt-bindings: regulator: tps65185: add TPS65180
+
+Allow the TPS65180 compatible while documenting that its four
+display-controller-driven PWRx inputs are not the TPS65185 PWRUP GPIO
+represented by enable-gpios.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ .../bindings/regulator/ti,tps65185.yaml       | 27 ++++++++++++++-----
+ 1 file changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml b/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
+index af0f638b80bc7d1dfb9ff86cf0e21dd1f2cdb96f..1ec676d9b89b0ee52386d656165ab6f5d5be43f5 100644
+--- a/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
++++ b/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
+@@ -4,26 +4,32 @@
+ $id: http://devicetree.org/schemas/regulator/ti,tps65185.yaml#
+ $schema: http://devicetree.org/meta-schemas/core.yaml#
+ 
+-title: TI TPS65185 Power Management Integrated Circuit
++title: TI TPS65180 and TPS65185 Power Management Integrated Circuits
+ 
+ maintainers:
+   - Andreas Kemnade <andreas@kemnade.info>
+ 
+-description:
+-  TPS65185 is a Power Management IC to provide Power for EPDs with one 3.3V
+-  switch, 2 symmetric LDOs behind 2 DC/DC converters, and one unsymmetric
++description: |
++  TPS65180 and TPS65185 are Power Management ICs for EPDs with one 3.3V
++  switch, two symmetric LDOs behind two DC/DC converters, and one asymmetric
+   regulator for a compensation voltage.
+ 
++  TPS65185 has a single PWRUP input. TPS65180 instead has four PWRx inputs
++  which are normally driven by the display controller and are not represented
++  by enable-gpios.
++
+ properties:
+   compatible:
+-    const: ti,tps65185
++    enum:
++      - ti,tps65180
++      - ti,tps65185
+ 
+   reg:
+     maxItems: 1
+ 
+   enable-gpios:
+     description:
+-      PWRUP pin
++      TPS65185 PWRUP pin
+     maxItems: 1
+ 
+   pwr-good-gpios:
+@@ -55,6 +61,15 @@ required:
+   - pwr-good-gpios
+   - vin-supply
+ 
++allOf:
++  - if:
++      properties:
++        compatible:
++          const: ti,tps65180
++    then:
++      properties:
++        enable-gpios: false
++
+ additionalProperties: false
+ 
+ examples:

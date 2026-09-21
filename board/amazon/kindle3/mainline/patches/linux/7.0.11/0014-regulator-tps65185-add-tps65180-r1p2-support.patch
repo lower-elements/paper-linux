@@ -1,0 +1,337 @@
+From 9bfb2426dbbcda07aa9a6db4a0452644d3561b42 Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 13:23:29 +0100
+Subject: [PATCH] regulator: tps65185: add TPS65180 r1p2 support
+
+Add the TPS65180 register layout and regulator operations while accepting
+only the 0x60 r1p2 revision. Handle its VNEG-selected symmetric rails,
+required VPOS tracking mode, eight-bit VCOM DAC, and relocated thermistor
+control register without applying TPS65185 register semantics to the older
+device.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ drivers/regulator/Kconfig    |   8 +-
+ drivers/regulator/tps65185.c | 200 ++++++++++++++++++++++++++++++++++-
+ 2 files changed, 199 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index d10b6f9243d51574a9ac662b93d4678cd7d94a4f..15650a000b56f7dfd937c290d560b97ed10d06a0 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -1709,14 +1709,14 @@ config REGULATOR_TPS65132
+ 	  power supply specifically designed for display panels.
+ 
+ config REGULATOR_TPS65185
+-	tristate "TI TPS65185 EPD regulator"
++	tristate "TI TPS65180/TPS65185 EPD regulator"
+ 	depends on I2C
+ 	select REGMAP_I2C
+ 	help
+-	  This driver supports the TPS65185 voltage regulator chip
+-	  which is used to provide power to Electronic Paper Displays
++	  This driver supports the TPS65180 and TPS65185 voltage regulator chips,
++	  which are used to provide power to Electronic Paper Displays
+ 	  so it is found in E-Book readers.
+-	  If HWWON is enabled, it also provides temperature measurement.
++	  If HWMON is enabled, it also provides temperature measurement.
+ 
+ 
+ config REGULATOR_TPS65217
+diff --git a/drivers/regulator/tps65185.c b/drivers/regulator/tps65185.c
+index 44dd1e6250873b59ed7d7ec7af4bd50d6ce6c003..63b35878c86c8b9845b2c06d69be7f32652d32c5 100644
+--- a/drivers/regulator/tps65185.c
++++ b/drivers/regulator/tps65185.c
+@@ -7,6 +7,7 @@
+ #include <linux/completion.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
++#include <linux/math64.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/hwmon.h>
+@@ -31,6 +32,17 @@
+ #define TPS65185_REG_PG 0xf
+ #define TPS65185_REG_REVID 0x10
+ 
++#define TPS65180_REG_VP_ADJUST 0x02
++#define TPS65180_REG_VN_ADJUST 0x03
++#define TPS65180_REG_VCOM_ADJUST 0x04
++#define TPS65180_REG_TMST_CONFIG 0x0c
++
++#define TPS65180_VPOS_SET_MASK GENMASK(2, 0)
++#define TPS65180_VPOS_TRACKING 0x03
++#define TPS65180_VCOM_ADJ_I2C BIT(7)
++#define TPS65180_REVID_R1P2 0x60
++#define TPS65180_VCOM_MAX_UV 2750000
++
+ #define TPS65185_READ_THERM BIT(7)
+ #define TPS65185_CONV_END BIT(5)
+ 
+@@ -42,7 +54,11 @@
+ struct tps6518x_chip_info {
+ 	const char *name;
+ 	unsigned int tmst_config_reg;
++	unsigned int expected_revid;
+ 	bool vcom2_volatile;
++	unsigned int vpos_tracking_reg;
++	unsigned int vpos_tracking_mask;
++	unsigned int vpos_tracking_val;
+ 	const struct regulator_desc *regulators;
+ 	unsigned int num_regulators;
+ 	const struct regulator_desc *vcom_regulator;
+@@ -149,7 +165,7 @@ static int tps65185_check_powergood(struct regulator_dev *rdev)
+ 	return gpiod_get_value_cansleep(data->pgood_gpio);
+ }
+ 
+-static int tps65185_vposneg_get_voltage_sel(struct regulator_dev *rdev)
++static int tps6518x_vposneg_get_voltage_sel(struct regulator_dev *rdev)
+ {
+ 	int ret;
+ 
+@@ -161,11 +177,46 @@ static int tps65185_vposneg_get_voltage_sel(struct regulator_dev *rdev)
+ 	return 6 - ret;
+ }
+ 
+-static int tps65185_vposneg_set_voltage_sel(struct regulator_dev *rdev, unsigned int selector)
++static int tps6518x_vposneg_set_voltage_sel(struct regulator_dev *rdev,
++					    unsigned int selector)
+ {
+ 	return regulator_set_voltage_sel_regmap(rdev, 6 - selector);
+ }
+ 
++static int tps65180_vposneg_get_voltage_sel(struct regulator_dev *rdev)
++{
++	struct tps65185_data *data = rdev_get_drvdata(rdev);
++	unsigned int val;
++	int ret;
++
++	ret = regmap_read(data->regmap, TPS65180_REG_VP_ADJUST, &val);
++	if (ret)
++		return ret;
++
++	if ((val & TPS65180_VPOS_SET_MASK) != TPS65180_VPOS_TRACKING) {
++		dev_err_ratelimited(data->dev,
++				    "VPOS is not configured to track VNEG\n");
++		return -EINVAL;
++	}
++
++	return tps6518x_vposneg_get_voltage_sel(rdev);
++}
++
++static int tps65180_vposneg_set_voltage_sel(struct regulator_dev *rdev,
++					    unsigned int selector)
++{
++	struct tps65185_data *data = rdev_get_drvdata(rdev);
++	int ret;
++
++	ret = regmap_update_bits(data->regmap, TPS65180_REG_VP_ADJUST,
++				 TPS65180_VPOS_SET_MASK,
++				 TPS65180_VPOS_TRACKING);
++	if (ret)
++		return ret;
++
++	return tps6518x_vposneg_set_voltage_sel(rdev, selector);
++}
++
+ static irqreturn_t pgood_handler(int irq, void *dev_id)
+ {
+ 	struct tps65185_data *data = dev_id;
+@@ -248,6 +299,44 @@ static int tps65185_vcom_get_voltage_sel(struct regulator_dev *rdev)
+ 	return sel;
+ }
+ 
++static int tps65180_vcom_list_voltage(struct regulator_dev *rdev,
++				      unsigned int selector)
++{
++	if (selector >= rdev->desc->n_voltages)
++		return -EINVAL;
++
++	return DIV_ROUND_CLOSEST_ULL((u64)selector * TPS65180_VCOM_MAX_UV,
++				     0xff);
++}
++
++static int tps65180_vcom_set_voltage_sel(struct regulator_dev *rdev,
++					 unsigned int selector)
++{
++	struct tps65185_data *data = rdev_get_drvdata(rdev);
++	int ret;
++
++	ret = regmap_update_bits(data->regmap, TPS65180_REG_VN_ADJUST,
++				 TPS65180_VCOM_ADJ_I2C,
++				 TPS65180_VCOM_ADJ_I2C);
++	if (ret)
++		return ret;
++
++	return regmap_write(data->regmap, TPS65180_REG_VCOM_ADJUST, selector);
++}
++
++static int tps65180_vcom_get_voltage_sel(struct regulator_dev *rdev)
++{
++	struct tps65185_data *data = rdev_get_drvdata(rdev);
++	unsigned int selector;
++	int ret;
++
++	ret = regmap_read(data->regmap, TPS65180_REG_VCOM_ADJUST, &selector);
++	if (ret)
++		return ret;
++
++	return selector;
++}
++
+ static const struct regulator_ops tps65185_vcom_ops = {
+ 	.list_voltage = regulator_list_voltage_linear,
+ 	.map_voltage = regulator_map_voltage_linear,
+@@ -255,14 +344,61 @@ static const struct regulator_ops tps65185_vcom_ops = {
+ 	.get_voltage_sel = tps65185_vcom_get_voltage_sel,
+ };
+ 
++static const struct regulator_ops tps65180_vcom_ops = {
++	.list_voltage = tps65180_vcom_list_voltage,
++	.map_voltage = regulator_map_voltage_iterate,
++	.set_voltage_sel = tps65180_vcom_set_voltage_sel,
++	.get_voltage_sel = tps65180_vcom_get_voltage_sel,
++};
++
+ static const struct regulator_ops tps65185_vposneg_ops = {
+ 	.list_voltage = regulator_list_voltage_linear,
+ 	.map_voltage = regulator_map_voltage_linear,
+ 	.enable = tps65185_vposneg_enable,
+ 	.disable = tps65185_vposneg_disable,
+ 	.is_enabled = tps65185_check_powergood,
+-	.set_voltage_sel = tps65185_vposneg_set_voltage_sel,
+-	.get_voltage_sel = tps65185_vposneg_get_voltage_sel,
++	.set_voltage_sel = tps6518x_vposneg_set_voltage_sel,
++	.get_voltage_sel = tps6518x_vposneg_get_voltage_sel,
++};
++
++static const struct regulator_ops tps65180_vposneg_ops = {
++	.list_voltage = regulator_list_voltage_linear,
++	.map_voltage = regulator_map_voltage_linear,
++	.enable = tps65185_vposneg_enable,
++	.disable = tps65185_vposneg_disable,
++	.is_enabled = tps65185_check_powergood,
++	.set_voltage_sel = tps65180_vposneg_set_voltage_sel,
++	.get_voltage_sel = tps65180_vposneg_get_voltage_sel,
++};
++
++static const struct regulator_desc tps65180_regulators[] = {
++	{
++		.name = "v3p3",
++		.of_match = of_match_ptr("v3p3"),
++		.regulators_node = of_match_ptr("regulators"),
++		.id = 0,
++		.ops = &tps65185_v3p3ops,
++		.type = REGULATOR_VOLTAGE,
++		.owner = THIS_MODULE,
++		.enable_reg = TPS65185_REG_ENABLE,
++		.enable_mask = BIT(5),
++		.n_voltages = 1,
++		.min_uV = 3300000,
++	},
++	{
++		.name = "vposneg",
++		.of_match = of_match_ptr("vposneg"),
++		.regulators_node = of_match_ptr("regulators"),
++		.id = 1,
++		.ops = &tps65180_vposneg_ops,
++		.type = REGULATOR_VOLTAGE,
++		.owner = THIS_MODULE,
++		.n_voltages = 7,
++		.vsel_reg = TPS65180_REG_VN_ADJUST,
++		.vsel_mask = GENMASK(2, 0),
++		.min_uV = 14250000,
++		.uV_step = 250000,
++	}
+ };
+ 
+ static const struct regulator_desc tps65185_regulators[] = {
+@@ -309,6 +445,30 @@ static const struct regulator_desc tps65185_vcom_regulator = {
+ 	.uV_step = 10000,
+ };
+ 
++static const struct regulator_desc tps65180_vcom_regulator = {
++	.name = "vcom",
++	.of_match = of_match_ptr("vcom"),
++	.regulators_node = of_match_ptr("regulators"),
++	.supply_name = "vposneg",
++	.id = 2,
++	.ops = &tps65180_vcom_ops,
++	.type = REGULATOR_VOLTAGE,
++	.owner = THIS_MODULE,
++	.n_voltages = 256,
++};
++
++static const struct tps6518x_chip_info tps65180_chip = {
++	.name = "tps65180",
++	.tmst_config_reg = TPS65180_REG_TMST_CONFIG,
++	.expected_revid = TPS65180_REVID_R1P2,
++	.vpos_tracking_reg = TPS65180_REG_VP_ADJUST,
++	.vpos_tracking_mask = TPS65180_VPOS_SET_MASK,
++	.vpos_tracking_val = TPS65180_VPOS_TRACKING,
++	.regulators = tps65180_regulators,
++	.num_regulators = ARRAY_SIZE(tps65180_regulators),
++	.vcom_regulator = &tps65180_vcom_regulator,
++};
++
+ static const struct tps6518x_chip_info tps65185_chip = {
+ 	.name = "tps65185",
+ 	.tmst_config_reg = TPS65185_REG_TMST1,
+@@ -349,6 +509,7 @@ static int tps65185_probe(struct i2c_client *client)
+ 	struct tps65185_data *data;
+ 	struct regulator_config config = { };
+ 	struct regulator_dev *rdev;
++	unsigned int val;
+ 	int ret = 0;
+ 	int i;
+ 
+@@ -400,6 +561,31 @@ static int tps65185_probe(struct i2c_client *client)
+ 		return dev_err_probe(&client->dev, ret,
+ 				     "failed to get vin regulator\n");
+ 
++	ret = regmap_read(data->regmap, TPS65185_REG_REVID, &val);
++	if (ret)
++		return dev_err_probe(&client->dev, ret,
++				     "failed to read device revision\n");
++
++	if (data->chip->expected_revid && val != data->chip->expected_revid)
++		return dev_err_probe(&client->dev, -ENODEV,
++				     "unsupported revision 0x%02x\n", val);
++
++	dev_info(&client->dev, "%s detected, revision 0x%02x\n",
++		 data->chip->name, val);
++
++	if (data->chip->vpos_tracking_mask) {
++		ret = regmap_read(data->regmap, data->chip->vpos_tracking_reg,
++				  &val);
++		if (ret)
++			return dev_err_probe(&client->dev, ret,
++					     "failed to read VPOS configuration\n");
++
++		if ((val & data->chip->vpos_tracking_mask) !=
++		    data->chip->vpos_tracking_val)
++			dev_warn(&client->dev,
++				 "VPOS is not configured to track VNEG\n");
++	}
++
+ 	init_completion(&data->pgood_completion);
+ 	init_completion(&data->tmst_completion);
+ 
+@@ -461,6 +647,10 @@ static int tps65185_probe(struct i2c_client *client)
+ }
+ 
+ static const struct of_device_id tps65185_dt_ids[] = {
++	{
++		.compatible = "ti,tps65180",
++		.data = &tps65180_chip,
++	},
+ 	{
+ 		.compatible = "ti,tps65185",
+ 		.data = &tps65185_chip,
+@@ -481,5 +671,5 @@ static struct i2c_driver tps65185_i2c_driver = {
+ module_i2c_driver(tps65185_i2c_driver);
+ 
+ /* Module information */
+-MODULE_DESCRIPTION("TPS65185 regulator driver");
++MODULE_DESCRIPTION("TPS65180/TPS65185 regulator driver");
+ MODULE_LICENSE("GPL");

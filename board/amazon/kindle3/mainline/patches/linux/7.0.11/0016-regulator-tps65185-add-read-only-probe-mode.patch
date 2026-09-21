@@ -1,0 +1,172 @@
+From b60253c085163158e31c84164e9e76c4be4a9f8c Mon Sep 17 00:00:00 2001
+From: Michael Connor Buchan <mikey@blindcomputing.org>
+Date: Sun, 20 Sep 2026 13:56:10 +0100
+Subject: [PATCH] regulator: tps65185: add read-only probe mode
+
+Allow initial board bring-up to identify a TPS65180 and inspect its safe state without enabling VIN, changing output GPIOs, programming interrupts, or registering regulator consumers. Also avoid enabling the temperature interrupt unless the PMIC IRQ is described and keep power-good status reads uncached.
+
+Signed-off-by: Michael Connor Buchan <mikey@blindcomputing.org>
+---
+ .../bindings/regulator/ti,tps65185.yaml       | 15 +++-
+ drivers/regulator/tps65185.c                  | 85 ++++++++++++++++++-
+ 2 files changed, 95 insertions(+), 5 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml b/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
+index 1ec676d9b89b0ee52386d656165ab6f5d5be43f5..e81c720e9fb81552797ac0c36bedd1c306827385 100644
+--- a/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
++++ b/Documentation/devicetree/bindings/regulator/ti,tps65185.yaml
+@@ -43,6 +43,13 @@ properties:
+ 
+   vin-supply: true
+ 
++  ti,probe-only:
++    type: boolean
++    description:
++      Identify the PMIC and read its safe status/configuration registers,
++      without enabling VIN, changing GPIO outputs, enabling interrupts, or
++      registering regulators. This is intended for initial board bring-up.
++
+   interrupts:
+     maxItems: 1
+ 
+@@ -59,9 +66,15 @@ required:
+   - compatible
+   - reg
+   - pwr-good-gpios
+-  - vin-supply
+ 
+ allOf:
++  - if:
++      required:
++        - ti,probe-only
++    then: {}
++    else:
++      required:
++        - vin-supply
+   - if:
+       properties:
+         compatible:
+diff --git a/drivers/regulator/tps65185.c b/drivers/regulator/tps65185.c
+index 63b35878c86c8b9845b2c06d69be7f32652d32c5..cb62417ae9ad3f77125f1541305b28d7dac0aca2 100644
+--- a/drivers/regulator/tps65185.c
++++ b/drivers/regulator/tps65185.c
+@@ -36,6 +36,9 @@
+ #define TPS65180_REG_VN_ADJUST 0x03
+ #define TPS65180_REG_VCOM_ADJUST 0x04
+ #define TPS65180_REG_TMST_CONFIG 0x0c
++#define TPS65180_REG_PWR_SEQ0 0x09
++#define TPS65180_REG_PWR_SEQ1 0x0a
++#define TPS65180_REG_PWR_SEQ2 0x0b
+ 
+ #define TPS65180_VPOS_SET_MASK GENMASK(2, 0)
+ #define TPS65180_VPOS_TRACKING 0x03
+@@ -126,6 +129,44 @@ static const struct hwmon_chip_info tps65185_chip_info = {
+ 	.info = tps65185_info,
+ };
+ 
++/* These registers are safe to read without changing PMIC state. */
++static int tps6518x_log_state(struct tps65185_data *data)
++{
++	static const struct {
++		const char *name;
++		unsigned int reg;
++	} snapshot[] = {
++		{ "ENABLE", TPS65185_REG_ENABLE },
++		{ "VP_ADJUST", TPS65180_REG_VP_ADJUST },
++		{ "VN_ADJUST", TPS65180_REG_VN_ADJUST },
++		{ "VCOM_ADJUST", TPS65180_REG_VCOM_ADJUST },
++		{ "INT_ENABLE1", TPS65185_REG_INT_EN1 },
++		{ "INT_ENABLE2", TPS65185_REG_INT_EN2 },
++		{ "PWR_SEQ0", TPS65180_REG_PWR_SEQ0 },
++		{ "PWR_SEQ1", TPS65180_REG_PWR_SEQ1 },
++		{ "PWR_SEQ2", TPS65180_REG_PWR_SEQ2 },
++		{ "TMST_CONFIG", TPS65180_REG_TMST_CONFIG },
++		{ "TMST_OS", TPS65185_REG_TMST1 },
++		{ "TMST_HYST", TPS65185_REG_TMST2 },
++		{ "PG_STATUS", TPS65185_REG_PG },
++		{ "REVID", TPS65185_REG_REVID },
++	};
++	unsigned int val;
++	int ret;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(snapshot); i++) {
++		ret = regmap_read(data->regmap, snapshot[i].reg, &val);
++		if (ret)
++			return ret;
++
++		dev_info(data->dev, "probe-only %s (0x%02x) = 0x%02x\n",
++			 snapshot[i].name, snapshot[i].reg, val);
++	}
++
++	return 0;
++}
++
+ static bool tps65185_volatile_reg(struct device *dev, unsigned int reg)
+ {
+ 	struct tps65185_data *data = dev_get_drvdata(dev);
+@@ -135,6 +176,7 @@ static bool tps65185_volatile_reg(struct device *dev, unsigned int reg)
+ 	case TPS65185_REG_ENABLE:
+ 	case TPS65185_REG_INT1:
+ 	case TPS65185_REG_INT2:
++	case TPS65185_REG_PG:
+ 		return true;
+ 	default:
+ 		return reg == data->chip->tmst_config_reg ||
+@@ -535,6 +577,38 @@ static int tps65185_probe(struct i2c_client *client)
+ 				     PTR_ERR(data->pgood_gpio),
+ 				     "failed to get power good gpio\n");
+ 
++	if (device_property_read_bool(&client->dev, "ti,probe-only")) {
++		int pgood;
++
++		pgood = gpiod_get_value_cansleep(data->pgood_gpio);
++		if (pgood < 0)
++			return dev_err_probe(&client->dev, pgood,
++					     "failed to read power good gpio\n");
++
++		ret = regmap_read(data->regmap, TPS65185_REG_REVID, &val);
++		if (ret)
++			return dev_err_probe(&client->dev, ret,
++					     "failed to read device revision\n");
++
++		if (data->chip->expected_revid &&
++		    val != data->chip->expected_revid)
++			return dev_err_probe(&client->dev, -ENODEV,
++					     "unsupported revision 0x%02x\n", val);
++
++		dev_info(&client->dev,
++			 "%s detected, revision 0x%02x, PGOOD=%d\n",
++			 data->chip->name, val, pgood);
++
++		ret = tps6518x_log_state(data);
++		if (ret)
++			return dev_err_probe(&client->dev, ret,
++					     "failed to read PMIC state\n");
++
++		dev_info(&client->dev,
++			 "probe-only mode: leaving VIN, GPIOs, interrupts and regulators untouched\n");
++		return 0;
++	}
++
+ 	data->pgood_irq = gpiod_to_irq(data->pgood_gpio);
+ 	if (data->pgood_irq < 0)
+ 		return data->pgood_irq;
+@@ -607,10 +681,13 @@ static int tps65185_probe(struct i2c_client *client)
+ 					     "failed to request irq\n");
+ 	}
+ 
+-	ret = regmap_update_bits(data->regmap, TPS65185_REG_INT_EN2, BIT(0), BIT(0));
+-	if (ret)
+-		return dev_err_probe(&client->dev, ret,
+-				     "failed to enable temp irq\n");
++	if (client->irq) {
++		ret = regmap_update_bits(data->regmap, TPS65185_REG_INT_EN2,
++					 BIT(0), BIT(0));
++		if (ret)
++			return dev_err_probe(&client->dev, ret,
++					     "failed to enable temp irq\n");
++	}
+ 
+ 	config.driver_data = data;
+ 	config.dev = &client->dev;
